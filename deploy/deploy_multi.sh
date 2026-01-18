@@ -1,61 +1,60 @@
 #!/bin/bash
 # ============================================
-# 多应用部署脚本 - 同一台服务器部署多个应用
+# 多应用部署脚本 - 支持 Anaconda
 # GitHub: https://github.com/Baili-BL/facstock
 # ============================================
 
 set -e
 
 # ==================== 应用配置 ====================
-# 在这里添加你要部署的应用，格式: "应用名:端口:Git分支"
+# 格式: "应用名:端口:Git分支:conda环境名"
 APPS=(
-    "facstock:5001:main"
-    # "facstock_test:5002:develop"
-    # "facstock_v2:5003:v2"
+    "facstock:5001:main:facstock_env"
+    # "facstock_test:5002:develop:facstock_env2"
 )
 
 GITHUB_REPO="https://github.com/Baili-BL/facstock.git"
 BASE_DIR="/opt"
 
 echo "=========================================="
-echo "🚀 多应用部署脚本"
+echo "🚀 多应用部署脚本 (Anaconda)"
 echo "=========================================="
 
 # 1. 安装系统依赖
 echo ""
 echo "[Step 1] 📥 安装系统依赖..."
 apt update
-apt install -y git nginx supervisor ufw software-properties-common
+apt install -y git nginx supervisor ufw
 
-# 2. 安装 Python 3.9（通过 deadsnakes PPA）
+# 2. 检测 Anaconda
 echo ""
-echo "[Step 2] 🐍 安装 Python 3.9..."
+echo "[Step 2] 🐍 检测 Anaconda..."
 
-CURRENT_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0")
-echo "当前 Python 版本: $CURRENT_VERSION"
-
-if [ "$(echo "$CURRENT_VERSION < 3.8" | bc -l 2>/dev/null || echo 1)" = "1" ]; then
-    echo "Python 版本过低，安装 Python 3.9..."
-    add-apt-repository -y ppa:deadsnakes/ppa
-    apt update
-    apt install -y python3.9 python3.9-venv python3.9-distutils
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.9
-    PYTHON_CMD="python3.9"
-else
-    PYTHON_CMD="python3"
-    apt install -y python3-venv python3-pip
+CONDA_PATH=""
+if [ -f "/root/anaconda3/bin/conda" ]; then
+    CONDA_PATH="/root/anaconda3"
+elif [ -f "/opt/anaconda3/bin/conda" ]; then
+    CONDA_PATH="/opt/anaconda3"
+elif [ -f "$HOME/anaconda3/bin/conda" ]; then
+    CONDA_PATH="$HOME/anaconda3"
 fi
 
-echo "✅ 使用 Python: $($PYTHON_CMD --version)"
+if [ -z "$CONDA_PATH" ]; then
+    echo "❌ 未检测到 Anaconda，请先安装 Anaconda"
+    exit 1
+fi
+
+echo "✅ 检测到 Anaconda: $CONDA_PATH"
+source "$CONDA_PATH/etc/profile.d/conda.sh"
 
 # 部署每个应用
 for app_config in "${APPS[@]}"; do
-    IFS=':' read -r APP_NAME APP_PORT BRANCH <<< "$app_config"
+    IFS=':' read -r APP_NAME APP_PORT BRANCH CONDA_ENV_NAME <<< "$app_config"
     APP_DIR="$BASE_DIR/$APP_NAME"
     
     echo ""
     echo "=========================================="
-    echo "📦 部署应用: $APP_NAME (端口: $APP_PORT, 分支: $BRANCH)"
+    echo "📦 部署: $APP_NAME (端口: $APP_PORT, 环境: $CONDA_ENV_NAME)"
     echo "=========================================="
     
     # 创建目录
@@ -72,19 +71,25 @@ for app_config in "${APPS[@]}"; do
         git clone -b $BRANCH $GITHUB_REPO $APP_DIR
     fi
     
-    # 创建虚拟环境
-    cd $APP_DIR
-    if [ -d "venv" ]; then
-        rm -rf venv
+    # 创建 conda 环境
+    if ! conda env list | grep -q "^$CONDA_ENV_NAME "; then
+        echo "创建 conda 环境 $CONDA_ENV_NAME (Python 3.10)..."
+        conda create -y -n $CONDA_ENV_NAME python=3.10
     fi
-    $PYTHON_CMD -m venv venv
-    $APP_DIR/venv/bin/pip install --upgrade pip
-    $APP_DIR/venv/bin/pip install -r requirements.txt
+    
+    # 安装依赖
+    cd $APP_DIR
+    conda activate $CONDA_ENV_NAME
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    conda deactivate
     
     # 配置 Supervisor
+    GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
+    
     cat > /etc/supervisor/conf.d/$APP_NAME.conf <<EOF
 [program:$APP_NAME]
-command=$APP_DIR/venv/bin/gunicorn -w 2 -b 0.0.0.0:$APP_PORT app:app
+command=$GUNICORN_CMD -w 2 -b 0.0.0.0:$APP_PORT app:app
 directory=$APP_DIR
 user=root
 autostart=true
@@ -95,24 +100,21 @@ stdout_logfile=$APP_DIR/logs/supervisor_out.log
 stderr_logfile=$APP_DIR/logs/supervisor_err.log
 stdout_logfile_maxbytes=50MB
 stderr_logfile_maxbytes=50MB
-environment=PYTHONUNBUFFERED=1
+environment=PYTHONUNBUFFERED=1,PATH="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin:%(ENV_PATH)s"
 EOF
 
-    # 开放端口
     ufw allow $APP_PORT/tcp
-    
     echo "✅ $APP_NAME 配置完成"
 done
 
 # 重新加载 Supervisor
 echo ""
-echo "[Step 3] ⚙️ 重新加载 Supervisor..."
+echo "[Step 3] ⚙️ 启动应用..."
 supervisorctl reread
 supervisorctl update
 
-# 启动所有应用
 for app_config in "${APPS[@]}"; do
-    IFS=':' read -r APP_NAME APP_PORT BRANCH <<< "$app_config"
+    IFS=':' read -r APP_NAME APP_PORT BRANCH CONDA_ENV_NAME <<< "$app_config"
     supervisorctl restart $APP_NAME 2>/dev/null || supervisorctl start $APP_NAME
 done
 
@@ -148,19 +150,17 @@ ufw --force enable
 
 echo ""
 echo "=========================================="
-echo "✅ 所有应用部署完成！"
+echo "✅ 部署完成！"
 echo "=========================================="
 echo ""
-echo "📍 应用访问地址:"
+echo "📍 访问地址:"
 for app_config in "${APPS[@]}"; do
-    IFS=':' read -r APP_NAME APP_PORT BRANCH <<< "$app_config"
-    echo "   - $APP_NAME: http://服务器IP:$APP_PORT"
+    IFS=':' read -r APP_NAME APP_PORT BRANCH CONDA_ENV_NAME <<< "$app_config"
+    echo "   - $APP_NAME: http://服务器IP:$APP_PORT (环境: $CONDA_ENV_NAME)"
 done
 echo ""
 echo "🔧 管理命令:"
-echo "   - 查看所有状态: supervisorctl status"
-echo "   - 重启某个应用: supervisorctl restart 应用名"
+echo "   - 查看状态: supervisorctl status"
+echo "   - 重启应用: supervisorctl restart 应用名"
 echo "   - 查看日志: tail -f /opt/应用名/logs/supervisor_out.log"
-echo ""
-echo "⚠️ 记得在腾讯云安全组开放对应端口！"
 echo ""
