@@ -16,7 +16,6 @@ APPS=(
 
 GITHUB_REPO="https://github.com/Baili-BL/facstock.git"
 BASE_DIR="/opt"
-PYTHON_VERSION="3.10"
 
 echo "=========================================="
 echo "🚀 多应用部署脚本"
@@ -26,7 +25,34 @@ echo "=========================================="
 echo ""
 echo "[Step 1] 📥 安装系统依赖..."
 sudo apt update
-sudo apt install -y git python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python3-pip nginx supervisor ufw
+sudo apt install -y git python3 python3-venv python3-pip nginx supervisor ufw
+
+# 检测 Python 版本
+echo ""
+echo "[Step 2] 🐍 检测 Python 版本..."
+PYTHON_CMD=$(which python3)
+PYTHON_VERSION=$($PYTHON_CMD --version 2>&1)
+echo "检测到 Python: $PYTHON_VERSION"
+
+# 检查 Python 版本是否 >= 3.8
+PYTHON_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
+if [ "$PYTHON_MINOR" -lt 8 ]; then
+    echo "⚠️ Python 版本过低，尝试安装更高版本..."
+    sudo apt install -y software-properties-common
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+    sudo apt update
+    
+    # 尝试安装 Python 3.10, 3.9, 3.8
+    for ver in 3.10 3.9 3.8; do
+        if sudo apt install -y python${ver} python${ver}-venv python${ver}-distutils 2>/dev/null; then
+            PYTHON_CMD="/usr/bin/python${ver}"
+            echo "✅ 已安装 Python ${ver}"
+            break
+        fi
+    done
+fi
+
+echo "使用 Python: $($PYTHON_CMD --version)"
 
 # 部署每个应用
 for app_config in "${APPS[@]}"; do
@@ -55,7 +81,7 @@ for app_config in "${APPS[@]}"; do
     # 创建虚拟环境
     cd $APP_DIR
     if [ ! -d "venv" ]; then
-        sudo python${PYTHON_VERSION} -m venv venv
+        sudo $PYTHON_CMD -m venv venv
     fi
     sudo $APP_DIR/venv/bin/pip install --upgrade pip
     sudo $APP_DIR/venv/bin/pip install -r requirements.txt
@@ -85,7 +111,7 @@ done
 
 # 重新加载 Supervisor
 echo ""
-echo "[Step 2] ⚙️ 重新加载 Supervisor..."
+echo "[Step 3] ⚙️ 重新加载 Supervisor..."
 sudo supervisorctl reread
 sudo supervisorctl update
 
@@ -97,7 +123,7 @@ done
 
 # 配置 Nginx
 echo ""
-echo "[Step 3] 🌐 配置 Nginx..."
+echo "[Step 4] 🌐 配置 Nginx..."
 sudo tee /etc/nginx/sites-available/facstock_multi > /dev/null <<'EOF'
 # 多应用 Nginx 配置
 
@@ -137,7 +163,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 # 配置防火墙
 echo ""
-echo "[Step 4] 🔥 配置防火墙..."
+echo "[Step 5] 🔥 配置防火墙..."
 sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
