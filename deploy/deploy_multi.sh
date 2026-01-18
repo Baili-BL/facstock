@@ -24,34 +24,13 @@ echo "=========================================="
 # 安装系统依赖
 echo ""
 echo "[Step 1] 📥 安装系统依赖..."
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip nginx supervisor ufw
+apt update
+apt install -y git python3 python3-venv python3-pip nginx supervisor ufw
 
 # 检测 Python 版本
 echo ""
 echo "[Step 2] 🐍 检测 Python 版本..."
-PYTHON_CMD=$(which python3)
-PYTHON_VERSION=$($PYTHON_CMD --version 2>&1)
-echo "检测到 Python: $PYTHON_VERSION"
-
-# 检查 Python 版本是否 >= 3.8
-PYTHON_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
-if [ "$PYTHON_MINOR" -lt 8 ]; then
-    echo "⚠️ Python 版本过低，尝试安装更高版本..."
-    sudo apt install -y software-properties-common
-    sudo add-apt-repository -y ppa:deadsnakes/ppa
-    sudo apt update
-    
-    # 尝试安装 Python 3.10, 3.9, 3.8
-    for ver in 3.10 3.9 3.8; do
-        if sudo apt install -y python${ver} python${ver}-venv python${ver}-distutils 2>/dev/null; then
-            PYTHON_CMD="/usr/bin/python${ver}"
-            echo "✅ 已安装 Python ${ver}"
-            break
-        fi
-    done
-fi
-
+PYTHON_CMD="python3"
 echo "使用 Python: $($PYTHON_CMD --version)"
 
 # 部署每个应用
@@ -65,29 +44,29 @@ for app_config in "${APPS[@]}"; do
     echo "=========================================="
     
     # 创建目录
-    sudo mkdir -p $APP_DIR/logs
+    mkdir -p $APP_DIR/logs
     
     # 拉取代码
     if [ -d "$APP_DIR/.git" ]; then
         cd $APP_DIR
-        sudo git fetch origin
-        sudo git checkout $BRANCH
-        sudo git pull origin $BRANCH
+        git fetch origin
+        git checkout $BRANCH
+        git pull origin $BRANCH
     else
-        sudo rm -rf $APP_DIR/*
-        sudo git clone -b $BRANCH $GITHUB_REPO $APP_DIR
+        rm -rf $APP_DIR/*
+        git clone -b $BRANCH $GITHUB_REPO $APP_DIR
     fi
     
     # 创建虚拟环境
     cd $APP_DIR
     if [ ! -d "venv" ]; then
-        sudo $PYTHON_CMD -m venv venv
+        $PYTHON_CMD -m venv venv
     fi
-    sudo $APP_DIR/venv/bin/pip install --upgrade pip
-    sudo $APP_DIR/venv/bin/pip install -r requirements.txt
+    $APP_DIR/venv/bin/pip install --upgrade pip
+    $APP_DIR/venv/bin/pip install -r requirements.txt
     
     # 配置 Supervisor
-    sudo tee /etc/supervisor/conf.d/$APP_NAME.conf > /dev/null <<EOF
+    cat > /etc/supervisor/conf.d/$APP_NAME.conf <<EOF
 [program:$APP_NAME]
 command=$APP_DIR/venv/bin/gunicorn -w 2 -b 0.0.0.0:$APP_PORT app:app
 directory=$APP_DIR
@@ -104,7 +83,7 @@ environment=PYTHONUNBUFFERED=1
 EOF
 
     # 开放端口
-    sudo ufw allow $APP_PORT/tcp
+    ufw allow $APP_PORT/tcp
     
     echo "✅ $APP_NAME 配置完成"
 done
@@ -112,19 +91,19 @@ done
 # 重新加载 Supervisor
 echo ""
 echo "[Step 3] ⚙️ 重新加载 Supervisor..."
-sudo supervisorctl reread
-sudo supervisorctl update
+supervisorctl reread
+supervisorctl update
 
 # 启动所有应用
 for app_config in "${APPS[@]}"; do
     IFS=':' read -r APP_NAME APP_PORT BRANCH <<< "$app_config"
-    sudo supervisorctl restart $APP_NAME 2>/dev/null || sudo supervisorctl start $APP_NAME
+    supervisorctl restart $APP_NAME 2>/dev/null || supervisorctl start $APP_NAME
 done
 
 # 配置 Nginx
 echo ""
 echo "[Step 4] 🌐 配置 Nginx..."
-sudo tee /etc/nginx/sites-available/facstock_multi > /dev/null <<'EOF'
+cat > /etc/nginx/sites-available/facstock_multi <<'EOF'
 # 多应用 Nginx 配置
 
 server {
@@ -137,6 +116,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 120s;
     }
 
     # 应用2 - 通过路径访问 (如需要，取消注释)
@@ -146,28 +126,19 @@ server {
     #     proxy_set_header X-Real-IP $remote_addr;
     # }
 }
-
-# 如果有域名，可以配置子域名访问
-# server {
-#     listen 80;
-#     server_name boll.yourdomain.com;
-#     location / {
-#         proxy_pass http://127.0.0.1:5001;
-#     }
-# }
 EOF
 
-sudo ln -sf /etc/nginx/sites-available/facstock_multi /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-sudo nginx -t && sudo systemctl reload nginx
+ln -sf /etc/nginx/sites-available/facstock_multi /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+nginx -t && systemctl reload nginx
 
 # 配置防火墙
 echo ""
 echo "[Step 5] 🔥 配置防火墙..."
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw --force enable
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
 
 echo ""
 echo "=========================================="
@@ -181,7 +152,9 @@ for app_config in "${APPS[@]}"; do
 done
 echo ""
 echo "🔧 管理命令:"
-echo "   - 查看所有状态: sudo supervisorctl status"
-echo "   - 重启某个应用: sudo supervisorctl restart 应用名"
+echo "   - 查看所有状态: supervisorctl status"
+echo "   - 重启某个应用: supervisorctl restart 应用名"
 echo "   - 查看日志: tail -f /opt/应用名/logs/supervisor_out.log"
+echo ""
+echo "⚠️ 记得在腾讯云安全组开放对应端口！"
 echo ""
