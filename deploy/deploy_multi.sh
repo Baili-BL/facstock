@@ -21,17 +21,32 @@ echo "=========================================="
 echo "🚀 多应用部署脚本"
 echo "=========================================="
 
-# 安装系统依赖
+# 1. 安装系统依赖
 echo ""
 echo "[Step 1] 📥 安装系统依赖..."
 apt update
-apt install -y git python3 python3-venv python3-pip nginx supervisor ufw
+apt install -y git nginx supervisor ufw software-properties-common
 
-# 检测 Python 版本
+# 2. 安装 Python 3.9（通过 deadsnakes PPA）
 echo ""
-echo "[Step 2] 🐍 检测 Python 版本..."
-PYTHON_CMD="python3"
-echo "使用 Python: $($PYTHON_CMD --version)"
+echo "[Step 2] 🐍 安装 Python 3.9..."
+
+CURRENT_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0")
+echo "当前 Python 版本: $CURRENT_VERSION"
+
+if [ "$(echo "$CURRENT_VERSION < 3.8" | bc -l 2>/dev/null || echo 1)" = "1" ]; then
+    echo "Python 版本过低，安装 Python 3.9..."
+    add-apt-repository -y ppa:deadsnakes/ppa
+    apt update
+    apt install -y python3.9 python3.9-venv python3.9-distutils
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.9
+    PYTHON_CMD="python3.9"
+else
+    PYTHON_CMD="python3"
+    apt install -y python3-venv python3-pip
+fi
+
+echo "✅ 使用 Python: $($PYTHON_CMD --version)"
 
 # 部署每个应用
 for app_config in "${APPS[@]}"; do
@@ -59,9 +74,10 @@ for app_config in "${APPS[@]}"; do
     
     # 创建虚拟环境
     cd $APP_DIR
-    if [ ! -d "venv" ]; then
-        $PYTHON_CMD -m venv venv
+    if [ -d "venv" ]; then
+        rm -rf venv
     fi
+    $PYTHON_CMD -m venv venv
     $APP_DIR/venv/bin/pip install --upgrade pip
     $APP_DIR/venv/bin/pip install -r requirements.txt
     
@@ -104,13 +120,10 @@ done
 echo ""
 echo "[Step 4] 🌐 配置 Nginx..."
 cat > /etc/nginx/sites-available/facstock_multi <<'EOF'
-# 多应用 Nginx 配置
-
 server {
     listen 80;
     server_name _;
 
-    # 应用1 - 主应用
     location / {
         proxy_pass http://127.0.0.1:5001;
         proxy_set_header Host $host;
@@ -118,13 +131,6 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_read_timeout 120s;
     }
-
-    # 应用2 - 通过路径访问 (如需要，取消注释)
-    # location /app2/ {
-    #     proxy_pass http://127.0.0.1:5002/;
-    #     proxy_set_header Host $host;
-    #     proxy_set_header X-Real-IP $remote_addr;
-    # }
 }
 EOF
 

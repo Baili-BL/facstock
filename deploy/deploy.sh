@@ -26,13 +26,33 @@ echo "=========================================="
 echo ""
 echo "[1/8] 📥 安装系统依赖..."
 apt update
-apt install -y git python3 python3-venv python3-pip nginx supervisor ufw
+apt install -y git nginx supervisor ufw software-properties-common
 
-# 2. 检测 Python 版本
+# 2. 安装 Python 3.9（通过 deadsnakes PPA）
 echo ""
-echo "[2/8] 🐍 检测 Python 版本..."
-PYTHON_CMD="python3"
-echo "使用 Python: $($PYTHON_CMD --version)"
+echo "[2/8] 🐍 安装 Python 3.9..."
+
+# 检查当前 Python 版本
+CURRENT_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0")
+echo "当前 Python 版本: $CURRENT_VERSION"
+
+# 如果版本 < 3.8，安装 Python 3.9
+if [ "$(echo "$CURRENT_VERSION < 3.8" | bc -l 2>/dev/null || echo 1)" = "1" ]; then
+    echo "Python 版本过低，安装 Python 3.9..."
+    add-apt-repository -y ppa:deadsnakes/ppa
+    apt update
+    apt install -y python3.9 python3.9-venv python3.9-distutils
+    
+    # 安装 pip for Python 3.9
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.9
+    
+    PYTHON_CMD="python3.9"
+else
+    PYTHON_CMD="python3"
+    apt install -y python3-venv python3-pip
+fi
+
+echo "✅ 使用 Python: $($PYTHON_CMD --version)"
 
 # 3. 创建应用目录
 echo ""
@@ -57,9 +77,10 @@ fi
 echo ""
 echo "[5/8] 🐍 创建 Python 虚拟环境..."
 cd $APP_DIR
-if [ ! -d "venv" ]; then
-    $PYTHON_CMD -m venv venv
+if [ -d "venv" ]; then
+    rm -rf venv
 fi
+$PYTHON_CMD -m venv venv
 $APP_DIR/venv/bin/pip install --upgrade pip
 $APP_DIR/venv/bin/pip install -r requirements.txt
 
