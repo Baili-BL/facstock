@@ -98,6 +98,12 @@ pip install gunicorn -i https://pypi.tuna.tsinghua.edu.cn/simple/
 echo ""
 echo "[4/5] ⚙️ 配置服务..."
 
+# 确保日志目录存在
+mkdir -p $APP_DIR/logs
+touch $APP_DIR/logs/supervisor_out.log
+touch $APP_DIR/logs/supervisor_err.log
+chmod 755 $APP_DIR/logs
+
 GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
 
 cat > /etc/supervisor/conf.d/$APP_NAME.conf <<EOF
