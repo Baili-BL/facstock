@@ -94,17 +94,71 @@ echo "[3/8] 📁 创建应用目录..."
 mkdir -p $APP_DIR
 mkdir -p $APP_DIR/logs
 
-# 4. 从 GitHub 拉取代码
+# 4. 从 GitHub 拉取代码（支持镜像加速）
 echo ""
 echo "[4/8] 📥 从 GitHub 拉取代码..."
+
+# GitHub 镜像列表（国内加速）
+GITHUB_MIRRORS=(
+    "https://ghproxy.com/https://github.com"
+    "https://mirror.ghproxy.com/https://github.com"
+    "https://gh.ddlc.top/https://github.com"
+    "https://github.com"  # 原始地址作为最后备选
+)
+
+clone_repo() {
+    local repo_path="$1"  # 如: Baili-BL/facstock.git
+    local target_dir="$2"
+    
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        local full_url="${mirror}/${repo_path}"
+        echo "  尝试: $full_url"
+        
+        if timeout 60 git clone --depth 1 "$full_url" "$target_dir" 2>/dev/null; then
+            echo "  ✅ 克隆成功!"
+            return 0
+        fi
+        echo "  ❌ 失败，尝试下一个镜像..."
+    done
+    return 1
+}
+
+pull_repo() {
+    local target_dir="$1"
+    cd "$target_dir"
+    
+    # 尝试直接 pull
+    if timeout 60 git pull origin main 2>/dev/null || timeout 60 git pull origin master 2>/dev/null; then
+        echo "  ✅ 更新成功!"
+        return 0
+    fi
+    
+    echo "  ⚠️ pull 失败，尝试重新克隆..."
+    return 1
+}
+
+REPO_PATH="Baili-BL/facstock.git"
+
 if [ -d "$APP_DIR/.git" ]; then
     echo "代码已存在，执行 git pull 更新..."
-    cd $APP_DIR
-    git pull origin main
+    if ! pull_repo "$APP_DIR"; then
+        rm -rf $APP_DIR
+        mkdir -p $APP_DIR
+        clone_repo "$REPO_PATH" "$APP_DIR"
+    fi
 else
     echo "首次部署，执行 git clone..."
-    rm -rf $APP_DIR/*
-    git clone $GITHUB_REPO $APP_DIR
+    rm -rf $APP_DIR 2>/dev/null || true
+    mkdir -p $APP_DIR
+    if ! clone_repo "$REPO_PATH" "$APP_DIR"; then
+        echo ""
+        echo "❌ 所有镜像都无法访问！"
+        echo ""
+        echo "请手动上传代码到 $APP_DIR 后重新运行此脚本"
+        echo "或者在本地执行："
+        echo "  scp -r ./facstock/* root@服务器IP:$APP_DIR/"
+        exit 1
+    fi
 fi
 
 # 5. 安装 Python 依赖

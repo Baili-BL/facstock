@@ -72,9 +72,40 @@ echo ""
 echo "[3/7] 📁 创建应用目录..."
 mkdir -p $APP_DIR
 
-# ===== 4. 克隆/更新项目 =====
+# ===== 4. 克隆/更新项目（GitHub 镜像加速）=====
 echo ""
 echo "[4/7] 📥 克隆项目代码..."
+
+# GitHub 镜像列表（国内加速）
+GITHUB_MIRRORS=(
+    "https://ghproxy.com"
+    "https://mirror.ghproxy.com"
+    "https://gh.ddlc.top"
+    ""  # 空字符串表示直接访问原始地址
+)
+
+clone_with_mirror() {
+    local original_url="$1"  # 原始 GitHub URL
+    local target_dir="$2"
+    
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        local full_url
+        if [ -z "$mirror" ]; then
+            full_url="$original_url"
+        else
+            full_url="${mirror}/${original_url}"
+        fi
+        
+        echo "    尝试: $full_url"
+        
+        if timeout 60 git clone --depth 1 "$full_url" "$target_dir" 2>/dev/null; then
+            echo "    ✅ 克隆成功!"
+            return 0
+        fi
+        echo "    ❌ 失败，尝试下一个镜像..."
+    done
+    return 1
+}
 
 for project_info in "${PROJECTS[@]}"; do
     IFS='|' read -r name repo port entry <<< "$project_info"
@@ -82,13 +113,24 @@ for project_info in "${PROJECTS[@]}"; do
     
     echo "  → 处理项目: $name"
     
-    if [ -d "$project_dir" ]; then
+    if [ -d "$project_dir/.git" ]; then
         echo "    更新已有代码..."
         cd "$project_dir"
-        git pull origin main || git pull origin master || true
+        if ! timeout 60 git pull origin main 2>/dev/null && ! timeout 60 git pull origin master 2>/dev/null; then
+            echo "    ⚠️ pull 失败，重新克隆..."
+            rm -rf "$project_dir"
+            clone_with_mirror "$repo" "$project_dir"
+        fi
     else
         echo "    克隆新代码..."
-        git clone "$repo" "$project_dir"
+        rm -rf "$project_dir" 2>/dev/null || true
+        if ! clone_with_mirror "$repo" "$project_dir"; then
+            echo ""
+            echo "❌ 项目 $name 所有镜像都无法访问！"
+            echo "请手动上传代码到 $project_dir"
+            echo "或在本地执行: scp -r ./$name root@服务器IP:$project_dir/"
+            exit 1
+        fi
     fi
 done
 
