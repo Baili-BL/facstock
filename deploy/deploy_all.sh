@@ -26,7 +26,7 @@ echo ""
 echo "[1/7] 🔍 检测 Anaconda/Miniconda..."
 
 CONDA_PATH=""
-for path in "/root/anaconda3" "/opt/anaconda3" "$HOME/anaconda3" "/root/miniconda3" "/opt/miniconda3"; do
+for path in "$HOME/miniconda" "/root/miniconda" "/root/miniconda3" "/root/anaconda3" "/opt/anaconda3" "$HOME/anaconda3" "/opt/miniconda3"; do
     if [ -d "$path" ] && [ -f "$path/bin/conda" ]; then
         CONDA_PATH="$path"
         break
@@ -34,14 +34,32 @@ for path in "/root/anaconda3" "/opt/anaconda3" "$HOME/anaconda3" "/root/minicond
 done
 
 if [ -z "$CONDA_PATH" ]; then
-    echo "❌ 未检测到 Anaconda/Miniconda，请先安装"
-    echo "   安装命令: wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && bash Miniconda3-latest-Linux-x86_64.sh"
-    exit 1
+    echo "⚠️ 未检测到 Conda，自动安装 Miniconda (Python 3.10)..."
+    
+    # 使用清华镜像下载 Miniconda
+    cd /tmp
+    wget -q --show-progress https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py310_23.1.0-1-Linux-x86_64.sh -O miniconda.sh
+    
+    # 静默安装
+    bash miniconda.sh -b -p $HOME/miniconda
+    rm miniconda.sh
+    
+    CONDA_PATH="$HOME/miniconda"
+    
+    # 初始化 conda
+    $CONDA_PATH/bin/conda init bash
+    
+    echo "✅ Miniconda 安装完成: $CONDA_PATH"
 fi
 
-echo "✅ 检测到 Conda: $CONDA_PATH"
+echo "✅ 使用 Conda: $CONDA_PATH"
 export PATH="$CONDA_PATH/bin:$PATH"
 source "$CONDA_PATH/etc/profile.d/conda.sh"
+
+# 配置清华镜像源加速
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+conda config --set show_channel_urls yes
 
 # ===== 2. 安装系统依赖 =====
 echo ""

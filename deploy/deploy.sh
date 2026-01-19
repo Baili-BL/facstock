@@ -31,56 +31,62 @@ echo "[1/8] 📥 安装系统依赖..."
 apt update
 apt install -y git nginx supervisor ufw
 
-# 2. 配置 Anaconda 环境
+# 2. 配置 Conda 环境
 echo ""
 echo "[2/8] 🐍 配置 Python 环境..."
 
 # 检测 conda
 CONDA_PATH=""
-if [ -f "/root/anaconda3/bin/conda" ]; then
-    CONDA_PATH="/root/anaconda3"
-elif [ -f "/opt/anaconda3/bin/conda" ]; then
-    CONDA_PATH="/opt/anaconda3"
-elif [ -f "$HOME/anaconda3/bin/conda" ]; then
-    CONDA_PATH="$HOME/anaconda3"
-elif command -v conda &> /dev/null; then
-    CONDA_PATH=$(dirname $(dirname $(which conda)))
-fi
+for path in "$HOME/miniconda" "/root/miniconda" "/root/miniconda3" "/root/anaconda3" "/opt/anaconda3" "$HOME/anaconda3"; do
+    if [ -d "$path" ] && [ -f "$path/bin/conda" ]; then
+        CONDA_PATH="$path"
+        break
+    fi
+done
 
-if [ -n "$CONDA_PATH" ]; then
-    echo "✅ 检测到 Anaconda: $CONDA_PATH"
+if [ -z "$CONDA_PATH" ]; then
+    echo "⚠️ 未检测到 Conda，自动安装 Miniconda (Python 3.10)..."
+    
+    # 使用清华镜像下载 Miniconda
+    cd /tmp
+    wget -q --show-progress https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py310_23.1.0-1-Linux-x86_64.sh -O miniconda.sh
+    
+    # 静默安装到用户目录
+    bash miniconda.sh -b -p $HOME/miniconda
+    rm miniconda.sh
+    
+    CONDA_PATH="$HOME/miniconda"
     
     # 初始化 conda
-    source "$CONDA_PATH/etc/profile.d/conda.sh"
+    $CONDA_PATH/bin/conda init bash
     
-    # 创建或更新 conda 环境
-    if conda env list | grep -q "^$CONDA_ENV_NAME "; then
-        echo "环境 $CONDA_ENV_NAME 已存在，激活中..."
-        conda activate $CONDA_ENV_NAME
-    else
-        echo "创建 conda 环境 $CONDA_ENV_NAME (Python 3.10)..."
-        conda create -y -n $CONDA_ENV_NAME python=3.10
-        conda activate $CONDA_ENV_NAME
-    fi
-    
-    PYTHON_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/python"
-    PIP_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/pip"
-    GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
-    
-    echo "✅ 使用 Python: $($PYTHON_CMD --version)"
-else
-    echo "❌ 未检测到 Anaconda，使用系统 Python..."
-    
-    # 安装 Python 3.9
-    apt install -y software-properties-common
-    add-apt-repository -y ppa:deadsnakes/ppa
-    apt update
-    apt install -y python3.9 python3.9-venv python3.9-distutils
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.9
-    
-    PYTHON_CMD="python3.9"
-    USE_VENV=1
+    echo "✅ Miniconda 3.10 安装完成: $CONDA_PATH"
 fi
+
+echo "✅ 使用 Conda: $CONDA_PATH"
+export PATH="$CONDA_PATH/bin:$PATH"
+source "$CONDA_PATH/etc/profile.d/conda.sh"
+
+# 配置清华镜像源加速
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+conda config --set show_channel_urls yes
+
+# 创建或更新 conda 环境
+if conda env list | grep -q "^$CONDA_ENV_NAME "; then
+    echo "环境 $CONDA_ENV_NAME 已存在，激活中..."
+    conda activate $CONDA_ENV_NAME
+else
+    echo "创建 conda 环境 $CONDA_ENV_NAME (Python 3.10)..."
+    conda create -y -n $CONDA_ENV_NAME python=3.10
+    conda activate $CONDA_ENV_NAME
+fi
+
+PYTHON_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/python"
+PIP_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/pip"
+GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
+
+echo "✅ 使用 Python: $($PYTHON_CMD --version)"
 
 # 3. 创建应用目录
 echo ""
@@ -106,31 +112,19 @@ echo ""
 echo "[5/8] 📦 安装 Python 依赖..."
 cd $APP_DIR
 
-if [ -n "$CONDA_PATH" ]; then
-    # 使用 conda 环境
-    source "$CONDA_PATH/etc/profile.d/conda.sh"
-    conda activate $CONDA_ENV_NAME
-    pip install --upgrade pip
-    pip install -r requirements.txt
-else
-    # 使用 venv
-    if [ -d "venv" ]; then
-        rm -rf venv
-    fi
-    $PYTHON_CMD -m venv venv
-    $APP_DIR/venv/bin/pip install --upgrade pip
-    $APP_DIR/venv/bin/pip install -r requirements.txt
-    GUNICORN_CMD="$APP_DIR/venv/bin/gunicorn"
-fi
+# 使用 conda 环境
+source "$CONDA_PATH/etc/profile.d/conda.sh"
+conda activate $CONDA_ENV_NAME
+pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
+pip install gunicorn -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 6. 配置 Supervisor
 echo ""
 echo "[6/8] ⚙️ 配置 Supervisor..."
 
-# 确定 gunicorn 路径
-if [ -n "$CONDA_PATH" ]; then
-    GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
-fi
+# gunicorn 路径
+GUNICORN_CMD="$CONDA_PATH/envs/$CONDA_ENV_NAME/bin/gunicorn"
 
 cat > /etc/supervisor/conf.d/$APP_NAME.conf <<EOF
 [program:$APP_NAME]
@@ -194,10 +188,8 @@ echo "📍 访问地址:"
 echo "   - 直接访问: http://服务器IP:$APP_PORT"
 echo "   - Nginx代理: http://服务器IP"
 echo ""
-if [ -n "$CONDA_PATH" ]; then
 echo "🐍 Conda 环境: $CONDA_ENV_NAME"
 echo "   - 激活环境: conda activate $CONDA_ENV_NAME"
-fi
 echo ""
 echo "🔧 常用命令:"
 echo "   - 查看状态: supervisorctl status $APP_NAME"

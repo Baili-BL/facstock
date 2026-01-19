@@ -26,26 +26,43 @@ echo "[Step 1] 📥 安装系统依赖..."
 apt update
 apt install -y git nginx supervisor ufw
 
-# 2. 检测 Anaconda
+# 2. 检测或安装 Miniconda
 echo ""
-echo "[Step 2] 🐍 检测 Anaconda..."
+echo "[Step 2] 🐍 检测 Conda 环境..."
 
 CONDA_PATH=""
-if [ -f "/root/anaconda3/bin/conda" ]; then
-    CONDA_PATH="/root/anaconda3"
-elif [ -f "/opt/anaconda3/bin/conda" ]; then
-    CONDA_PATH="/opt/anaconda3"
-elif [ -f "$HOME/anaconda3/bin/conda" ]; then
-    CONDA_PATH="$HOME/anaconda3"
-fi
+for path in "$HOME/miniconda" "/root/miniconda" "/root/miniconda3" "/root/anaconda3" "/opt/anaconda3" "$HOME/anaconda3"; do
+    if [ -d "$path" ] && [ -f "$path/bin/conda" ]; then
+        CONDA_PATH="$path"
+        break
+    fi
+done
 
 if [ -z "$CONDA_PATH" ]; then
-    echo "❌ 未检测到 Anaconda，请先安装 Anaconda"
-    exit 1
+    echo "⚠️ 未检测到 Conda，自动安装 Miniconda (Python 3.10)..."
+    
+    # 使用清华镜像下载 Miniconda
+    cd /tmp
+    wget -q --show-progress https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py310_23.1.0-1-Linux-x86_64.sh -O miniconda.sh
+    
+    # 静默安装
+    bash miniconda.sh -b -p $HOME/miniconda
+    rm miniconda.sh
+    
+    CONDA_PATH="$HOME/miniconda"
+    $CONDA_PATH/bin/conda init bash
+    
+    echo "✅ Miniconda 3.10 安装完成: $CONDA_PATH"
 fi
 
-echo "✅ 检测到 Anaconda: $CONDA_PATH"
+echo "✅ 使用 Conda: $CONDA_PATH"
+export PATH="$CONDA_PATH/bin:$PATH"
 source "$CONDA_PATH/etc/profile.d/conda.sh"
+
+# 配置清华镜像源加速
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+conda config --set show_channel_urls yes
 
 # 部署每个应用
 for app_config in "${APPS[@]}"; do
@@ -80,8 +97,9 @@ for app_config in "${APPS[@]}"; do
     # 安装依赖
     cd $APP_DIR
     conda activate $CONDA_ENV_NAME
-    pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/
+    pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
+    pip install gunicorn -i https://pypi.tuna.tsinghua.edu.cn/simple/
     conda deactivate
     
     # 配置 Supervisor
