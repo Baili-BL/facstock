@@ -21,12 +21,22 @@ echo "=========================================="
 echo "🚀 本地代码部署 $APP_NAME"
 echo "=========================================="
 
+# 创建应用目录
+mkdir -p $APP_DIR
+mkdir -p $APP_DIR/logs
+
 # 检查代码是否已上传
 if [ ! -f "$APP_DIR/app.py" ]; then
     echo "❌ 未检测到代码文件！"
     echo ""
     echo "请先在本地执行以下命令上传代码："
-    echo "  scp -r /path/to/facstock/* root@服务器IP:$APP_DIR/"
+    echo ""
+    echo "  1. 在服务器创建目录（已完成）: mkdir -p $APP_DIR"
+    echo ""
+    echo "  2. 在你的 Mac/本地电脑执行："
+    echo "     scp -r /path/to/facstock/* root@服务器IP:$APP_DIR/"
+    echo ""
+    echo "  3. 然后重新运行此脚本"
     echo ""
     exit 1
 fi
