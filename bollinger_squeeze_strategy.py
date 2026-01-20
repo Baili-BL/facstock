@@ -458,7 +458,10 @@ class BollingerSqueezeStrategy:
             return None
             
         except Exception as e:
-            # 静默处理错误，避免打印过多错误信息
+            # 打印错误信息以便调试
+            print(f"[ERROR] 分析股票 {stock_code} 出错: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
 

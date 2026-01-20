@@ -4,26 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>布林带收缩策略 | Bollinger Squeeze</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DIN+Alternate:wght@700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
     <style>
         :root {
-            --bg-primary: #0a0e17;
-            --bg-secondary: #111827;
-            --bg-card: #1a2332;
-            --bg-hover: #243048;
-            --accent-primary: #00d4aa;
-            --accent-secondary: #00b894;
-            --accent-warning: #f39c12;
-            --accent-danger: #e74c3c;
-            --accent-up: #ff4757;
-            --accent-down: #2ed573;
-            --text-primary: #e8eaed;
-            --text-secondary: #9ca3af;
-            --text-muted: #6b7280;
-            --border-color: #2d3748;
-            --glow-primary: rgba(0, 212, 170, 0.3);
+            --bg-primary: #f5f6fa;
+            --bg-white: #ffffff;
+            --bg-card: #ffffff;
+            --accent-red: #ff4757;
+            --accent-green: #2ed573;
+            --accent-orange: #ff6b35;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-gold: #f59e0b;
+            --text-primary: #1a1a2e;
+            --text-secondary: #64748b;
+            --text-muted: #94a3b8;
+            --border-color: #e2e8f0;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
         }
 
         * {
@@ -37,232 +37,348 @@
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
-            overflow-x: hidden;
-        }
-
-        /* 背景效果 */
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: 
-                radial-gradient(ellipse at 20% 20%, rgba(0, 212, 170, 0.08) 0%, transparent 50%),
-                radial-gradient(ellipse at 80% 80%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
-            pointer-events: none;
-            z-index: -1;
+            padding-bottom: 80px;
         }
 
         .container {
-            max-width: 600px;
+            max-width: 500px;
             margin: 0 auto;
-            padding: 12px;
         }
 
-        /* Header */
-        .header {
-            text-align: center;
-            padding: 16px 0;
-            border-bottom: 1px solid var(--border-color);
-            margin-bottom: 16px;
+        /* 顶部 Header */
+        .app-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 16px 16px 60px;
+            position: relative;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .app-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #fff;
         }
 
         .logo-icon {
-            width: 48px;
-            height: 48px;
-            background: linear-gradient(135deg, var(--accent-primary), #3b82f6);
+            width: 36px;
+            height: 36px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+
+        .logo-icon .material-symbols-rounded {
+            font-size: 22px;
+        }
+
+        .logo-text {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .header-time {
+            color: rgba(255,255,255,0.8);
+            font-size: 0.8rem;
+        }
+
+        /* 搜索框 */
+        .search-box {
+            background: rgba(255,255,255,0.15);
+            border-radius: 24px;
+            padding: 10px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: rgba(255,255,255,0.7);
+            font-size: 0.9rem;
+        }
+
+        /* 热点卡片 */
+        .hot-card {
+            background: var(--bg-white);
+            border-radius: 16px;
+            margin: -44px 12px 16px;
+            padding: 16px;
+            box-shadow: var(--shadow-md);
+            position: relative;
+        }
+
+        .hot-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .hot-badge {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+            color: #fff;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .hot-date {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .hot-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .hot-desc {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+
+        .hot-stats {
+            display: flex;
+            gap: 16px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .hot-stat {
+            flex: 1;
+        }
+
+        .hot-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .hot-stat-value {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--accent-red);
+        }
+
+        /* 功能入口 */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            padding: 0 12px;
+            margin-bottom: 16px;
+        }
+
+        .quick-action {
+            background: var(--bg-white);
+            border-radius: 12px;
+            padding: 16px 8px;
+            text-align: center;
+            box-shadow: var(--shadow-sm);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .quick-action:active {
+            transform: scale(0.95);
+        }
+
+        .quick-action-icon {
+            width: 44px;
+            height: 44px;
             border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
+            margin: 0 auto 8px;
+            color: #fff;
+        }
+
+        .quick-action-icon .material-symbols-rounded {
             font-size: 24px;
-            margin: 0 auto 12px;
-            box-shadow: 0 4px 20px var(--glow-primary);
         }
 
-        .logo-text h1 {
-            font-size: 1.3rem;
-            font-weight: 600;
-            background: linear-gradient(135deg, var(--accent-primary), #60a5fa);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
+        .quick-action-icon.scan { background: linear-gradient(135deg, #667eea, #764ba2); }
+        .quick-action-icon.hot { background: linear-gradient(135deg, #ff416c, #ff4b2b); }
+        .quick-action-icon.trend { background: linear-gradient(135deg, #11998e, #38ef7d); }
+        .quick-action-icon.star { background: linear-gradient(135deg, #f7971e, #ffd200); }
 
-        .logo-text p {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .header-time {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--text-muted);
+        .quick-action-text {
             font-size: 0.75rem;
-            margin-top: 8px;
+            color: var(--text-secondary);
         }
 
-        /* 控制面板 */
-        .control-panel {
-            background: var(--bg-card);
-            border-radius: 12px;
+        /* 板块卡片 */
+        .section-card {
+            background: var(--bg-white);
+            border-radius: 16px;
+            margin: 0 12px 16px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .section-more {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        /* 策略参数面板 */
+        .params-panel {
             padding: 16px;
-            margin-bottom: 16px;
-            border: 1px solid var(--border-color);
         }
 
-        .control-grid {
+        .params-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(2, 1fr);
             gap: 12px;
             margin-bottom: 12px;
         }
 
-        .control-group {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
+        .param-item {
+            background: var(--bg-primary);
+            border-radius: 10px;
+            padding: 12px;
         }
 
-        .control-group label {
-            color: var(--text-secondary);
-            font-size: 0.75rem;
+        .param-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
         }
 
-        .control-input {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 10px 12px;
-            color: var(--text-primary);
-            font-size: 0.95rem;
-            text-align: center;
-            font-family: 'JetBrains Mono', monospace;
+        .param-input {
             width: 100%;
+            background: transparent;
+            border: none;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: center;
         }
 
-        .control-input:focus {
+        .param-input:focus {
             outline: none;
-            border-color: var(--accent-primary);
         }
 
-        .filter-toggle {
-            margin-bottom: 12px;
-        }
-
-        .toggle-check {
-            display: none;
-        }
-
-        .toggle-label {
+        .filter-btn {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            cursor: pointer;
+            gap: 6px;
             padding: 10px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
+            background: var(--bg-primary);
+            border-radius: 10px;
             font-size: 0.85rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            margin-bottom: 12px;
+            border: 1px solid transparent;
             transition: all 0.2s;
         }
 
-        .toggle-check:checked + .toggle-label {
-            background: rgba(243, 156, 18, 0.15);
-            border-color: var(--accent-warning);
-            color: var(--accent-warning);
+        .filter-btn.active {
+            background: #fff5f5;
+            border-color: var(--accent-red);
+            color: var(--accent-red);
         }
 
-        .btn-primary {
+        .scan-btn {
             width: 100%;
             padding: 14px;
-            border-radius: 10px;
             border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
             font-size: 1rem;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            color: #000;
-            box-shadow: 0 4px 20px var(--glow-primary);
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 8px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
 
-        .btn-primary:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
+        .scan-btn:disabled {
+            opacity: 0.7;
         }
 
         /* 进度条 */
-        .progress-container {
+        .progress-bar-container {
             display: none;
             margin-top: 12px;
         }
 
-        .progress-container.active {
+        .progress-bar-container.active {
             display: block;
         }
 
         .progress-info {
             display: flex;
             justify-content: space-between;
+            font-size: 0.75rem;
             margin-bottom: 6px;
-            font-size: 0.8rem;
         }
 
         .progress-sector {
-            color: var(--accent-primary);
+            color: var(--accent-purple);
         }
 
-        .progress-percent {
-            color: var(--text-secondary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .progress-bar {
+        .progress-track {
             height: 4px;
-            background: var(--bg-secondary);
+            background: var(--bg-primary);
             border-radius: 2px;
             overflow: hidden;
         }
 
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, var(--accent-primary), #3b82f6);
-            transition: width 0.3s ease;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s;
         }
 
-        /* 板块横向滚动 */
-        .sectors-scroll {
-            background: var(--bg-card);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-
-        .sectors-header {
+        /* 热点板块标签 */
+        .sector-chips-container {
             padding: 12px 16px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.9rem;
-            font-weight: 500;
         }
 
         .sector-chips {
             display: flex;
             overflow-x: auto;
-            gap: 8px;
-            padding: 12px;
+            gap: 10px;
             -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
+            padding-bottom: 4px;
         }
 
         .sector-chips::-webkit-scrollbar {
@@ -271,15 +387,13 @@
 
         .sector-chip {
             flex-shrink: 0;
-            padding: 8px 14px;
-            background: var(--bg-secondary);
+            padding: 10px 16px;
+            background: linear-gradient(135deg, #f8f9fa, #fff);
             border: 1px solid var(--border-color);
             border-radius: 20px;
-            font-size: 0.85rem;
-            white-space: nowrap;
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -289,71 +403,77 @@
         }
 
         .sector-chip.active {
-            background: var(--accent-primary);
-            border-color: var(--accent-primary);
-            color: #000;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-color: transparent;
+            color: #fff;
+        }
+
+        .chip-name {
+            font-size: 0.9rem;
+            font-weight: 500;
         }
 
         .chip-change {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.75rem;
-            font-weight: 600;
+            font-size: 0.8rem;
+            font-weight: 700;
         }
 
-        .chip-change.up { color: var(--accent-up); }
-        .chip-change.down { color: var(--accent-down); }
-        .sector-chip.active .chip-change { color: #000; }
+        .chip-change.up { color: var(--accent-red); }
+        .chip-change.down { color: var(--accent-green); }
+        .sector-chip.active .chip-change { color: rgba(255,255,255,0.9); }
 
         .chip-count {
-            color: var(--text-muted);
             font-size: 0.7rem;
+            color: var(--text-muted);
+            background: var(--bg-primary);
+            padding: 2px 6px;
+            border-radius: 10px;
         }
-        .sector-chip.active .chip-count { color: rgba(0,0,0,0.6); }
+        .sector-chip.active .chip-count {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+        }
 
         /* 结果统计 */
-        .results-stats {
+        .results-summary {
             display: flex;
-            justify-content: center;
-            gap: 24px;
-            padding: 12px;
-            background: var(--bg-card);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 16px;
+            padding: 16px;
+            gap: 16px;
+            border-bottom: 1px solid var(--border-color);
         }
 
-        .stat-item {
+        .summary-item {
+            flex: 1;
             text-align: center;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 12px;
         }
 
-        .stat-value {
+        .summary-value {
             font-size: 1.5rem;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--accent-primary);
+            font-weight: 700;
+            color: var(--accent-purple);
+            font-family: 'DIN Alternate', sans-serif;
         }
 
-        .stat-label {
+        .summary-label {
             font-size: 0.7rem;
             color: var(--text-muted);
+            margin-top: 4px;
         }
 
-        /* 结果标题 */
-        .results-title {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            margin-bottom: 12px;
-            padding: 0 4px;
+        /* 股票卡片列表 */
+        .stock-list {
+            padding: 12px 16px;
         }
 
-        /* 股票卡片 */
         .stock-card {
             position: relative;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 12px;
+            background: var(--bg-primary);
+            border-radius: 14px;
+            padding: 14px;
+            margin-bottom: 10px;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -362,57 +482,66 @@
             transform: scale(0.98);
         }
 
+        .stock-card.top-1 { background: linear-gradient(135deg, #fff9e6, #fff3cc); border: 1px solid #ffd700; }
+        .stock-card.top-2 { background: linear-gradient(135deg, #f8f9fa, #e9ecef); border: 1px solid #c0c0c0; }
+        .stock-card.top-3 { background: linear-gradient(135deg, #fff5f0, #ffe8db); border: 1px solid #cd7f32; }
+
         .card-rank {
             position: absolute;
-            top: -8px;
-            left: -8px;
-            width: 28px;
-            height: 28px;
-            background: linear-gradient(135deg, var(--accent-primary), #3b82f6);
+            top: -6px;
+            left: -6px;
+            width: 26px;
+            height: 26px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 0.8rem;
-            color: #000;
-            box-shadow: 0 2px 8px var(--glow-primary);
+            font-size: 0.75rem;
+            color: #fff;
+            background: linear-gradient(135deg, #667eea, #764ba2);
         }
 
-        .card-header {
+        .stock-card.top-1 .card-rank { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; }
+        .stock-card.top-2 .card-rank { background: linear-gradient(135deg, #c0c0c0, #a8a8a8); }
+        .stock-card.top-3 .card-rank { background: linear-gradient(135deg, #cd7f32, #b8690f); }
+
+        .card-main {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 12px;
+            margin-bottom: 10px;
         }
 
-        .card-stock-name {
-            font-size: 1.05rem;
+        .stock-name {
+            font-size: 1rem;
             font-weight: 600;
+            margin-bottom: 2px;
         }
 
-        .card-stock-code {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--accent-primary);
-            font-size: 0.85rem;
+        .stock-code {
+            font-size: 0.75rem;
+            color: var(--text-muted);
         }
 
-        .card-price {
+        .stock-price {
+            text-align: right;
+        }
+
+        .price-value {
             font-size: 1.1rem;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            text-align: right;
+            font-weight: 700;
+            font-family: 'DIN Alternate', sans-serif;
         }
 
-        .card-change {
+        .price-change {
             font-size: 0.85rem;
-            font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
-            text-align: right;
+            font-family: 'DIN Alternate', sans-serif;
         }
 
-        .card-change.up { color: var(--accent-up); }
-        .card-change.down { color: var(--accent-down); }
+        .price-change.up { color: var(--accent-red); }
+        .price-change.down { color: var(--accent-green); }
 
         .card-metrics {
             display: grid;
@@ -421,22 +550,22 @@
             margin-bottom: 10px;
         }
 
-        .card-metric {
+        .metric-item {
             text-align: center;
-            background: var(--bg-secondary);
+            background: rgba(255,255,255,0.7);
             padding: 8px 4px;
             border-radius: 8px;
         }
 
-        .card-metric-value {
+        .metric-value {
             font-size: 0.9rem;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--accent-primary);
+            font-weight: 700;
+            color: var(--accent-purple);
+            font-family: 'DIN Alternate', sans-serif;
         }
 
-        .card-metric-label {
-            font-size: 0.65rem;
+        .metric-label {
+            font-size: 0.6rem;
             color: var(--text-muted);
             margin-top: 2px;
         }
@@ -447,27 +576,19 @@
             gap: 4px;
         }
 
-        .stock-tag {
-            display: inline-block;
-            font-size: 0.7rem;
-            padding: 2px 8px;
+        .tag {
+            font-size: 0.65rem;
+            padding: 3px 8px;
             border-radius: 10px;
             font-weight: 500;
-            white-space: nowrap;
         }
 
-        .tag-leader { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; font-weight: 600; }
-        .tag-hot { background: linear-gradient(135deg, #ff4757, #ff6b81); color: #fff; }
-        .tag-volume { background: rgba(243, 156, 18, 0.2); color: var(--accent-warning); }
-        .tag-grade-s { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; font-weight: 700; }
-        .tag-grade-a { background: linear-gradient(135deg, #00d4aa, #00b894); color: #000; }
-        .tag-trend { background: rgba(52, 152, 219, 0.2); color: #3498db; }
-        .tag-macd { background: rgba(46, 204, 113, 0.2); color: #2ecc71; }
-        .tag-gentle-up { background: linear-gradient(135deg, #74b9ff, #0984e3); color: #fff; }
-        .tag-super-popular { background: linear-gradient(135deg, #e74c3c, #c0392b); color: #fff; font-weight: 600; }
-        .tag-popular { background: linear-gradient(135deg, #e67e22, #d35400); color: #fff; }
-        .tag-watching { background: rgba(52, 152, 219, 0.2); color: #3498db; }
-        .tag-default { background: rgba(156, 163, 175, 0.2); color: var(--text-secondary); }
+        .tag-leader { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; }
+        .tag-hot { background: linear-gradient(135deg, #ff416c, #ff4b2b); color: #fff; }
+        .tag-volume { background: #fff5eb; color: #f59e0b; }
+        .tag-trend { background: #e0f2fe; color: #0284c7; }
+        .tag-gentle { background: #f0fdf4; color: #16a34a; }
+        .tag-default { background: #f1f5f9; color: #64748b; }
 
         /* 空状态 */
         .empty-state {
@@ -478,7 +599,6 @@
         .empty-icon {
             font-size: 3rem;
             margin-bottom: 16px;
-            opacity: 0.5;
         }
 
         .empty-title {
@@ -500,9 +620,8 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(0, 0, 0, 0.5);
             z-index: 1000;
-            overflow-y: auto;
         }
 
         .modal-overlay.active {
@@ -510,20 +629,25 @@
         }
 
         .modal {
-            background: var(--bg-card);
-            min-height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            overflow-y: auto;
         }
 
         .modal-header {
             padding: 16px;
-            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-white);
             display: flex;
             justify-content: space-between;
             align-items: center;
             position: sticky;
             top: 0;
-            background: var(--bg-card);
             z-index: 10;
+            border-bottom: 1px solid var(--border-color);
         }
 
         .modal-title h3 {
@@ -531,8 +655,7 @@
         }
 
         .modal-title .code {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--accent-primary);
+            color: var(--accent-purple);
             font-size: 0.9rem;
             margin-left: 8px;
         }
@@ -540,70 +663,76 @@
         .modal-close {
             background: none;
             border: none;
-            color: var(--text-secondary);
             font-size: 1.5rem;
+            color: var(--text-muted);
             cursor: pointer;
             padding: 8px;
-            line-height: 1;
         }
 
         .modal-body {
             padding: 16px;
         }
 
-        .chart-container {
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 12px;
+        .chart-card {
+            background: var(--bg-white);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
         }
 
-        .chart-container.chart-main {
-            height: 320px;
+        .chart-card.chart-main {
+            height: 360px;
+            padding-bottom: 24px;
         }
 
-        .chart-container.chart-main #mainChart {
-            height: 280px;
+        .chart-card.chart-main #mainChart {
+            height: 300px;
+            overflow: hidden;
         }
 
-        .chart-container.chart-bandwidth {
-            height: 180px;
+        .chart-card.chart-small {
+            height: 200px;
+            padding-bottom: 16px;
         }
 
-        .chart-container.chart-bandwidth canvas {
-            height: 140px !important;
+        .chart-card.chart-small #widthChart {
+            height: 140px;
         }
 
         .chart-title {
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             color: var(--text-secondary);
-            margin-bottom: 8px;
+            margin-bottom: 12px;
+            font-weight: 500;
         }
 
         .chart-notes {
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            padding: 14px;
-            font-size: 0.75rem;
-            line-height: 1.5;
+            background: var(--bg-white);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: var(--shadow-sm);
         }
 
         .note-title {
             font-weight: 600;
             color: var(--text-primary);
-            margin-bottom: 8px;
-            font-size: 0.8rem;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
         }
 
         .note-item {
             display: flex;
-            gap: 6px;
-            margin-bottom: 6px;
+            gap: 8px;
+            margin-bottom: 8px;
             color: var(--text-secondary);
+            font-size: 0.8rem;
+            line-height: 1.5;
         }
 
         .note-item strong {
-            color: var(--accent-primary);
+            color: var(--accent-purple);
         }
 
         /* 动画 */
@@ -624,90 +753,160 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
+
+        /* Material Icons */
+        .material-symbols-rounded {
+            font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+
+        .icon-sm { font-size: 18px; }
+        .icon-md { font-size: 24px; }
+        .icon-lg { font-size: 32px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="logo-icon">📊</div>
-            <div class="logo-text">
-                <h1>布林带收缩策略</h1>
-                <p>Bollinger Squeeze Scanner</p>
+        <!-- 顶部 Header -->
+        <header class="app-header">
+            <div class="header-top">
+                <div class="app-logo">
+                    <div class="logo-icon"><span class="material-symbols-rounded">candlestick_chart</span></div>
+                    <span class="logo-text">布林收缩</span>
+                </div>
+                <div class="header-time" id="currentTime"></div>
             </div>
-            <div class="header-time" id="currentTime"></div>
+            <div class="search-box">
+                <span class="material-symbols-rounded icon-sm">search</span>
+                <span>搜索股票代码或名称</span>
+            </div>
         </header>
 
-        <!-- 控制面板 -->
-        <section class="control-panel">
-            <div class="control-grid">
-                <div class="control-group">
-                    <label>热点板块数量</label>
-                    <input type="number" class="control-input" id="sectorsInput" value="5" min="1" max="20">
-                </div>
-                <div class="control-group">
-                    <label>最小收缩天数</label>
-                    <input type="number" class="control-input" id="minDaysInput" value="3" min="1" max="20">
-                </div>
-                <div class="control-group">
-                    <label>布林带周期</label>
-                    <input type="number" class="control-input" id="periodInput" value="20" min="5" max="50">
-                </div>
-                <div class="control-group">
-                    <label>放量倍数</label>
-                    <input type="number" class="control-input" id="volumeRatioInput" value="1.2" min="1" max="5" step="0.1">
-                </div>
+        <!-- 热点卡片 -->
+        <div class="hot-card" id="hotCard">
+            <div class="hot-card-header">
+                <span class="hot-badge"><span class="material-symbols-rounded icon-sm">trending_up</span> 策略信号</span>
+                <span class="hot-date" id="hotDate"></span>
             </div>
-            <div class="filter-toggle">
-                <input type="checkbox" id="volumeFilterCheck" class="toggle-check">
-                <label for="volumeFilterCheck" class="toggle-label">
-                    <span>🔥</span>
-                    <span>只看放量/量价齐升</span>
-                </label>
-            </div>
-            <button class="btn-primary" id="scanBtn" onclick="startScan()">
-                <span>🔍</span>
-                <span>开始扫描</span>
-            </button>
-            <div class="progress-container" id="progressContainer">
-                <div class="progress-info">
-                    <span class="progress-sector" id="progressSector">准备中...</span>
-                    <span class="progress-percent" id="progressPercent">0%</span>
+            <div class="hot-title">布林带收缩 · 蓄势待突破</div>
+            <div class="hot-desc">捕捉热点板块中布林带持续收窄的股票，等待方向选择后的爆发行情</div>
+            <div class="hot-stats">
+                <div class="hot-stat">
+                    <div class="hot-stat-label">今日热点板块</div>
+                    <div class="hot-stat-value" id="hotSectorCount">-</div>
                 </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                <div class="hot-stat">
+                    <div class="hot-stat-label">收缩信号股</div>
+                    <div class="hot-stat-value" id="hotStockCount">-</div>
                 </div>
-            </div>
-        </section>
-
-        <!-- 板块横向滚动 -->
-        <section class="sectors-scroll" id="sectorsSection" style="display: none;">
-            <div class="sectors-header">
-                <span>🔥</span>
-                <span>热点板块</span>
-            </div>
-            <div class="sector-chips" id="sectorChips"></div>
-        </section>
-
-        <!-- 结果统计 -->
-        <div class="results-stats" id="resultsStats" style="display: none;">
-            <div class="stat-item">
-                <div class="stat-value" id="totalStocks">0</div>
-                <div class="stat-label">收缩股票</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value" id="totalSectors">0</div>
-                <div class="stat-label">覆盖板块</div>
             </div>
         </div>
 
-        <!-- 结果区域 -->
-        <div id="resultsTitle" class="results-title" style="display: none;"></div>
-        <div id="resultsContent">
-            <div class="empty-state">
-                <div class="empty-icon">🎯</div>
-                <p class="empty-title">等待扫描</p>
-                <p class="empty-desc">设置参数后点击"开始扫描"</p>
+        <!-- 功能入口 -->
+        <div class="quick-actions">
+            <div class="quick-action" onclick="scrollToScan()">
+                <div class="quick-action-icon scan"><span class="material-symbols-rounded">radar</span></div>
+                <div class="quick-action-text">开始扫描</div>
+            </div>
+            <div class="quick-action">
+                <div class="quick-action-icon hot"><span class="material-symbols-rounded">local_fire_department</span></div>
+                <div class="quick-action-text">热点板块</div>
+            </div>
+            <div class="quick-action">
+                <div class="quick-action-icon trend"><span class="material-symbols-rounded">insights</span></div>
+                <div class="quick-action-text">趋势研判</div>
+            </div>
+            <div class="quick-action">
+                <div class="quick-action-icon star"><span class="material-symbols-rounded">star</span></div>
+                <div class="quick-action-text">我的自选</div>
+            </div>
+        </div>
+
+        <!-- 策略参数 -->
+        <div class="section-card" id="scanSection">
+            <div class="section-header">
+                <div class="section-title">
+                    <span class="material-symbols-rounded icon-sm">tune</span>
+                    <span>策略参数</span>
+                </div>
+            </div>
+            <div class="params-panel">
+                <div class="params-grid">
+                    <div class="param-item">
+                        <div class="param-label">热点板块数量</div>
+                        <input type="number" class="param-input" id="sectorsInput" value="5" min="1" max="20">
+                    </div>
+                    <div class="param-item">
+                        <div class="param-label">最小收缩天数</div>
+                        <input type="number" class="param-input" id="minDaysInput" value="3" min="1" max="20">
+                    </div>
+                    <div class="param-item">
+                        <div class="param-label">布林带周期</div>
+                        <input type="number" class="param-input" id="periodInput" value="20" min="5" max="50">
+                    </div>
+                    <div class="param-item">
+                        <div class="param-label">放量倍数</div>
+                        <input type="number" class="param-input" id="volumeRatioInput" value="1.2" min="1" max="5" step="0.1">
+                    </div>
+                </div>
+                <div class="filter-btn" id="volumeFilterBtn" onclick="toggleFilter()">
+                    <span class="material-symbols-rounded icon-sm">local_fire_department</span>
+                    <span>只看放量/量价齐升</span>
+                </div>
+                <button class="scan-btn" id="scanBtn" onclick="startScan()">
+                    <span class="material-symbols-rounded">rocket_launch</span>
+                    <span>开始扫描</span>
+                </button>
+                <div class="progress-bar-container" id="progressContainer">
+                    <div class="progress-info">
+                        <span class="progress-sector" id="progressSector">准备中...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 热点板块 -->
+        <div class="section-card" id="sectorsSection" style="display: none;">
+            <div class="section-header">
+                <div class="section-title">
+                    <span class="material-symbols-rounded icon-sm">whatshot</span>
+                    <span>热点板块</span>
+                </div>
+                <div class="section-more">滑动查看 <span class="material-symbols-rounded icon-sm">chevron_right</span></div>
+            </div>
+            <div class="sector-chips-container">
+                <div class="sector-chips" id="sectorChips"></div>
+            </div>
+        </div>
+
+        <!-- 扫描结果 -->
+        <div class="section-card" id="resultsSection" style="display: none;">
+            <div class="section-header">
+                <div class="section-title">
+                    <span class="material-symbols-rounded icon-sm">assignment</span>
+                    <span id="resultsTitle">扫描结果</span>
+                </div>
+            </div>
+            <div class="results-summary" id="resultsSummary">
+                <div class="summary-item">
+                    <div class="summary-value" id="totalStocks">0</div>
+                    <div class="summary-label">收缩股票</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-value" id="totalSectors">0</div>
+                    <div class="summary-label">覆盖板块</div>
+                </div>
+            </div>
+            <div class="stock-list" id="stockList">
+                <div class="empty-state">
+                    <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">target</span></div>
+                    <p class="empty-title">等待扫描</p>
+                    <p class="empty-desc">设置参数后点击"开始扫描"</p>
+                </div>
             </div>
         </div>
     </div>
@@ -723,35 +922,35 @@
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="chart-container chart-main">
-                    <div class="chart-title">📈 K线 · 布林带 · 成交量</div>
+                <div class="chart-card chart-main">
+                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">candlestick_chart</span> K线 · 布林带 · 成交量</div>
                     <div id="mainChart"></div>
                 </div>
-                <div class="chart-container chart-bandwidth">
-                    <div class="chart-title">📉 带宽收缩信号</div>
-                    <canvas id="widthChart"></canvas>
+                <div class="chart-card chart-small">
+                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">compress</span> 带宽收缩信号</div>
+                    <div id="widthChart"></div>
                 </div>
                 <div class="chart-notes">
-                    <div class="note-title">📖 信号解读</div>
+                    <div class="note-title"><span class="material-symbols-rounded icon-sm">menu_book</span> 信号解读</div>
                     <div class="note-item">
-                        <span>🔸</span>
+                        <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">fiber_manual_record</span>
                         <span><strong>带宽%</strong>：布林带上下轨距离占股价的百分比，越小表示波动越收窄</span>
                     </div>
                     <div class="note-item">
-                        <span>🔸</span>
+                        <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">fiber_manual_record</span>
                         <span><strong>MA5 &lt; MA10</strong>：5日带宽均线低于10日，表示正在收缩</span>
                     </div>
-                    <div class="note-title" style="margin-top: 10px;">💡 操作建议</div>
+                    <div class="note-title" style="margin-top: 12px;"><span class="material-symbols-rounded icon-sm">lightbulb</span> 操作建议</div>
                     <div class="note-item">
-                        <span>✅</span>
+                        <span class="material-symbols-rounded icon-sm" style="color: #22c55e;">check_circle</span>
                         <span>连续收缩多日 + 成交量萎缩 → 蓄势待发</span>
                     </div>
                     <div class="note-item">
-                        <span>✅</span>
+                        <span class="material-symbols-rounded icon-sm" style="color: #22c55e;">check_circle</span>
                         <span>带宽触底反弹 + 放量突破 → 买入信号</span>
                     </div>
                     <div class="note-item">
-                        <span>⚠️</span>
+                        <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">warning</span>
                         <span>收缩后可能向上或向下突破，需结合趋势判断</span>
                     </div>
                 </div>
@@ -765,20 +964,28 @@
         let mainChart = null;
         let widthChart = null;
         let pollInterval = null;
+        let volumeFilterEnabled = false;
 
         // 更新时间
         function updateTime() {
             const now = new Date();
             document.getElementById('currentTime').textContent = 
-                now.toLocaleString('zh-CN', { 
-                    month: '2-digit', 
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
+                now.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+            document.getElementById('hotDate').textContent = 
+                now.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
         }
         setInterval(updateTime, 1000);
         updateTime();
+
+        function scrollToScan() {
+            document.getElementById('scanSection').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function toggleFilter() {
+            volumeFilterEnabled = !volumeFilterEnabled;
+            document.getElementById('volumeFilterBtn').classList.toggle('active', volumeFilterEnabled);
+            if (currentSector) showSectorResults(currentSector);
+        }
 
         // 开始扫描
         async function startScan() {
@@ -788,7 +995,7 @@
 
             const btn = document.getElementById('scanBtn');
             btn.disabled = true;
-            btn.innerHTML = '<span class="loading">⏳</span><span>扫描中...</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded loading">hourglass_empty</span><span>扫描中...</span>';
 
             document.getElementById('progressContainer').classList.add('active');
             document.getElementById('progressFill').style.width = '0%';
@@ -815,7 +1022,6 @@
             }
         }
 
-        // 轮询扫描状态
         async function pollScanStatus() {
             try {
                 const response = await fetch('/api/scan/status');
@@ -840,13 +1046,13 @@
             }
         }
 
-        // 加载结果
         async function loadResults() {
             try {
                 const response = await fetch('/api/scan/results');
                 const data = await response.json();
 
                 if (data.success) {
+                    console.log('API返回数据:', data);
                     scanResults = data.results;
                     renderSectorChips(data.hot_sectors);
                     
@@ -859,15 +1065,17 @@
 
                     document.getElementById('totalStocks').textContent = totalStocks;
                     document.getElementById('totalSectors').textContent = totalSectors;
-                    document.getElementById('resultsStats').style.display = totalStocks > 0 ? 'flex' : 'none';
+                    document.getElementById('hotStockCount').textContent = totalStocks;
+                    document.getElementById('hotSectorCount').textContent = totalSectors;
+                    document.getElementById('resultsSection').style.display = 'block';
 
                     const sectorNames = Object.keys(scanResults);
                     if (sectorNames.length > 0) {
                         showSectorResults(sectorNames[0]);
                     } else {
-                        document.getElementById('resultsContent').innerHTML = `
+                        document.getElementById('stockList').innerHTML = `
                             <div class="empty-state">
-                                <div class="empty-icon">🔍</div>
+                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search_off</span></div>
                                 <p class="empty-title">未找到符合条件的股票</p>
                                 <p class="empty-desc">尝试调整参数后重新扫描</p>
                             </div>
@@ -879,10 +1087,12 @@
             }
         }
 
-        // 渲染板块标签
         function renderSectorChips(hotSectors) {
             const container = document.getElementById('sectorChips');
             const section = document.getElementById('sectorsSection');
+            
+            console.log('hotSectors:', hotSectors);
+            console.log('scanResults:', scanResults);
             
             if (!hotSectors || hotSectors.length === 0) {
                 section.style.display = 'none';
@@ -891,24 +1101,26 @@
 
             section.style.display = 'block';
             
+            // 显示所有板块，即使没有结果也显示
             container.innerHTML = hotSectors.map(sector => {
                 const result = scanResults[sector.name];
                 const count = result ? result.stocks.length : 0;
-                if (count === 0) return '';
                 
                 return `
-                    <div class="sector-chip" onclick="showSectorResults('${sector.name}')" data-sector="${sector.name}">
-                        <span>${sector.name}</span>
+                    <div class="sector-chip ${count > 0 ? '' : 'disabled'}" 
+                         onclick="${count > 0 ? `showSectorResults('${sector.name}')` : ''}" 
+                         data-sector="${sector.name}"
+                         style="${count === 0 ? 'opacity: 0.5;' : ''}">
+                        <span class="chip-name">${sector.name}</span>
                         <span class="chip-change ${sector.change >= 0 ? 'up' : 'down'}">
                             ${sector.change >= 0 ? '+' : ''}${sector.change.toFixed(1)}%
                         </span>
-                        <span class="chip-count">${count}只</span>
+                        <span class="chip-count">${count > 0 ? count + '只' : '无'}</span>
                     </div>
                 `;
-            }).filter(Boolean).join('');
+            }).join('');
         }
 
-        // 显示板块结果
         function showSectorResults(sectorName) {
             currentSector = sectorName;
             
@@ -922,25 +1134,24 @@
 
             const result = scanResults[sectorName];
             if (!result || !result.stocks.length) {
-                document.getElementById('resultsContent').innerHTML = `
+                document.getElementById('stockList').innerHTML = `
                     <div class="empty-state">
-                        <div class="empty-icon">📭</div>
+                        <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">inbox</span></div>
                         <p class="empty-title">该板块无收缩股票</p>
                     </div>
                 `;
                 return;
             }
 
-            const volumeFilter = document.getElementById('volumeFilterCheck').checked;
             let stocks = result.stocks;
-            if (volumeFilter) {
+            if (volumeFilterEnabled) {
                 stocks = stocks.filter(s => s.is_volume_up || s.is_volume_price_up);
             }
 
             if (stocks.length === 0) {
-                document.getElementById('resultsContent').innerHTML = `
+                document.getElementById('stockList').innerHTML = `
                     <div class="empty-state">
-                        <div class="empty-icon">📭</div>
+                        <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">filter_alt_off</span></div>
                         <p class="empty-title">该板块无放量/量价齐升股票</p>
                         <p class="empty-desc">取消筛选可查看全部</p>
                     </div>
@@ -948,61 +1159,54 @@
                 return;
             }
 
-            const filterText = volumeFilter ? ' (放量/量价齐升)' : '';
-            document.getElementById('resultsTitle').style.display = 'block';
-            document.getElementById('resultsTitle').textContent = `📋 ${sectorName} - ${stocks.length}只收缩股票${filterText}`;
+            document.getElementById('resultsTitle').textContent = `${sectorName} · ${stocks.length}只`;
 
-            document.getElementById('resultsContent').innerHTML = stocks.map((stock, index) => {
+            document.getElementById('stockList').innerHTML = stocks.map((stock, index) => {
                 const tags = stock.tags || [];
                 const tagsHtml = tags.slice(0, 4).map(tag => {
                     let tagClass = 'tag-default';
-                    if (tag.includes('S级')) tagClass = 'tag-grade-s';
-                    else if (tag.includes('A级')) tagClass = 'tag-grade-a';
-                    else if (tag.includes('中军')) tagClass = 'tag-leader';
-                    else if (tag.includes('多头') || tag.includes('短多')) tagClass = 'tag-trend';
-                    else if (tag.includes('MACD')) tagClass = 'tag-macd';
-                    else if (tag === '平稳上行') tagClass = 'tag-gentle-up';
+                    if (tag.includes('中军')) tagClass = 'tag-leader';
                     else if (tag === '量价齐升') tagClass = 'tag-hot';
                     else if (tag === '放量') tagClass = 'tag-volume';
-                    else if (tag.includes('超人气')) tagClass = 'tag-super-popular';
-                    else if (tag.includes('人气旺')) tagClass = 'tag-popular';
-                    else if (tag.includes('有关注')) tagClass = 'tag-watching';
-                    return `<span class="stock-tag ${tagClass}">${tag}</span>`;
+                    else if (tag.includes('多头') || tag.includes('短多')) tagClass = 'tag-trend';
+                    else if (tag === '平稳上行') tagClass = 'tag-gentle';
+                    return `<span class="tag ${tagClass}">${tag}</span>`;
                 }).join('');
                 
+                const topClass = index === 0 ? 'top-1' : index === 1 ? 'top-2' : index === 2 ? 'top-3' : '';
                 const volumeRatio = stock.volume_ratio || 0;
                 
                 return `
-                    <div class="stock-card fade-in" onclick="showStockDetail('${stock.code}', '${stock.name}')">
+                    <div class="stock-card ${topClass} fade-in" onclick="showStockDetail('${stock.code}', '${stock.name}')">
                         <div class="card-rank">${index + 1}</div>
-                        <div class="card-header">
+                        <div class="card-main">
                             <div>
-                                <div class="card-stock-name">${stock.name}</div>
-                                <div class="card-stock-code">${stock.code}</div>
+                                <div class="stock-name">${stock.name}</div>
+                                <div class="stock-code">${stock.code}</div>
                             </div>
-                            <div>
-                                <div class="card-price">${stock.close.toFixed(2)}</div>
-                                <div class="card-change ${stock.pct_change >= 0 ? 'up' : 'down'}">
+                            <div class="stock-price">
+                                <div class="price-value">${stock.close.toFixed(2)}</div>
+                                <div class="price-change ${stock.pct_change >= 0 ? 'up' : 'down'}">
                                     ${stock.pct_change >= 0 ? '+' : ''}${stock.pct_change.toFixed(2)}%
                                 </div>
                             </div>
                         </div>
                         <div class="card-metrics">
-                            <div class="card-metric">
-                                <div class="card-metric-value" style="color: ${stock.grade === 'S' ? '#ffd700' : stock.grade === 'A' ? '#00d4aa' : 'inherit'}">${stock.total_score || 0}</div>
-                                <div class="card-metric-label">${stock.grade || 'C'}级</div>
+                            <div class="metric-item">
+                                <div class="metric-value">${stock.total_score || 0}</div>
+                                <div class="metric-label">${stock.grade || 'C'}级评分</div>
                             </div>
-                            <div class="card-metric">
-                                <div class="card-metric-value">${stock.bb_width_pct.toFixed(1)}%</div>
-                                <div class="card-metric-label">带宽</div>
+                            <div class="metric-item">
+                                <div class="metric-value">${stock.bb_width_pct.toFixed(1)}%</div>
+                                <div class="metric-label">带宽</div>
                             </div>
-                            <div class="card-metric">
-                                <div class="card-metric-value">${stock.squeeze_days}天</div>
-                                <div class="card-metric-label">收缩</div>
+                            <div class="metric-item">
+                                <div class="metric-value">${stock.squeeze_days}天</div>
+                                <div class="metric-label">收缩</div>
                             </div>
-                            <div class="card-metric">
-                                <div class="card-metric-value">${volumeRatio.toFixed(1)}</div>
-                                <div class="card-metric-label">量比</div>
+                            <div class="metric-item">
+                                <div class="metric-value">${volumeRatio.toFixed(1)}</div>
+                                <div class="metric-label">量比</div>
                             </div>
                         </div>
                         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
@@ -1011,7 +1215,6 @@
             }).join('');
         }
 
-        // 显示股票详情
         async function showStockDetail(code, name) {
             document.getElementById('modalStockName').textContent = name;
             document.getElementById('modalStockCode').textContent = code;
@@ -1032,13 +1235,9 @@
             }
         }
 
-        // 渲染图表
         function renderCharts(data) {
-            if (mainChart) {
-                mainChart.remove();
-                mainChart = null;
-            }
-            if (widthChart) widthChart.destroy();
+            if (mainChart) { mainChart.remove(); mainChart = null; }
+            if (widthChart) { widthChart.remove(); widthChart = null; }
 
             document.getElementById('mainChart').innerHTML = '';
 
@@ -1047,15 +1246,25 @@
                 width: mainContainer.clientWidth,
                 height: 280,
                 layout: {
-                    background: { type: 'solid', color: 'transparent' },
-                    textColor: '#9ca3af',
+                    background: { type: 'solid', color: '#ffffff' },
+                    textColor: '#64748b',
                 },
                 grid: {
-                    vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
-                    horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                    vertLines: { color: '#f1f5f9' },
+                    horzLines: { color: '#f1f5f9' },
                 },
-                rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.1)' },
-                timeScale: { borderColor: 'rgba(255, 255, 255, 0.1)', timeVisible: true },
+                rightPriceScale: { 
+                    borderColor: '#e2e8f0',
+                    scaleMargins: { top: 0.1, bottom: 0.2 },
+                },
+                timeScale: { 
+                    borderColor: '#e2e8f0', 
+                    timeVisible: true,
+                    fixLeftEdge: true,
+                    fixRightEdge: true,
+                    rightOffset: 0,
+                    barSpacing: 8,
+                },
             });
 
             const volumeSeries = mainChart.addSeries(LightweightCharts.HistogramSeries, {
@@ -1094,52 +1303,85 @@
             bbLowerSeries.setData(data.bb_lower);
 
             mainChart.timeScale().fitContent();
+            mainChart.timeScale().scrollToRealTime();
 
-            const ctx2 = document.getElementById('widthChart').getContext('2d');
-            widthChart = new Chart(ctx2, {
-                type: 'line',
-                data: {
-                    labels: data.dates,
-                    datasets: [
-                        { label: '带宽%', data: data.bb_width, borderColor: '#8b5cf6', backgroundColor: 'rgba(139, 92, 246, 0.1)', fill: true, tension: 0.1, pointRadius: 0 },
-                        { label: 'MA5', data: data.width_ma5, borderColor: '#f39c12', fill: false, tension: 0.1, pointRadius: 0 },
-                        { label: 'MA10', data: data.width_ma10, borderColor: '#3b82f6', fill: false, tension: 0.1, pointRadius: 0 }
-                    ]
+            // 带宽收缩图 - 使用 Lightweight Charts
+            const widthContainer = document.getElementById('widthChart');
+            widthContainer.innerHTML = '';
+            widthChart = LightweightCharts.createChart(widthContainer, {
+                width: widthContainer.clientWidth,
+                height: 140,
+                layout: {
+                    background: { type: 'solid', color: '#ffffff' },
+                    textColor: '#64748b',
                 },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { labels: { color: '#9ca3af', font: { size: 10 } } } },
-                    scales: {
-                        x: { ticks: { color: '#6b7280', maxTicksLimit: 6, font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-                        y: { ticks: { color: '#6b7280', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
-                    }
-                }
+                grid: {
+                    vertLines: { color: '#f1f5f9' },
+                    horzLines: { color: '#f1f5f9' },
+                },
+                rightPriceScale: { borderColor: '#e2e8f0' },
+                timeScale: { 
+                    borderColor: '#e2e8f0', 
+                    timeVisible: false,
+                    fixLeftEdge: true,
+                    fixRightEdge: true,
+                    rightOffset: 0,
+                },
             });
+
+            // 转换数据格式为 Lightweight Charts 格式
+            const widthData = data.dates.map((date, i) => ({ time: date, value: data.bb_width[i] }));
+            const ma5Data = data.dates.map((date, i) => ({ time: date, value: data.width_ma5[i] }));
+            const ma10Data = data.dates.map((date, i) => ({ time: date, value: data.width_ma10[i] }));
+
+            // 带宽% - 紫色区域
+            const widthSeries = widthChart.addSeries(LightweightCharts.AreaSeries, {
+                lineColor: '#8b5cf6',
+                topColor: 'rgba(139, 92, 246, 0.3)',
+                bottomColor: 'rgba(139, 92, 246, 0.05)',
+                lineWidth: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            });
+            widthSeries.setData(widthData);
+
+            // MA5 - 橙色线
+            const ma5Series = widthChart.addSeries(LightweightCharts.LineSeries, {
+                color: '#f59e0b',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            });
+            ma5Series.setData(ma5Data);
+
+            // MA10 - 蓝色线
+            const ma10Series = widthChart.addSeries(LightweightCharts.LineSeries, {
+                color: '#3b82f6',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            });
+            ma10Series.setData(ma10Data);
+
+            widthChart.timeScale().fitContent();
         }
 
-        // 关闭模态框
         function closeModal() {
             document.getElementById('stockModal').classList.remove('active');
             document.body.style.overflow = '';
             if (mainChart) { mainChart.remove(); mainChart = null; }
-            if (widthChart) { widthChart.destroy(); widthChart = null; }
+            if (widthChart) { widthChart.remove(); widthChart = null; }
         }
 
-        // 重置扫描按钮
         function resetScanButton() {
             const btn = document.getElementById('scanBtn');
             btn.disabled = false;
-            btn.innerHTML = '<span>🔍</span><span>开始扫描</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span><span>开始扫描</span>';
         }
 
-        // 事件监听
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
         document.getElementById('stockModal').addEventListener('click', (e) => {
             if (e.target.classList.contains('modal-overlay')) closeModal();
-        });
-        document.getElementById('volumeFilterCheck').addEventListener('change', () => {
-            if (currentSector) showSectorResults(currentSector);
         });
     </script>
 </body>

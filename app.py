@@ -96,6 +96,7 @@ def analyze_single_stock(strategy, stock_info):
         name = stock_info['name']
         result = strategy.analyze_stock(code, name)
         if result:
+            # print(f"[DEBUG] 股票 {code} {name} 符合条件")
             # 添加标签信息
             result['is_leader'] = stock_info.get('is_leader', False)
             result['leader_rank'] = stock_info.get('leader_rank', 0)
@@ -166,6 +167,8 @@ def run_scan(top_sectors: int, min_days: int, period: int):
     MAX_WORKERS = 10
     
     try:
+        print(f"[DEBUG] 开始扫描: top_sectors={top_sectors}, min_days={min_days}, period={period}")
+        
         strategy = BollingerSqueezeStrategy(
             period=period,
             min_squeeze_days=min_days
@@ -173,7 +176,10 @@ def run_scan(top_sectors: int, min_days: int, period: int):
         
         # 获取热点板块
         try:
+            print("[DEBUG] 正在获取热点板块...")
             df = ak.stock_board_industry_name_em()
+            print(f"[DEBUG] 获取到板块数据: {len(df) if df is not None else 0} 条")
+            
             if df is not None and len(df) > 0:
                 df = df.sort_values(by='涨跌幅', ascending=False)
                 hot_sectors_df = df.head(top_sectors)
@@ -182,13 +188,16 @@ def run_scan(top_sectors: int, min_days: int, period: int):
                     {'name': row['板块名称'], 'change': round(row['涨跌幅'], 2)}
                     for _, row in hot_sectors_df.iterrows()
                 ]
+                print(f"[DEBUG] 热点板块: {[s['name'] for s in scan_status['hot_sectors']]}")
             else:
                 scan_status['error'] = '无法获取热点板块'
                 scan_status['is_scanning'] = False
+                print("[DEBUG] 无法获取热点板块数据")
                 return
         except Exception as e:
             scan_status['error'] = f'获取热点板块失败: {str(e)}'
             scan_status['is_scanning'] = False
+            print(f"[DEBUG] 获取热点板块异常: {e}")
             return
         
         total_sectors = len(scan_status['hot_sectors'])
@@ -198,11 +207,16 @@ def run_scan(top_sectors: int, min_days: int, period: int):
             scan_status['current_sector'] = f"{sector_name} (并发分析中...)"
             scan_status['progress'] = int((i / total_sectors) * 100)
             
+            print(f"[DEBUG] 扫描板块 {i+1}/{total_sectors}: {sector_name}")
+            
             try:
                 # 获取成分股（含市值信息）
                 stocks_df = ak.stock_board_industry_cons_em(symbol=sector_name)
                 if stocks_df is None or stocks_df.empty:
+                    print(f"[DEBUG] 板块 {sector_name} 无成分股数据")
                     continue
+                
+                print(f"[DEBUG] 板块 {sector_name} 有 {len(stocks_df)} 只成分股")
                 
                 # 构建股票信息列表
                 stocks = []
@@ -243,6 +257,8 @@ def run_scan(top_sectors: int, min_days: int, period: int):
                         if result:
                             sector_results.append(result)
                 
+                print(f"[DEBUG] 板块 {sector_name} 分析完成，符合条件: {len(sector_results)} 只")
+                
                 if sector_results:
                     # 按综合评分从高到低排序
                     sector_results.sort(key=lambda x: x.get('total_score', 0), reverse=True)
@@ -252,6 +268,7 @@ def run_scan(top_sectors: int, min_days: int, period: int):
                     }
                     
             except Exception as e:
+                print(f"[DEBUG] 板块 {sector_name} 扫描异常: {e}")
                 continue
         
         scan_status['progress'] = 100
