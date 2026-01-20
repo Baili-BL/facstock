@@ -588,7 +588,20 @@
         .tag-volume { background: #fff5eb; color: #f59e0b; }
         .tag-trend { background: #e0f2fe; color: #0284c7; }
         .tag-gentle { background: #f0fdf4; color: #16a34a; }
+        .tag-popular { background: #fef2f2; color: #ef4444; }
+        .tag-watched { background: #eff6ff; color: #3b82f6; }
+        .tag-grade { background: #fefce8; color: #ca8a04; }
         .tag-default { background: #f1f5f9; color: #64748b; }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .tag-icon {
+            font-size: 11px;
+        }
 
         /* 空状态 */
         .empty-state {
@@ -763,6 +776,89 @@
         .icon-sm { font-size: 18px; }
         .icon-md { font-size: 24px; }
         .icon-lg { font-size: 32px; }
+
+        /* 底部 Tab 导航 - 京东金融风格 */
+        .bottom-tab-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-white);
+            display: flex;
+            justify-content: space-around;
+            align-items: flex-end;
+            padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+            z-index: 1000;
+            box-shadow: 0 -1px 0 rgba(0,0,0,0.05);
+        }
+
+        .tab-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            padding: 4px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 56px;
+        }
+
+        .tab-item .tab-icon {
+            font-size: 26px;
+            color: #999;
+            transition: all 0.2s ease;
+        }
+
+        .tab-item .tab-label {
+            font-size: 10px;
+            color: #999;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .tab-item.active .tab-icon {
+            color: var(--accent-red);
+        }
+
+        .tab-item.active .tab-label {
+            color: var(--accent-red);
+            font-weight: 600;
+        }
+
+        .tab-item:active {
+            opacity: 0.7;
+        }
+
+        /* 中间扫描按钮特殊样式 */
+        .tab-item.tab-center {
+            position: relative;
+        }
+
+        .tab-item.tab-center .tab-icon-wrapper {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #ff4757 0%, #ff6b81 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 2px;
+            box-shadow: 0 4px 12px rgba(255, 71, 87, 0.35);
+        }
+
+        .tab-item.tab-center .tab-icon {
+            color: #fff !important;
+            font-size: 24px;
+        }
+
+        .tab-item.tab-center .tab-label {
+            color: var(--accent-red);
+            font-weight: 600;
+        }
+
+        .tab-item.tab-center:active .tab-icon-wrapper {
+            transform: scale(0.95);
+        }
     </style>
 </head>
 <body>
@@ -910,6 +1006,32 @@
             </div>
         </div>
     </div>
+
+    <!-- 底部 Tab 导航栏 -->
+    <nav class="bottom-tab-bar">
+        <div class="tab-item active" onclick="switchTab(this, 'home')">
+            <span class="material-symbols-rounded tab-icon">home</span>
+            <span class="tab-label">首页</span>
+        </div>
+        <div class="tab-item" onclick="switchTab(this, 'strategy')">
+            <span class="material-symbols-rounded tab-icon">insights</span>
+            <span class="tab-label">策略</span>
+        </div>
+        <div class="tab-item tab-center" onclick="startScan()">
+            <div class="tab-icon-wrapper">
+                <span class="material-symbols-rounded tab-icon">radar</span>
+            </div>
+            <span class="tab-label">扫描</span>
+        </div>
+        <div class="tab-item" onclick="switchTab(this, 'watchlist')">
+            <span class="material-symbols-rounded tab-icon">star</span>
+            <span class="tab-label">自选</span>
+        </div>
+        <div class="tab-item" onclick="switchTab(this, 'me')">
+            <span class="material-symbols-rounded tab-icon">person</span>
+            <span class="tab-label">我的</span>
+        </div>
+    </nav>
 
     <!-- 股票详情模态框 -->
     <div class="modal-overlay" id="stockModal">
@@ -1165,12 +1287,36 @@
                 const tags = stock.tags || [];
                 const tagsHtml = tags.slice(0, 4).map(tag => {
                     let tagClass = 'tag-default';
-                    if (tag.includes('中军')) tagClass = 'tag-leader';
-                    else if (tag === '量价齐升') tagClass = 'tag-hot';
-                    else if (tag === '放量') tagClass = 'tag-volume';
-                    else if (tag.includes('多头') || tag.includes('短多')) tagClass = 'tag-trend';
-                    else if (tag === '平稳上行') tagClass = 'tag-gentle';
-                    return `<span class="tag ${tagClass}">${tag}</span>`;
+                    let tagIcon = '';
+                    
+                    if (tag.includes('中军')) {
+                        tagClass = 'tag-leader';
+                        tagIcon = 'military_tech';
+                    } else if (tag === '量价齐升') {
+                        tagClass = 'tag-hot';
+                        tagIcon = 'local_fire_department';
+                    } else if (tag === '放量') {
+                        tagClass = 'tag-volume';
+                        tagIcon = 'equalizer';
+                    } else if (tag.includes('多头') || tag.includes('短多')) {
+                        tagClass = 'tag-trend';
+                        tagIcon = 'trending_up';
+                    } else if (tag === '平稳上行') {
+                        tagClass = 'tag-gentle';
+                        tagIcon = 'show_chart';
+                    } else if (tag === '人气旺') {
+                        tagClass = 'tag-popular';
+                        tagIcon = 'whatshot';
+                    } else if (tag === '有关注') {
+                        tagClass = 'tag-watched';
+                        tagIcon = 'visibility';
+                    } else if (tag.includes('级')) {
+                        tagClass = 'tag-grade';
+                        tagIcon = 'grade';
+                    }
+                    
+                    const iconHtml = tagIcon ? `<span class="material-symbols-rounded tag-icon">${tagIcon}</span>` : '';
+                    return `<span class="tag ${tagClass}">${iconHtml}${tag}</span>`;
                 }).join('');
                 
                 const topClass = index === 0 ? 'top-1' : index === 1 ? 'top-2' : index === 2 ? 'top-3' : '';
@@ -1371,6 +1517,49 @@
             document.body.style.overflow = '';
             if (mainChart) { mainChart.remove(); mainChart = null; }
             if (widthChart) { widthChart.remove(); widthChart = null; }
+        }
+
+        // Tab 切换
+        function switchTab(element, tabName) {
+            document.querySelectorAll('.tab-item:not(.tab-center)').forEach(tab => tab.classList.remove('active'));
+            element.classList.add('active');
+            
+            if (tabName === 'home') {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            } else if (tabName === 'strategy') {
+                document.querySelector('.quick-actions')?.scrollIntoView({ behavior: 'smooth' });
+            } else if (tabName === 'watchlist') {
+                showToast('自选功能开发中...');
+            } else if (tabName === 'me') {
+                showToast('个人中心开发中...');
+            }
+        }
+
+        // Toast 提示
+        function showToast(message) {
+            let toast = document.getElementById('toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast';
+                toast.style.cssText = `
+                    position: fixed;
+                    bottom: 120px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background: rgba(0,0,0,0.75);
+                    color: #fff;
+                    padding: 12px 24px;
+                    border-radius: 24px;
+                    font-size: 14px;
+                    z-index: 9999;
+                    opacity: 0;
+                    transition: opacity 0.3s ease;
+                `;
+                document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            toast.style.opacity = '1';
+            setTimeout(() => { toast.style.opacity = '0'; }, 2000);
         }
 
         function resetScanButton() {
