@@ -178,6 +178,12 @@ class BollingerSqueezeStrategy:
         # 价格站上MA20
         df['above_ma20'] = df['close'] > df['ma20']
         
+        # MA20斜率 = (今日MA20 - 5日前MA20) / 5日前MA20 / 5 * 100 (百分比/日)
+        df['ma20_slope'] = (df['ma20'] - df['ma20'].shift(5)) / df['ma20'].shift(5) / 5 * 100
+        
+        # 平稳上行: 斜率 > 0 且 < 0.05
+        df['ma20_gentle_up'] = (df['ma20_slope'] > 0) & (df['ma20_slope'] < 0.05)
+        
         # ===== 2. 价格位置 =====
         # 价格在布林带中轨上方
         df['above_bb_middle'] = df['close'] > df['bb_middle']
@@ -425,6 +431,8 @@ class BollingerSqueezeStrategy:
                     'ma_bullish': bool(latest['ma_bullish']) if pd.notna(latest['ma_bullish']) else False,
                     'ma_full_bullish': bool(latest['ma_full_bullish']) if pd.notna(latest['ma_full_bullish']) else False,
                     'above_ma20': bool(latest['above_ma20']) if pd.notna(latest['above_ma20']) else False,
+                    'ma20_slope': round(latest['ma20_slope'], 4) if pd.notna(latest['ma20_slope']) else 0,
+                    'ma20_gentle_up': bool(latest['ma20_gentle_up']) if pd.notna(latest['ma20_gentle_up']) else False,
                     'above_bb_middle': bool(latest['above_bb_middle']) if pd.notna(latest['above_bb_middle']) else False,
                     'bb_position': round(latest['bb_position'] * 100, 1) if pd.notna(latest['bb_position']) else 50,
                     # MACD指标
@@ -588,6 +596,9 @@ class HotSectorScanner:
                         tags.append("先锋")
                     if result.get('turnover', 0) >= 10:
                         tags.append("人气")
+                    # MA20平稳上行: 斜率 > 0 且 < 0.05
+                    if result.get('ma20_gentle_up'):
+                        tags.append("平稳上行")
                     result['tags'] = tags
                     
                     sector_results.append(result)
