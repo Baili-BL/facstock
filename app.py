@@ -5,23 +5,24 @@
 """
 
 from flask import Flask, render_template, jsonify, request
-from bollinger_squeeze_strategy import BollingerSqueezeStrategy, HotSectorScanner
+from bollinger_squeeze_strategy import BollingerSqueezeStrategy, HotSectorScanner, retry_request
 import akshare as ak
 import pandas as pd
 from datetime import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 导入数据库模块
+import database as db
+
 app = Flask(__name__)
 
-# 全局变量存储扫描状态和结果
+# 全局变量存储当前扫描状态（用于实时进度查询）
 scan_status = {
     'is_scanning': False,
+    'scan_id': None,
     'progress': 0,
     'current_sector': '',
-    'results': {},
-    'hot_sectors': [],
-    'last_update': None,
     'error': None
 }
 
@@ -36,7 +37,7 @@ def index():
 def get_hot_sectors():
     """获取热点板块列表"""
     try:
-        df = ak.stock_board_industry_name_em()
+        df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
         if df is not None and len(df) > 0:
             df = df.sort_values(by='涨跌幅', ascending=False)
             sectors = []
@@ -67,26 +68,32 @@ def start_scan():
     min_days = data.get('min_days', 3)
     period = data.get('period', 20)
     
+    # 创建数据库记录
+    params = {
+        'sectors': top_sectors,
+        'min_days': min_days,
+        'period': period
+    }
+    scan_id = db.create_scan_record(params)
+    
     # 重置状态
     scan_status = {
         'is_scanning': True,
+        'scan_id': scan_id,
         'progress': 0,
         'current_sector': '准备中...',
-        'results': {},
-        'hot_sectors': [],
-        'last_update': None,
         'error': None
     }
     
     # 在后台线程执行扫描
     thread = threading.Thread(
         target=run_scan,
-        args=(top_sectors, min_days, period)
+        args=(scan_id, top_sectors, min_days, period)
     )
     thread.daemon = True
     thread.start()
     
-    return jsonify({'success': True, 'message': '扫描已开始'})
+    return jsonify({'success': True, 'message': '扫描已开始', 'scan_id': scan_id})
 
 
 def analyze_single_stock(strategy, stock_info):
@@ -159,15 +166,18 @@ def analyze_single_stock(strategy, stock_info):
     return None
 
 
-def run_scan(top_sectors: int, min_days: int, period: int):
-    """执行扫描任务（并发版本）"""
+def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
+    """执行扫描任务（并发版本），结果保存到数据库"""
     global scan_status
     
     # 并发线程数
     MAX_WORKERS = 10
     
+    # 用于临时存储热点板块信息
+    hot_sectors_list = []
+    
     try:
-        print(f"[DEBUG] 开始扫描: top_sectors={top_sectors}, min_days={min_days}, period={period}")
+        print(f"[DEBUG] 开始扫描: scan_id={scan_id}, top_sectors={top_sectors}, min_days={min_days}, period={period}")
         
         strategy = BollingerSqueezeStrategy(
             period=period,
@@ -177,41 +187,58 @@ def run_scan(top_sectors: int, min_days: int, period: int):
         # 获取热点板块
         try:
             print("[DEBUG] 正在获取热点板块...")
-            df = ak.stock_board_industry_name_em()
+            df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
             print(f"[DEBUG] 获取到板块数据: {len(df) if df is not None else 0} 条")
             
             if df is not None and len(df) > 0:
                 df = df.sort_values(by='涨跌幅', ascending=False)
                 hot_sectors_df = df.head(top_sectors)
                 
-                scan_status['hot_sectors'] = [
+                hot_sectors_list = [
                     {'name': row['板块名称'], 'change': round(row['涨跌幅'], 2)}
                     for _, row in hot_sectors_df.iterrows()
                 ]
-                print(f"[DEBUG] 热点板块: {[s['name'] for s in scan_status['hot_sectors']]}")
+                
+                # 保存热点板块到数据库
+                db.save_hot_sectors(scan_id, hot_sectors_list)
+                
+                print(f"[DEBUG] 热点板块: {[s['name'] for s in hot_sectors_list]}")
             else:
-                scan_status['error'] = '无法获取热点板块'
+                error_msg = '无法获取热点板块'
+                scan_status['error'] = error_msg
                 scan_status['is_scanning'] = False
+                db.update_scan_status(scan_id, 'error', error_msg)
                 print("[DEBUG] 无法获取热点板块数据")
                 return
         except Exception as e:
-            scan_status['error'] = f'获取热点板块失败: {str(e)}'
+            error_msg = f'获取热点板块失败: {str(e)}'
+            scan_status['error'] = error_msg
             scan_status['is_scanning'] = False
+            db.update_scan_status(scan_id, 'error', error_msg)
             print(f"[DEBUG] 获取热点板块异常: {e}")
             return
         
-        total_sectors = len(scan_status['hot_sectors'])
+        total_sectors = len(hot_sectors_list)
         
-        for i, sector in enumerate(scan_status['hot_sectors']):
+        for i, sector in enumerate(hot_sectors_list):
             sector_name = sector['name']
+            progress = int((i / total_sectors) * 100)
+            
             scan_status['current_sector'] = f"{sector_name} (并发分析中...)"
-            scan_status['progress'] = int((i / total_sectors) * 100)
+            scan_status['progress'] = progress
+            
+            # 更新数据库进度
+            db.update_scan_progress(scan_id, progress, scan_status['current_sector'])
             
             print(f"[DEBUG] 扫描板块 {i+1}/{total_sectors}: {sector_name}")
             
             try:
-                # 获取成分股（含市值信息）
-                stocks_df = ak.stock_board_industry_cons_em(symbol=sector_name)
+                # 获取成分股（含市值信息），带重试机制
+                stocks_df = retry_request(
+                    lambda sn=sector_name: ak.stock_board_industry_cons_em(symbol=sn),
+                    max_retries=3,
+                    delay=1.0
+                )
                 if stocks_df is None or stocks_df.empty:
                     print(f"[DEBUG] 板块 {sector_name} 无成分股数据")
                     continue
@@ -262,10 +289,9 @@ def run_scan(top_sectors: int, min_days: int, period: int):
                 if sector_results:
                     # 按综合评分从高到低排序
                     sector_results.sort(key=lambda x: x.get('total_score', 0), reverse=True)
-                    scan_status['results'][sector_name] = {
-                        'change': sector['change'],
-                        'stocks': sector_results
-                    }
+                    
+                    # 保存到数据库
+                    db.save_sector_result(scan_id, sector_name, sector['change'], sector_results)
                     
             except Exception as e:
                 print(f"[DEBUG] 板块 {sector_name} 扫描异常: {e}")
@@ -273,10 +299,13 @@ def run_scan(top_sectors: int, min_days: int, period: int):
         
         scan_status['progress'] = 100
         scan_status['current_sector'] = '扫描完成'
-        scan_status['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 更新数据库状态为完成
+        db.update_scan_status(scan_id, 'completed')
         
     except Exception as e:
         scan_status['error'] = str(e)
+        db.update_scan_status(scan_id, 'error', str(e))
     finally:
         scan_status['is_scanning'] = False
 
@@ -286,6 +315,7 @@ def get_scan_status():
     """获取扫描状态"""
     return jsonify({
         'is_scanning': scan_status['is_scanning'],
+        'scan_id': scan_status.get('scan_id'),
         'progress': scan_status['progress'],
         'current_sector': scan_status['current_sector'],
         'error': scan_status['error']
@@ -294,12 +324,97 @@ def get_scan_status():
 
 @app.route('/api/scan/results')
 def get_scan_results():
-    """获取扫描结果"""
+    """获取扫描结果（最新一次完成的扫描）"""
+    # 从请求参数获取 scan_id，如果没有则获取最新的
+    scan_id = request.args.get('scan_id', type=int)
+    
+    if scan_id:
+        scan_detail = db.get_scan_detail(scan_id)
+    else:
+        scan_detail = db.get_latest_scan()
+    
+    if not scan_detail:
+        return jsonify({
+            'success': True,
+            'results': {},
+            'hot_sectors': [],
+            'last_update': None
+        })
+    
     return jsonify({
         'success': True,
-        'results': scan_status['results'],
-        'hot_sectors': scan_status['hot_sectors'],
-        'last_update': scan_status['last_update']
+        'scan_id': scan_detail['id'],
+        'results': scan_detail.get('results', {}),
+        'hot_sectors': scan_detail.get('hot_sectors', []),
+        'last_update': scan_detail['scan_time']
+    })
+
+
+@app.route('/api/scan/history')
+def get_scan_history():
+    """获取历史扫描记录列表"""
+    limit = request.args.get('limit', 20, type=int)
+    records = db.get_scan_list(limit=limit)
+    return jsonify({
+        'success': True,
+        'data': records
+    })
+
+
+@app.route('/api/scan/<int:scan_id>', methods=['GET'])
+def get_scan_detail(scan_id: int):
+    """获取指定扫描的详细结果"""
+    scan_detail = db.get_scan_detail(scan_id)
+    
+    if not scan_detail:
+        return jsonify({
+            'success': False,
+            'error': '扫描记录不存在'
+        }), 404
+    
+    return jsonify({
+        'success': True,
+        'data': scan_detail
+    })
+
+
+@app.route('/api/scan/<int:scan_id>', methods=['DELETE'])
+def delete_scan(scan_id: int):
+    """删除指定扫描记录"""
+    # 检查是否正在扫描中
+    if scan_status['is_scanning'] and scan_status.get('scan_id') == scan_id:
+        return jsonify({
+            'success': False,
+            'error': '无法删除正在进行的扫描'
+        }), 400
+    
+    success = db.delete_scan(scan_id)
+    
+    if success:
+        return jsonify({
+            'success': True,
+            'message': '删除成功'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': '扫描记录不存在'
+        }), 404
+
+
+@app.route('/api/scan/clear', methods=['DELETE'])
+def clear_all_scans():
+    """清空所有扫描记录"""
+    if scan_status['is_scanning']:
+        return jsonify({
+            'success': False,
+            'error': '有扫描正在进行中，请稍后再试'
+        }), 400
+    
+    count = db.delete_all_scans()
+    return jsonify({
+        'success': True,
+        'message': f'已清空 {count} 条记录'
     })
 
 
@@ -309,12 +424,17 @@ def get_stock_detail(code: str):
     try:
         from datetime import timedelta
         
-        df = ak.stock_zh_a_hist(
-            symbol=code,
-            period="daily",
-            start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
-            end_date=datetime.now().strftime("%Y%m%d"),
-            adjust="qfq"
+        # 带重试机制获取股票历史数据
+        df = retry_request(
+            lambda: ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
+                end_date=datetime.now().strftime("%Y%m%d"),
+                adjust="qfq"
+            ),
+            max_retries=3,
+            delay=0.5
         )
         
         if df is None or df.empty:

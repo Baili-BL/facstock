@@ -20,12 +20,40 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Tuple
 from tqdm import tqdm
 from tabulate import tabulate
+import time
 
 try:
     import akshare as ak
 except ImportError:
     print("请先安装 akshare: pip install akshare")
     exit(1)
+
+
+def retry_request(func, max_retries=3, delay=1.0):
+    """
+    重试装饰器，用于处理网络请求失败的情况
+    
+    Args:
+        func: 要执行的函数
+        max_retries: 最大重试次数
+        delay: 重试间隔（秒）
+    
+    Returns:
+        函数执行结果，如果全部失败返回 None
+    """
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))  # 递增延迟
+    
+    # 所有重试都失败
+    if last_exception:
+        raise last_exception
+    return None
 
 
 class BollingerSqueezeStrategy:
@@ -361,14 +389,17 @@ class BollingerSqueezeStrategy:
             分析结果字典，如果不符合条件返回None
         """
         try:
-            # 获取股票历史数据 (最近60个交易日)
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
-                period="daily",
-                start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
-                end_date=datetime.now().strftime("%Y%m%d"),
-                adjust="qfq"  # 前复权
-            )
+            # 获取股票历史数据 (最近60个交易日)，带重试机制
+            def fetch_data():
+                return ak.stock_zh_a_hist(
+                    symbol=stock_code,
+                    period="daily",
+                    start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
+                    end_date=datetime.now().strftime("%Y%m%d"),
+                    adjust="qfq"  # 前复权
+                )
+            
+            df = retry_request(fetch_data, max_retries=3, delay=0.5)
             
             if df is None or len(df) < self.period + self.ma_long:
                 return None
@@ -482,8 +513,8 @@ class HotSectorScanner:
             热点板块DataFrame
         """
         try:
-            # 获取板块涨幅排名
-            df = ak.stock_board_industry_name_em()
+            # 获取板块涨幅排名，带重试机制
+            df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
             if df is not None and len(df) > 0:
                 # 按涨跌幅排序
                 df = df.sort_values(by='涨跌幅', ascending=False)
@@ -504,7 +535,12 @@ class HotSectorScanner:
             成分股列表 [{'code': ..., 'name': ..., 'market_cap': ..., ...}, ...]
         """
         try:
-            df = ak.stock_board_industry_cons_em(symbol=sector_name)
+            # 带重试机制
+            df = retry_request(
+                lambda: ak.stock_board_industry_cons_em(symbol=sector_name),
+                max_retries=3,
+                delay=1.0
+            )
             if df is not None and len(df) > 0:
                 stocks = []
                 for _, row in df.iterrows():

@@ -777,6 +777,224 @@
         .icon-md { font-size: 24px; }
         .icon-lg { font-size: 32px; }
 
+        /* 历史记录样式 */
+        .history-list {
+            padding: 12px 16px;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .history-item:active {
+            transform: scale(0.98);
+        }
+
+        .history-item.active {
+            background: linear-gradient(135deg, #667eea15, #764ba215);
+            border: 1px solid var(--accent-purple);
+        }
+
+        .history-item-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+        }
+
+        .history-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+
+        .history-icon.completed {
+            background: linear-gradient(135deg, #11998e, #38ef7d);
+        }
+
+        .history-icon.scanning {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+        }
+
+        .history-icon.error {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+        }
+
+        .history-info {
+            flex: 1;
+        }
+
+        .history-time {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .history-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .history-stat {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .history-stat-value {
+            color: var(--accent-purple);
+            font-weight: 600;
+        }
+
+        .history-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .history-btn {
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .history-btn.view {
+            background: var(--bg-white);
+            color: var(--accent-purple);
+        }
+
+        .history-btn.delete {
+            background: #fff5f5;
+            color: var(--accent-red);
+        }
+
+        .history-btn:active {
+            transform: scale(0.9);
+        }
+
+        .clear-all-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            padding: 12px;
+            margin-top: 8px;
+            border: 1px dashed var(--border-color);
+            border-radius: 12px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-all-btn:hover {
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+            background: #fff5f5;
+        }
+
+        .history-empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+
+        .history-empty-icon {
+            font-size: 48px;
+            color: var(--border-color);
+            margin-bottom: 12px;
+        }
+
+        /* 确认对话框 */
+        .confirm-dialog {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .confirm-dialog.active {
+            display: flex;
+        }
+
+        .confirm-box {
+            background: var(--bg-white);
+            border-radius: 16px;
+            padding: 24px;
+            width: 280px;
+            text-align: center;
+        }
+
+        .confirm-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .confirm-message {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+
+        .confirm-buttons {
+            display: flex;
+            gap: 12px;
+        }
+
+        .confirm-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .confirm-btn.cancel {
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+        }
+
+        .confirm-btn.danger {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+            color: #fff;
+        }
+
+        .confirm-btn:active {
+            transform: scale(0.95);
+        }
+
         /* 底部 Tab 导航 - 京东金融风格 */
         .bottom-tab-bar {
             position: fixed;
@@ -1005,6 +1223,39 @@
                 </div>
             </div>
         </div>
+
+        <!-- 历史记录 -->
+        <div class="section-card" id="historySection">
+            <div class="section-header">
+                <div class="section-title">
+                    <span class="material-symbols-rounded icon-sm">history</span>
+                    <span>扫描历史</span>
+                </div>
+                <div class="section-more" onclick="loadHistory()">
+                    <span class="material-symbols-rounded icon-sm">refresh</span>
+                </div>
+            </div>
+            <div class="history-list" id="historyList">
+                <div class="history-empty">
+                    <div class="history-empty-icon">
+                        <span class="material-symbols-rounded">inbox</span>
+                    </div>
+                    <p>暂无扫描记录</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 确认对话框 -->
+    <div class="confirm-dialog" id="confirmDialog">
+        <div class="confirm-box">
+            <div class="confirm-title" id="confirmTitle">确认删除</div>
+            <div class="confirm-message" id="confirmMessage">确定要删除这条记录吗？</div>
+            <div class="confirm-buttons">
+                <button class="confirm-btn cancel" onclick="closeConfirmDialog()">取消</button>
+                <button class="confirm-btn danger" id="confirmBtn" onclick="confirmAction()">删除</button>
+            </div>
+        </div>
     </div>
 
     <!-- 底部 Tab 导航栏 -->
@@ -1087,6 +1338,8 @@
         let widthChart = null;
         let pollInterval = null;
         let volumeFilterEnabled = false;
+        let currentScanId = null;
+        let confirmCallback = null;
 
         // 更新时间
         function updateTime() {
@@ -1175,6 +1428,12 @@
 
                 if (data.success) {
                     console.log('API返回数据:', data);
+                    
+                    // 保存当前扫描ID
+                    if (data.scan_id) {
+                        currentScanId = data.scan_id;
+                    }
+                    
                     scanResults = data.results;
                     renderSectorChips(data.hot_sectors);
                     
@@ -1203,6 +1462,9 @@
                             </div>
                         `;
                     }
+                    
+                    // 刷新历史记录列表
+                    loadHistory();
                 }
             } catch (error) {
                 console.error('加载结果失败:', error);
@@ -1571,6 +1833,253 @@
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
         document.getElementById('stockModal').addEventListener('click', (e) => {
             if (e.target.classList.contains('modal-overlay')) closeModal();
+        });
+
+        // ========== 历史记录管理 ==========
+        
+        // 加载历史记录
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/scan/history?limit=20');
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderHistoryList(data.data);
+                }
+            } catch (error) {
+                console.error('加载历史记录失败:', error);
+            }
+        }
+
+        // 渲染历史记录列表
+        function renderHistoryList(records) {
+            const container = document.getElementById('historyList');
+            
+            if (!records || records.length === 0) {
+                container.innerHTML = `
+                    <div class="history-empty">
+                        <div class="history-empty-icon">
+                            <span class="material-symbols-rounded">inbox</span>
+                        </div>
+                        <p>暂无扫描记录</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = records.map(record => {
+                const isActive = currentScanId === record.id;
+                const statusClass = record.status === 'completed' ? 'completed' : 
+                                   record.status === 'scanning' ? 'scanning' : 'error';
+                const statusIcon = record.status === 'completed' ? 'check_circle' : 
+                                  record.status === 'scanning' ? 'hourglass_top' : 'error';
+                
+                return `
+                    <div class="history-item ${isActive ? 'active' : ''}" data-id="${record.id}">
+                        <div class="history-item-left" onclick="loadScanResult(${record.id})">
+                            <div class="history-icon ${statusClass}">
+                                <span class="material-symbols-rounded">${statusIcon}</span>
+                            </div>
+                            <div class="history-info">
+                                <div class="history-time">${formatTime(record.scan_time)}</div>
+                                <div class="history-stats">
+                                    <div class="history-stat">
+                                        <span class="material-symbols-rounded icon-sm">folder</span>
+                                        <span class="history-stat-value">${record.sector_count}</span>
+                                        <span>板块</span>
+                                    </div>
+                                    <div class="history-stat">
+                                        <span class="material-symbols-rounded icon-sm">trending_up</span>
+                                        <span class="history-stat-value">${record.stock_count}</span>
+                                        <span>股票</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="history-actions">
+                            <button class="history-btn view" onclick="event.stopPropagation(); loadScanResult(${record.id})" title="查看">
+                                <span class="material-symbols-rounded icon-sm">visibility</span>
+                            </button>
+                            <button class="history-btn delete" onclick="event.stopPropagation(); deleteScan(${record.id})" title="删除">
+                                <span class="material-symbols-rounded icon-sm">delete</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('') + `
+                <button class="clear-all-btn" onclick="clearAllScans()">
+                    <span class="material-symbols-rounded icon-sm">delete_sweep</span>
+                    <span>清空全部记录</span>
+                </button>
+            `;
+        }
+
+        // 格式化时间
+        function formatTime(timeStr) {
+            if (!timeStr) return '-';
+            const date = new Date(timeStr);
+            const now = new Date();
+            const isToday = date.toDateString() === now.toDateString();
+            
+            if (isToday) {
+                return '今天 ' + date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+            }
+            
+            const yesterday = new Date(now);
+            yesterday.setDate(yesterday.getDate() - 1);
+            if (date.toDateString() === yesterday.toDateString()) {
+                return '昨天 ' + date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+            }
+            
+            return date.toLocaleString('zh-CN', { 
+                month: '2-digit', 
+                day: '2-digit', 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+        }
+
+        // 加载指定扫描结果
+        async function loadScanResult(scanId) {
+            try {
+                const response = await fetch(`/api/scan/results?scan_id=${scanId}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    currentScanId = scanId;
+                    scanResults = data.results;
+                    renderSectorChips(data.hot_sectors);
+                    
+                    let totalStocks = 0;
+                    let totalSectors = 0;
+                    for (const sector in scanResults) {
+                        totalStocks += scanResults[sector].stocks.length;
+                        totalSectors++;
+                    }
+
+                    document.getElementById('totalStocks').textContent = totalStocks;
+                    document.getElementById('totalSectors').textContent = totalSectors;
+                    document.getElementById('hotStockCount').textContent = totalStocks;
+                    document.getElementById('hotSectorCount').textContent = totalSectors;
+                    document.getElementById('resultsSection').style.display = 'block';
+                    document.getElementById('sectorsSection').style.display = totalSectors > 0 ? 'block' : 'none';
+
+                    const sectorNames = Object.keys(scanResults);
+                    if (sectorNames.length > 0) {
+                        showSectorResults(sectorNames[0]);
+                    } else {
+                        document.getElementById('stockList').innerHTML = `
+                            <div class="empty-state">
+                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search_off</span></div>
+                                <p class="empty-title">该扫描无符合条件的股票</p>
+                            </div>
+                        `;
+                    }
+
+                    // 更新历史列表的选中状态
+                    loadHistory();
+                    
+                    // 滚动到结果区域
+                    document.getElementById('sectorsSection').scrollIntoView({ behavior: 'smooth' });
+                    
+                    showToast('已加载扫描记录');
+                }
+            } catch (error) {
+                console.error('加载扫描结果失败:', error);
+                showToast('加载失败');
+            }
+        }
+
+        // 删除扫描记录
+        function deleteScan(scanId) {
+            showConfirmDialog(
+                '确认删除',
+                '确定要删除这条扫描记录吗？',
+                async () => {
+                    try {
+                        const response = await fetch(`/api/scan/${scanId}`, {
+                            method: 'DELETE'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            showToast('删除成功');
+                            
+                            // 如果删除的是当前显示的记录，清空显示
+                            if (currentScanId === scanId) {
+                                currentScanId = null;
+                                scanResults = {};
+                                document.getElementById('resultsSection').style.display = 'none';
+                                document.getElementById('sectorsSection').style.display = 'none';
+                            }
+                            
+                            loadHistory();
+                        } else {
+                            showToast('删除失败: ' + data.error);
+                        }
+                    } catch (error) {
+                        console.error('删除失败:', error);
+                        showToast('删除失败');
+                    }
+                }
+            );
+        }
+
+        // 清空所有记录
+        function clearAllScans() {
+            showConfirmDialog(
+                '确认清空',
+                '确定要清空所有扫描记录吗？此操作不可恢复。',
+                async () => {
+                    try {
+                        const response = await fetch('/api/scan/clear', {
+                            method: 'DELETE'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            showToast(data.message);
+                            currentScanId = null;
+                            scanResults = {};
+                            document.getElementById('resultsSection').style.display = 'none';
+                            document.getElementById('sectorsSection').style.display = 'none';
+                            loadHistory();
+                        } else {
+                            showToast('清空失败: ' + data.error);
+                        }
+                    } catch (error) {
+                        console.error('清空失败:', error);
+                        showToast('清空失败');
+                    }
+                }
+            );
+        }
+
+        // 显示确认对话框
+        function showConfirmDialog(title, message, callback) {
+            document.getElementById('confirmTitle').textContent = title;
+            document.getElementById('confirmMessage').textContent = message;
+            confirmCallback = callback;
+            document.getElementById('confirmDialog').classList.add('active');
+        }
+
+        // 关闭确认对话框
+        function closeConfirmDialog() {
+            document.getElementById('confirmDialog').classList.remove('active');
+            confirmCallback = null;
+        }
+
+        // 确认操作
+        function confirmAction() {
+            if (confirmCallback) {
+                confirmCallback();
+            }
+            closeConfirmDialog();
+        }
+
+        // 页面加载时自动加载历史记录
+        document.addEventListener('DOMContentLoaded', () => {
+            loadHistory();
         });
     </script>
 </body>
