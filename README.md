@@ -1,6 +1,7 @@
 # 布林带收缩策略 - 热点板块筛选器
 
 [![GitHub](https://img.shields.io/badge/GitHub-Baili--BL%2Ffacstock-blue)](https://github.com/Baili-BL/facstock)
+[![Gitee](https://img.shields.io/badge/Gitee-Baili--BL%2Ffacstock-red)](https://gitee.com/Baili-BL/facstock)
 
 ## 策略原理
 
@@ -25,79 +26,62 @@
 
 ---
 
-## 🚀 腾讯云部署
+## 腾讯云部署
 
-### 方式一：一键部署（推荐）
+> 详细部署文档见 [deploy/MANUAL_DEPLOY.md](deploy/MANUAL_DEPLOY.md)
 
-SSH 登录腾讯云服务器后，执行：
+### 快速开始
+
+#### 首次部署（3步）
 
 ```bash
-# 下载并执行部署脚本
-git clone https://github.com/Baili-BL/facstock.git /tmp/facstock
-cd /tmp/facstock/deploy
-chmod +x deploy.sh
-sudo ./deploy.sh
+# 1. 克隆代码（GitHub 或 Gitee 二选一）
+git clone https://github.com/Baili-BL/facSstock.git ~/facSstock
+# 或
+git clone https://gitee.com/Baili-BL/facSstock.git ~/facSstock
+
+# 2. 安装环境
+conda create -y -n facstock_env python=3.10
+conda activate facstock_env
+pip install -r ~/facSstock/requirements.txt gunicorn
+
+# 3. 启动服务
+cd ~/facSstock
+gunicorn -w 2 -b 0.0.0.0:5001 app:app
 ```
 
-部署完成后访问：`http://服务器IP:5001`
+访问：`http://服务器IP:5001`
 
-### 方式二：手动部署
+#### 更新部署（2步）
 
+**方式一：本地上传**
 ```bash
-# 1. 安装依赖
-sudo apt update
-sudo apt install -y git python3.10 python3.10-venv python3-pip nginx supervisor
+# Mac 本地执行
+scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
 
-# 2. 克隆代码
-sudo git clone https://github.com/Baili-BL/facstock.git /opt/facstock
-
-# 3. 创建虚拟环境
-cd /opt/facstock
-sudo python3.10 -m venv venv
-sudo ./venv/bin/pip install -r requirements.txt
-
-# 4. 启动应用
-sudo ./venv/bin/gunicorn -w 2 -b 0.0.0.0:5001 app:app --daemon
-
-# 5. 开放端口（腾讯云安全组也要开放）
-sudo ufw allow 5001/tcp
+# 服务器执行
+supervisorctl restart facstock
 ```
 
-### 同一台服务器部署多个应用
-
-编辑 `deploy/deploy_multi.sh`，配置多个应用：
-
+**方式二：Git 拉取**
 ```bash
-APPS=(
-    "facstock:5001:main"        # 应用1: 端口5001
-    "facstock_test:5002:develop" # 应用2: 端口5002
-    "facstock_v2:5003:v2"       # 应用3: 端口5003
-)
+# 服务器执行
+cd ~/facSstock && git pull origin main
+cp -r ~/facSstock/* /opt/facstock/
+supervisorctl restart facstock
 ```
 
-然后执行：
+### 常用命令
 
 ```bash
-chmod +x deploy/deploy_multi.sh
-sudo ./deploy/deploy_multi.sh
-```
+# 查看服务状态
+supervisorctl status
 
-### 常用管理命令
-
-```bash
-# 查看应用状态
-sudo supervisorctl status
-
-# 重启应用
-sudo supervisorctl restart facstock
+# 重启服务
+supervisorctl restart facstock
 
 # 查看日志
 tail -f /opt/facstock/logs/supervisor_out.log
-
-# 更新代码
-cd /opt/facstock
-sudo git pull origin main
-sudo supervisorctl restart facstock
 ```
 
 ### 腾讯云安全组配置
@@ -108,17 +92,22 @@ sudo supervisorctl restart facstock
 |------|------|------|------|
 | TCP | 22 | 0.0.0.0/0 | SSH |
 | TCP | 80 | 0.0.0.0/0 | HTTP |
-| TCP | 5001 | 0.0.0.0/0 | 应用1 |
-| TCP | 5002 | 0.0.0.0/0 | 应用2（如需） |
+| TCP | 5001 | 0.0.0.0/0 | facstock |
+| TCP | 5002 | 0.0.0.0/0 | Ticai（如需） |
 
 ---
 
-## 💻 本地开发
+## 本地开发
 
 ### 安装
 
 ```bash
+# 从 GitHub 克隆
 git clone https://github.com/Baili-BL/facstock.git
+
+# 或从 Gitee 克隆（国内更快）
+git clone https://gitee.com/Baili-BL/facstock.git
+
 cd facstock
 pip install -r requirements.txt
 ```
@@ -157,7 +146,7 @@ python bollinger_squeeze_strategy.py --mode hot --sectors 10 --min-days 5
 
 ---
 
-## 📊 输出说明
+## 输出说明
 
 | 字段 | 说明 |
 |------|------|
@@ -172,7 +161,7 @@ python bollinger_squeeze_strategy.py --mode hot --sectors 10 --min-days 5
 
 ---
 
-## ⚠️ 注意事项
+## 注意事项
 
 1. **数据来源**：使用 akshare 获取A股数据，需要网络连接
 2. **扫描时间**：建议在交易日收盘后运行，数据更准确
@@ -180,20 +169,17 @@ python bollinger_squeeze_strategy.py --mode hot --sectors 10 --min-days 5
 
 ---
 
-## 📁 项目结构
+## 项目结构
 
 ```
 facstock/
-├── app.py                      # Flask Web 应用
+├── app.py                        # Flask Web 应用
 ├── bollinger_squeeze_strategy.py # 策略核心代码
-├── requirements.txt            # 依赖列表
+├── requirements.txt              # 依赖列表
 ├── templates/
-│   └── index.html             # 前端页面
+│   └── index.html               # 前端页面
 ├── deploy/
-│   ├── deploy.sh              # 单应用部署脚本
-│   ├── deploy_multi.sh        # 多应用部署脚本
-│   ├── update.sh              # 更新脚本
-│   └── quick_install.sh       # 一键安装脚本
+│   └── MANUAL_DEPLOY.md         # 详细部署文档
 └── README.md
 ```
 
