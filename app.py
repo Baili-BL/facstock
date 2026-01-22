@@ -10,6 +10,8 @@ import akshare as ak
 import pandas as pd
 from datetime import datetime
 import threading
+import time
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入数据库模块
@@ -23,7 +25,8 @@ scan_status = {
     'scan_id': None,
     'progress': 0,
     'current_sector': '',
-    'error': None
+    'error': None,
+    'cancelled': False
 }
 
 
@@ -82,7 +85,8 @@ def start_scan():
         'scan_id': scan_id,
         'progress': 0,
         'current_sector': '准备中...',
-        'error': None
+        'error': None,
+        'cancelled': False
     }
     
     # 在后台线程执行扫描
@@ -96,8 +100,25 @@ def start_scan():
     return jsonify({'success': True, 'message': '扫描已开始', 'scan_id': scan_id})
 
 
+@app.route('/api/scan/cancel', methods=['POST'])
+def cancel_scan():
+    """取消当前扫描"""
+    global scan_status
+    
+    if not scan_status['is_scanning']:
+        return jsonify({'success': False, 'error': '没有正在进行的扫描'})
+    
+    scan_status['cancelled'] = True
+    scan_status['current_sector'] = '正在取消...'
+    
+    return jsonify({'success': True, 'message': '正在取消扫描'})
+
+
 def analyze_single_stock(strategy, stock_info):
     """分析单只股票（用于并发）"""
+    # 随机延迟 0.1-0.3 秒，错开请求时间避免API限流
+    time.sleep(random.uniform(0.1, 0.3))
+    
     try:
         code = stock_info['code']
         name = stock_info['name']
@@ -109,37 +130,37 @@ def analyze_single_stock(strategy, stock_info):
             result['leader_rank'] = stock_info.get('leader_rank', 0)
             result['market_cap'] = stock_info.get('market_cap', 0)
             
-            # 生成标签列表
+            # 生成标签列表（不含emoji，由前端添加图标）
             tags = []
             
             # 评级标签 (最重要)
             grade = result.get('grade', 'C')
             if grade == 'S':
-                tags.append("⭐S级")
+                tags.append("S级")
             elif grade == 'A':
-                tags.append("🅰️A级")
+                tags.append("A级")
             
             # 中军标签
             if result['is_leader']:
                 tags.append(f"中军#{result['leader_rank']}")
             
-            # CMF 资金流标签 💰
+            # CMF 资金流标签
             if result.get('cmf_strong_bullish'):
-                tags.append("💰强势流入")
+                tags.append("强势流入")
             elif result.get('cmf_bullish') and result.get('cmf_rising'):
-                tags.append("💰资金流入")
+                tags.append("资金流入")
             elif result.get('cmf_bullish'):
                 tags.append("资金净流入")
             
             # RSV 标签
             if result.get('rsv_recovering'):
-                tags.append("🔄超卖回升")
+                tags.append("超卖回升")
             elif result.get('rsv_golden'):
                 rsv_val = result.get('rsv', 50)
                 if rsv_val >= 65:
-                    tags.append(f"RSV强势")
+                    tags.append("RSV强势")
                 else:
-                    tags.append(f"RSV健康")
+                    tags.append("RSV健康")
             
             # 趋势标签
             if result.get('ma_full_bullish'):
@@ -166,11 +187,11 @@ def analyze_single_stock(strategy, stock_info):
             # 人气标签（根据换手率）
             turnover = result.get('turnover', 0)
             if 3 <= turnover <= 10:
-                tags.append("🔥人气旺")
+                tags.append("人气旺")
             elif turnover > 10:
-                tags.append("⚡超人气")
+                tags.append("超人气")
             elif 1 <= turnover < 3:
-                tags.append("📊有关注")
+                tags.append("有关注")
             
             # 其他标签
             if result.get('pct_change', 0) >= 5:
@@ -188,8 +209,10 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
     """执行扫描任务（并发版本），结果保存到数据库"""
     global scan_status
     
-    # 并发线程数
-    MAX_WORKERS = 10
+    # 并发线程数（降低并发数避免被限流）
+    MAX_WORKERS = 3
+    # 每批请求后的休息时间（秒）
+    BATCH_DELAY = 0.5
     
     # 用于临时存储热点板块信息
     hot_sectors_list = []
@@ -239,6 +262,14 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         total_sectors = len(hot_sectors_list)
         
         for i, sector in enumerate(hot_sectors_list):
+            # 检查是否取消
+            if scan_status.get('cancelled'):
+                print(f"[DEBUG] 扫描已被用户取消")
+                scan_status['is_scanning'] = False
+                scan_status['current_sector'] = '已取消'
+                db.update_scan_status(scan_id, 'cancelled', '用户取消扫描')
+                return
+            
             sector_name = sector['name']
             progress = int((i / total_sectors) * 100)
             
@@ -279,28 +310,39 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                     stock['is_leader'] = idx < 3
                     stock['leader_rank'] = idx + 1 if idx < 3 else 0
                 
-                # 使用线程池并发分析股票
+                # 使用线程池并发分析股票（控制并发数和请求间隔）
                 sector_results = []
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    # 提交所有任务
-                    future_to_stock = {
-                        executor.submit(analyze_single_stock, strategy, stock_info): stock_info
-                        for stock_info in stocks
-                    }
+                total_stocks = len(stocks)
+                
+                # 分批处理，每批 MAX_WORKERS 个
+                for batch_start in range(0, total_stocks, MAX_WORKERS):
+                    # 检查是否取消
+                    if scan_status.get('cancelled'):
+                        break
                     
-                    # 收集结果
-                    completed = 0
-                    total_stocks = len(stocks)
-                    for future in as_completed(future_to_stock):
-                        completed += 1
-                        # 更新进度显示
-                        sector_progress = int((i + completed / total_stocks) / total_sectors * 100)
-                        scan_status['progress'] = min(sector_progress, 99)
-                        scan_status['current_sector'] = f"{sector_name} ({completed}/{total_stocks})"
+                    batch_end = min(batch_start + MAX_WORKERS, total_stocks)
+                    batch_stocks = stocks[batch_start:batch_end]
+                    
+                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        future_to_stock = {
+                            executor.submit(analyze_single_stock, strategy, stock_info): stock_info
+                            for stock_info in batch_stocks
+                        }
                         
-                        result = future.result()
-                        if result:
-                            sector_results.append(result)
+                        for future in as_completed(future_to_stock):
+                            result = future.result()
+                            if result:
+                                sector_results.append(result)
+                    
+                    # 更新进度显示
+                    completed = batch_end
+                    sector_progress = int((i + completed / total_stocks) / total_sectors * 100)
+                    scan_status['progress'] = min(sector_progress, 99)
+                    scan_status['current_sector'] = f"{sector_name} ({completed}/{total_stocks})"
+                    
+                    # 批次间休息，避免请求过快
+                    if batch_end < total_stocks:
+                        time.sleep(BATCH_DELAY)
                 
                 print(f"[DEBUG] 板块 {sector_name} 分析完成，符合条件: {len(sector_results)} 只")
                 
@@ -336,7 +378,8 @@ def get_scan_status():
         'scan_id': scan_status.get('scan_id'),
         'progress': scan_status['progress'],
         'current_sector': scan_status['current_sector'],
-        'error': scan_status['error']
+        'error': scan_status['error'],
+        'cancelled': scan_status.get('cancelled', False)
     })
 
 
@@ -436,13 +479,35 @@ def clear_all_scans():
     })
 
 
+# 全局请求限流器
+last_api_request_time = 0
+API_REQUEST_INTERVAL = 0.5  # 最小请求间隔（秒）
+
 @app.route('/api/stock/<code>')
 def get_stock_detail(code: str):
-    """获取单只股票详情"""
+    """获取单只股票详情（带缓存）"""
+    global last_api_request_time
+    
     try:
         from datetime import timedelta
         
-        # 带重试机制获取股票历史数据
+        # 先检查缓存（延长缓存时间到8小时，减少API调用）
+        cached_data = db.get_kline_cache(code, max_age_hours=8)
+        if cached_data:
+            print(f"[CACHE HIT] 股票 {code} 使用缓存数据")
+            return jsonify({'success': True, 'data': cached_data, 'cached': True})
+        
+        print(f"[CACHE MISS] 股票 {code} 从API获取数据")
+        
+        # 全局限流：确保两次API调用之间至少间隔 API_REQUEST_INTERVAL 秒
+        current_time = time.time()
+        time_since_last = current_time - last_api_request_time
+        if time_since_last < API_REQUEST_INTERVAL:
+            time.sleep(API_REQUEST_INTERVAL - time_since_last)
+        
+        last_api_request_time = time.time()
+        
+        # 带重试机制获取股票历史数据（增加重试次数和延迟）
         df = retry_request(
             lambda: ak.stock_zh_a_hist(
                 symbol=code,
@@ -451,12 +516,13 @@ def get_stock_detail(code: str):
                 end_date=datetime.now().strftime("%Y%m%d"),
                 adjust="qfq"
             ),
-            max_retries=3,
-            delay=0.5
+            max_retries=5,
+            delay=1.0,
+            silent=True
         )
         
         if df is None or df.empty:
-            return jsonify({'success': False, 'error': '无法获取数据'})
+            return jsonify({'success': False, 'error': '数据获取失败，请稍后重试'})
         
         # 重命名列
         df = df.rename(columns={
@@ -472,6 +538,7 @@ def get_stock_detail(code: str):
         strategy = BollingerSqueezeStrategy()
         df = strategy.calculate_bollinger_bands(df)
         df = strategy.calculate_squeeze_signal(df)
+        df = strategy.calculate_trend_indicators(df)  # 包含 CMF 计算
         
         # 移除包含NaN的行（布林带计算前期数据）
         df = df.dropna(subset=['bb_upper', 'bb_lower', 'bb_middle', 'width_ma_short', 'width_ma_long'])
@@ -510,6 +577,22 @@ def get_stock_detail(code: str):
         bb_middle_data = [{'time': row['date'], 'value': float(row['bb_middle'])} for _, row in df.iterrows() if pd.notna(row['bb_middle'])]
         bb_lower_data = [{'time': row['date'], 'value': float(row['bb_lower'])} for _, row in df.iterrows() if pd.notna(row['bb_lower'])]
         
+        # CMF 数据
+        cmf_data = safe_list(df['cmf']) if 'cmf' in df.columns else []
+        
+        # 涨跌幅数据
+        pct_change_data = safe_list(df['pct_change']) if 'pct_change' in df.columns else []
+        
+        # 最新价格信息
+        latest = df.iloc[-1] if len(df) > 0 else None
+        latest_info = None
+        if latest is not None:
+            latest_info = {
+                'close': float(latest['close']) if pd.notna(latest['close']) else 0,
+                'pct_change': float(latest['pct_change']) if pd.notna(latest['pct_change']) else 0,
+                'date': latest['date'],
+            }
+        
         data = {
             'candles': candles,
             'volumes': volume_data,
@@ -519,11 +602,119 @@ def get_stock_detail(code: str):
             'bb_width': safe_list(df['bb_width_pct']),
             'width_ma5': safe_list(df['width_ma_short']),
             'width_ma10': safe_list(df['width_ma_long']),
+            'cmf': cmf_data,
+            'pct_change': pct_change_data,
+            'latest': latest_info,
             'dates': df['date'].astype(str).tolist(),
         }
         
-        return jsonify({'success': True, 'data': data})
+        # 保存到缓存（关联当前扫描ID）
+        current_scan_id = scan_status.get('scan_id')
+        db.save_kline_cache(code, data, scan_id=current_scan_id)
+        print(f"[CACHE SAVE] 股票 {code} 数据已缓存")
         
+        return jsonify({'success': True, 'data': data, 'cached': False})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/cache/stats')
+def get_cache_stats():
+    """获取缓存统计信息"""
+    try:
+        stats = db.get_kline_cache_stats()
+        return jsonify({'success': True, 'data': stats})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/cache/clear', methods=['DELETE'])
+def clear_cache():
+    """清理过期缓存"""
+    try:
+        # 清理超过72小时的缓存
+        count = db.delete_expired_kline_cache(max_age_hours=72)
+        return jsonify({
+            'success': True,
+            'message': f'已清理 {count} 条过期缓存'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ==================== 自选股 API ====================
+
+@app.route('/api/watchlist')
+def get_watchlist():
+    """获取自选列表"""
+    try:
+        stocks = db.get_watchlist()
+        return jsonify({'success': True, 'data': stocks})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/watchlist/add', methods=['POST'])
+def add_to_watchlist():
+    """添加股票到自选"""
+    try:
+        data = request.json
+        if not data or not data.get('code') or not data.get('name'):
+            return jsonify({'success': False, 'error': '缺少股票代码或名称'})
+        
+        success = db.add_to_watchlist(
+            stock_code=data['code'],
+            stock_name=data['name'],
+            sector_name=data.get('sector'),
+            note=data.get('note')
+        )
+        
+        if success:
+            return jsonify({'success': True, 'message': '已添加到自选'})
+        else:
+            return jsonify({'success': False, 'error': '添加失败'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/watchlist/remove', methods=['POST'])
+def remove_from_watchlist():
+    """从自选移除股票"""
+    try:
+        data = request.json
+        if not data or not data.get('code'):
+            return jsonify({'success': False, 'error': '缺少股票代码'})
+        
+        success = db.remove_from_watchlist(data['code'])
+        
+        if success:
+            return jsonify({'success': True, 'message': '已从自选移除'})
+        else:
+            return jsonify({'success': False, 'error': '移除失败'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/watchlist/check/<code>')
+def check_watchlist(code: str):
+    """检查股票是否在自选中"""
+    try:
+        in_watchlist = db.is_in_watchlist(code)
+        return jsonify({'success': True, 'in_watchlist': in_watchlist})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/watchlist/clear', methods=['DELETE'])
+def clear_watchlist():
+    """清空自选列表"""
+    try:
+        count = db.clear_watchlist()
+        return jsonify({
+            'success': True,
+            'message': f'已清空 {count} 只自选股'
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

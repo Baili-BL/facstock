@@ -29,7 +29,7 @@ except ImportError:
     exit(1)
 
 
-def retry_request(func, max_retries=3, delay=1.0):
+def retry_request(func, max_retries=5, delay=1.0, silent=False):
     """
     重试装饰器，用于处理网络请求失败的情况
     
@@ -37,20 +37,37 @@ def retry_request(func, max_retries=3, delay=1.0):
         func: 要执行的函数
         max_retries: 最大重试次数
         delay: 重试间隔（秒）
+        silent: 是否静默模式（失败不抛异常，返回None）
     
     Returns:
-        函数执行结果，如果全部失败返回 None
+        函数执行结果，如果全部失败返回 None 或抛出异常
     """
+    import requests
+    
     last_exception = None
     for attempt in range(max_retries):
         try:
             return func()
-        except Exception as e:
+        except (requests.exceptions.ConnectionError, 
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+                ConnectionResetError,
+                ConnectionAbortedError) as e:
+            # 网络连接类错误，等待更长时间后重试
             last_exception = e
             if attempt < max_retries - 1:
-                time.sleep(delay * (attempt + 1))  # 递增延迟
+                wait_time = delay * (attempt + 1) * 2  # 更长的递增延迟
+                # print(f"[RETRY] 网络连接错误，{wait_time}秒后重试 ({attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+        except Exception as e:
+            # 其他错误
+            last_exception = e
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
     
     # 所有重试都失败
+    if silent:
+        return None
     if last_exception:
         raise last_exception
     return None
@@ -464,7 +481,7 @@ class BollingerSqueezeStrategy:
                     adjust="qfq"  # 前复权
                 )
             
-            df = retry_request(fetch_data, max_retries=3, delay=0.5)
+            df = retry_request(fetch_data, max_retries=5, delay=0.5, silent=True)
             
             if df is None or len(df) < self.period + self.ma_long:
                 return None

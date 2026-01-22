@@ -69,9 +69,36 @@ def init_db():
             )
         ''')
         
+        # K线数据缓存表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kline_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code TEXT NOT NULL,
+                scan_id INTEGER,
+                cache_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                data_json TEXT NOT NULL,
+                FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # 自选股表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code TEXT NOT NULL UNIQUE,
+                stock_name TEXT NOT NULL,
+                sector_name TEXT,
+                add_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                note TEXT
+            )
+        ''')
+        
         # 创建索引
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_records_scan_time ON scan_records(scan_time DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kline_cache_stock_code ON kline_cache(stock_code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kline_cache_scan_id ON kline_cache(scan_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_watchlist_stock_code ON watchlist(stock_code)')
 
 
 def create_scan_record(params: Dict = None) -> int:
@@ -334,7 +361,7 @@ def get_current_scan_status(scan_id: int) -> Optional[Dict]:
 
 def delete_scan(scan_id: int) -> bool:
     """
-    删除指定扫描记录及其结果
+    删除指定扫描记录及其结果和关联的K线缓存
     
     Args:
         scan_id: 扫描记录ID
@@ -345,7 +372,10 @@ def delete_scan(scan_id: int) -> bool:
     with get_connection() as conn:
         cursor = conn.cursor()
         
-        # 先删除关联的结果
+        # 先删除关联的K线缓存
+        cursor.execute('DELETE FROM kline_cache WHERE scan_id = ?', (scan_id,))
+        
+        # 删除关联的结果
         cursor.execute('DELETE FROM scan_results WHERE scan_id = ?', (scan_id,))
         
         # 再删除扫描记录
@@ -364,12 +394,238 @@ def delete_all_scans() -> int:
     with get_connection() as conn:
         cursor = conn.cursor()
         
+        # 删除所有K线缓存
+        cursor.execute('DELETE FROM kline_cache')
+        
         # 删除所有结果
         cursor.execute('DELETE FROM scan_results')
         
         # 删除所有扫描记录
         cursor.execute('DELETE FROM scan_records')
         
+        return cursor.rowcount
+
+
+# ==================== K线缓存相关函数 ====================
+
+def save_kline_cache(stock_code: str, data: Dict, scan_id: int = None):
+    """
+    保存K线数据到缓存
+    
+    Args:
+        stock_code: 股票代码
+        data: K线数据字典
+        scan_id: 关联的扫描ID（可选）
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 如果已存在相同股票代码的缓存，先删除（保持最新）
+        cursor.execute('DELETE FROM kline_cache WHERE stock_code = ?', (stock_code,))
+        
+        # 插入新缓存
+        cursor.execute('''
+            INSERT INTO kline_cache (stock_code, scan_id, cache_time, data_json)
+            VALUES (?, ?, ?, ?)
+        ''', (stock_code, scan_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+              json.dumps(data, ensure_ascii=False)))
+
+
+def get_kline_cache(stock_code: str, max_age_hours: int = 24) -> Optional[Dict]:
+    """
+    获取K线缓存数据
+    
+    Args:
+        stock_code: 股票代码
+        max_age_hours: 缓存最大有效时间（小时），默认24小时
+        
+    Returns:
+        缓存的K线数据，如果不存在或已过期则返回None
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 获取缓存，检查时间有效性
+        cursor.execute('''
+            SELECT data_json, cache_time
+            FROM kline_cache
+            WHERE stock_code = ?
+            ORDER BY cache_time DESC
+            LIMIT 1
+        ''', (stock_code,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        # 检查缓存是否过期
+        cache_time = datetime.strptime(row['cache_time'], '%Y-%m-%d %H:%M:%S')
+        age_hours = (datetime.now() - cache_time).total_seconds() / 3600
+        
+        if age_hours > max_age_hours:
+            return None
+        
+        try:
+            return json.loads(row['data_json'])
+        except json.JSONDecodeError:
+            return None
+
+
+def delete_kline_cache_by_scan(scan_id: int) -> int:
+    """
+    删除指定扫描关联的K线缓存
+    
+    Args:
+        scan_id: 扫描记录ID
+        
+    Returns:
+        删除的记录数量
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM kline_cache WHERE scan_id = ?', (scan_id,))
+        return cursor.rowcount
+
+
+def delete_expired_kline_cache(max_age_hours: int = 72) -> int:
+    """
+    删除过期的K线缓存
+    
+    Args:
+        max_age_hours: 超过多少小时算过期，默认72小时
+        
+    Returns:
+        删除的记录数量
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cutoff_time = datetime.now()
+        cursor.execute('''
+            DELETE FROM kline_cache 
+            WHERE datetime(cache_time) < datetime(?, '-' || ? || ' hours')
+        ''', (cutoff_time.strftime('%Y-%m-%d %H:%M:%S'), max_age_hours))
+        return cursor.rowcount
+
+
+def get_kline_cache_stats() -> Dict:
+    """
+    获取K线缓存统计信息
+    
+    Returns:
+        统计信息字典
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) as count FROM kline_cache')
+        count = cursor.fetchone()['count']
+        
+        cursor.execute('SELECT COUNT(DISTINCT stock_code) as unique_stocks FROM kline_cache')
+        unique_stocks = cursor.fetchone()['unique_stocks']
+        
+        return {
+            'total_cache': count,
+            'unique_stocks': unique_stocks
+        }
+
+
+# ==================== 自选股相关函数 ====================
+
+def add_to_watchlist(stock_code: str, stock_name: str, sector_name: str = None, note: str = None) -> bool:
+    """
+    添加股票到自选列表
+    
+    Args:
+        stock_code: 股票代码
+        stock_name: 股票名称
+        sector_name: 所属板块
+        note: 备注
+        
+    Returns:
+        是否添加成功
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO watchlist (stock_code, stock_name, sector_name, add_time, note)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (stock_code, stock_name, sector_name, 
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'), note))
+            return True
+        except Exception:
+            return False
+
+
+def remove_from_watchlist(stock_code: str) -> bool:
+    """
+    从自选列表移除股票
+    
+    Args:
+        stock_code: 股票代码
+        
+    Returns:
+        是否移除成功
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM watchlist WHERE stock_code = ?', (stock_code,))
+        return cursor.rowcount > 0
+
+
+def get_watchlist() -> List[Dict]:
+    """
+    获取自选列表
+    
+    Returns:
+        自选股票列表
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT stock_code, stock_name, sector_name, add_time, note
+            FROM watchlist
+            ORDER BY add_time DESC
+        ''')
+        
+        stocks = []
+        for row in cursor.fetchall():
+            stocks.append({
+                'code': row['stock_code'],
+                'name': row['stock_name'],
+                'sector': row['sector_name'],
+                'add_time': row['add_time'],
+                'note': row['note']
+            })
+        return stocks
+
+
+def is_in_watchlist(stock_code: str) -> bool:
+    """
+    检查股票是否在自选列表中
+    
+    Args:
+        stock_code: 股票代码
+        
+    Returns:
+        是否在自选列表中
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM watchlist WHERE stock_code = ?', (stock_code,))
+        return cursor.fetchone() is not None
+
+
+def clear_watchlist() -> int:
+    """
+    清空自选列表
+    
+    Returns:
+        删除的记录数量
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM watchlist')
         return cursor.rowcount
 
 

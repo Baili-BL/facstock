@@ -4,19 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>布林带收缩策略 | Bollinger Squeeze</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=DIN+Alternate:wght@700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+    <!-- 图表库 - 本地文件 -->
+    <script src="{{ url_for('static', filename='js/lightweight-charts.standalone.production.js') }}"></script>
+    <!-- Material Icons - 本地字体文件 -->
+    <link href="{{ url_for('static', filename='fonts/material-icons.css') }}" rel="stylesheet">
     <style>
         :root {
             --bg-primary: #f5f6fa;
             --bg-white: #ffffff;
             --bg-card: #ffffff;
-            --accent-red: #ff4757;
-            --accent-green: #2ed573;
+            --accent-red: #e4393c;
+            --accent-green: #26a69a;
             --accent-orange: #ff6b35;
             --accent-blue: #3b82f6;
-            --accent-purple: #8b5cf6;
+            --accent-primary: #e4393c;
+            --accent-secondary: #ff6b6b;
             --accent-gold: #f59e0b;
             --text-primary: #1a1a2e;
             --text-secondary: #64748b;
@@ -32,22 +34,31 @@
             box-sizing: border-box;
         }
 
+        html {
+            height: 100%;
+            overflow-y: scroll;
+        }
+
         body {
             font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
-            min-height: 100vh;
+            min-height: 100%;
             padding-bottom: 80px;
+            overflow-y: scroll;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
         }
 
         .container {
             max-width: 500px;
             margin: 0 auto;
+            position: relative;
         }
 
         /* 顶部 Header */
         .app-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #e4393c 0%, #ff6b6b 100%);
             padding: 16px 16px 60px;
             position: relative;
         }
@@ -209,9 +220,9 @@
             font-size: 24px;
         }
 
-        .quick-action-icon.scan { background: linear-gradient(135deg, #667eea, #764ba2); }
+        .quick-action-icon.scan { background: linear-gradient(135deg, #e4393c, #ff6b6b); }
         .quick-action-icon.hot { background: linear-gradient(135deg, #ff416c, #ff4b2b); }
-        .quick-action-icon.trend { background: linear-gradient(135deg, #11998e, #38ef7d); }
+        .quick-action-icon.trend { background: linear-gradient(135deg, #f56565, #ed8936); }
         .quick-action-icon.star { background: linear-gradient(135deg, #f7971e, #ffd200); }
 
         .quick-action-text {
@@ -317,7 +328,7 @@
             padding: 14px;
             border: none;
             border-radius: 12px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #e4393c 0%, #ff6b6b 100%);
             color: #fff;
             font-size: 1rem;
             font-weight: 600;
@@ -326,7 +337,7 @@
             align-items: center;
             justify-content: center;
             gap: 8px;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 15px rgba(228, 57, 60, 0.4);
         }
 
         .scan-btn:disabled {
@@ -351,7 +362,7 @@
         }
 
         .progress-sector {
-            color: var(--accent-purple);
+            color: var(--accent-primary);
         }
 
         .progress-track {
@@ -363,8 +374,34 @@
 
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
+            background: linear-gradient(90deg, #e4393c, #ff6b6b);
             transition: width 0.3s;
+        }
+
+        .cancel-btn {
+            width: 100%;
+            margin-top: 12px;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            background: #ef4444;
+            color: #fff;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .cancel-btn:hover {
+            background: #dc2626;
+        }
+
+        .cancel-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         /* 热点板块标签 */
@@ -403,7 +440,7 @@
         }
 
         .sector-chip.active {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #e4393c, #ff6b6b);
             border-color: transparent;
             color: #fff;
         }
@@ -453,7 +490,7 @@
         .summary-value {
             font-size: 1.5rem;
             font-weight: 700;
-            color: var(--accent-purple);
+            color: var(--accent-primary);
             font-family: 'DIN Alternate', sans-serif;
         }
 
@@ -463,9 +500,62 @@
             margin-top: 4px;
         }
 
+        /* 快速筛选标签 */
+        .filter-tags-container {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .filter-tags-scroll {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            padding-bottom: 4px;
+        }
+
+        .filter-tags-scroll::-webkit-scrollbar {
+            display: none;
+        }
+
+        .filter-tag {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            background: var(--bg-primary);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .filter-tag:hover {
+            background: #e8e8f0;
+        }
+
+        .filter-tag.active {
+            background: linear-gradient(135deg, #e4393c 0%, #ff6b6b 100%);
+            color: #fff;
+            border-color: transparent;
+        }
+
+        .filter-tag .icon-sm {
+            font-size: 14px;
+        }
+
+        .filter-tag.active .icon-sm {
+            color: #fff;
+        }
+
         /* 股票卡片列表 */
         .stock-list {
             padding: 12px 16px;
+            touch-action: pan-y;
         }
 
         .stock-card {
@@ -476,6 +566,7 @@
             margin-bottom: 10px;
             cursor: pointer;
             transition: all 0.2s;
+            touch-action: pan-y;
         }
 
         .stock-card:active {
@@ -499,7 +590,7 @@
             font-weight: 700;
             font-size: 0.75rem;
             color: #fff;
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #e4393c, #ff6b6b);
         }
 
         .stock-card.top-1 .card-rank { background: linear-gradient(135deg, #ffd700, #ffaa00); color: #000; }
@@ -560,7 +651,7 @@
         .metric-value {
             font-size: 0.9rem;
             font-weight: 700;
-            color: var(--accent-purple);
+            color: var(--accent-primary);
             font-family: 'DIN Alternate', sans-serif;
         }
 
@@ -594,7 +685,7 @@
         .tag-default { background: #f1f5f9; color: #64748b; }
         .tag-cmf { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
         .tag-cmf-weak { background: #d1fae5; color: #059669; }
-        .tag-rsv { background: #ddd6fe; color: #7c3aed; }
+        .tag-rsv { background: #fef2f2; color: #dc2626; }
         .tag-rsv-recover { background: #fef3c7; color: #d97706; }
 
         .tag {
@@ -672,7 +763,7 @@
         }
 
         .modal-title .code {
-            color: var(--accent-purple);
+            color: var(--accent-primary);
             font-size: 0.9rem;
             margin-left: 8px;
         }
@@ -688,6 +779,57 @@
 
         .modal-body {
             padding: 16px;
+        }
+
+        /* 价格信息面板 */
+        .price-info-panel {
+            background: var(--bg-white);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow-sm);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .price-main {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+        }
+
+        .price-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-family: 'DIN Alternate', sans-serif;
+        }
+
+        .price-change {
+            font-size: 1rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 6px;
+        }
+
+        .price-change.up {
+            background: #ffebee;
+            color: #ef5350;
+        }
+
+        .price-change.down {
+            background: #e8f5e9;
+            color: #26a69a;
+        }
+
+        .price-change.flat {
+            background: #f5f5f5;
+            color: #9e9e9e;
+        }
+
+        .price-date {
+            font-size: 0.75rem;
+            color: var(--text-muted);
         }
 
         .chart-card {
@@ -749,7 +891,7 @@
         }
 
         .note-item strong {
-            color: var(--accent-purple);
+            color: var(--accent-primary);
         }
 
         /* 动画 */
@@ -803,8 +945,8 @@
         }
 
         .history-item.active {
-            background: linear-gradient(135deg, #667eea15, #764ba215);
-            border: 1px solid var(--accent-purple);
+            background: linear-gradient(135deg, #e4393c15, #ff6b6b15);
+            border: 1px solid var(--accent-primary);
         }
 
         .history-item-left {
@@ -825,11 +967,11 @@
         }
 
         .history-icon.completed {
-            background: linear-gradient(135deg, #11998e, #38ef7d);
+            background: linear-gradient(135deg, #e4393c, #ff6b6b);
         }
 
         .history-icon.scanning {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #e4393c, #ff6b6b);
         }
 
         .history-icon.error {
@@ -861,7 +1003,7 @@
         }
 
         .history-stat-value {
-            color: var(--accent-purple);
+            color: var(--accent-primary);
             font-weight: 600;
         }
 
@@ -884,7 +1026,7 @@
 
         .history-btn.view {
             background: var(--bg-white);
-            color: var(--accent-purple);
+            color: var(--accent-primary);
         }
 
         .history-btn.delete {
@@ -929,6 +1071,243 @@
             font-size: 48px;
             color: var(--border-color);
             margin-bottom: 12px;
+        }
+
+        /* 自选列表页面 */
+        .watchlist-page {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 60px;
+            background: #fff;
+            z-index: 100;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .watchlist-page.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .watchlist-page-header {
+            background: #fff;
+            padding: 12px 16px;
+            padding-top: calc(12px + env(safe-area-inset-top));
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .watchlist-tabs {
+            display: flex;
+            gap: 24px;
+        }
+
+        .watchlist-tab {
+            font-size: 1rem;
+            color: var(--text-muted);
+            padding: 8px 0;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .watchlist-tab.active {
+            color: var(--accent-primary);
+            font-weight: 600;
+        }
+
+        .watchlist-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 20px;
+            height: 2px;
+            background: var(--accent-primary);
+            border-radius: 1px;
+        }
+
+        .watchlist-tab span {
+            font-size: 0.85rem;
+            margin-left: 4px;
+        }
+
+        .watchlist-table-header {
+            display: flex;
+            padding: 10px 16px;
+            background: #fafafa;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .wt-col {
+            text-align: center;
+        }
+
+        .wt-col-name {
+            flex: 1.5;
+            text-align: left;
+        }
+
+        .wt-col-price {
+            flex: 1;
+        }
+
+        .wt-col-change {
+            flex: 1;
+        }
+
+        .wt-col-action {
+            width: 40px;
+        }
+
+        .watchlist-page-body {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 20px;
+        }
+
+        .watchlist-empty {
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--text-muted);
+        }
+
+        .watchlist-empty p {
+            margin-top: 12px;
+        }
+
+        .watchlist-empty .text-muted {
+            font-size: 0.85rem;
+            margin-top: 8px;
+        }
+
+        .watchlist-row {
+            display: flex;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #f5f5f5;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .watchlist-row:active {
+            background: #f9f9f9;
+        }
+
+        .watchlist-row-name {
+            flex: 1.5;
+        }
+
+        .watchlist-stock-name {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--text-primary);
+        }
+
+        .watchlist-stock-code {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .watchlist-stock-sector {
+            display: inline-block;
+            font-size: 0.65rem;
+            color: var(--accent-primary);
+            background: #fff5f5;
+            padding: 1px 4px;
+            border-radius: 2px;
+            margin-left: 6px;
+        }
+
+        .watchlist-row-price {
+            flex: 1;
+            text-align: center;
+            font-weight: 600;
+            font-size: 1rem;
+            font-family: 'DIN Alternate', sans-serif;
+        }
+
+        .watchlist-row-change {
+            flex: 1;
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.9rem;
+            font-family: 'DIN Alternate', sans-serif;
+        }
+
+        .watchlist-row-change.up {
+            color: #ef5350;
+        }
+
+        .watchlist-row-change.down {
+            color: #26a69a;
+        }
+
+        .watchlist-row-action {
+            width: 40px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .watchlist-del-btn {
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .watchlist-del-btn:hover {
+            background: #f5f5f5;
+            color: #ef5350;
+        }
+
+        .watchlist-del-btn .material-symbols-rounded {
+            font-size: 18px;
+        }
+
+        /* 股票卡片自选按钮 */
+        .stock-card-actions {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-watchlist {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 8px;
+            background: #f5f5f5;
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .btn-watchlist.active {
+            background: #fff5f5;
+            color: var(--accent-primary);
+        }
+
+        .btn-watchlist .material-symbols-rounded {
+            font-size: 18px;
         }
 
         /* 确认对话框 */
@@ -1012,6 +1391,7 @@
             padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
             z-index: 1000;
             box-shadow: 0 -1px 0 rgba(0,0,0,0.05);
+            touch-action: none;
         }
 
         .tab-item {
@@ -1089,7 +1469,7 @@
         <header class="app-header">
             <div class="header-top">
                 <div class="app-logo">
-                    <div class="logo-icon"><span class="material-symbols-rounded">candlestick_chart</span></div>
+                    <div class="logo-icon"><span class="material-symbols-rounded">show_chart</span></div>
                     <span class="logo-text">布林收缩</span>
                 </div>
                 <div class="header-time" id="currentTime"></div>
@@ -1123,15 +1503,15 @@
         <!-- 功能入口 -->
         <div class="quick-actions">
             <div class="quick-action" onclick="scrollToScan()">
-                <div class="quick-action-icon scan"><span class="material-symbols-rounded">radar</span></div>
+                <div class="quick-action-icon scan"><span class="material-symbols-rounded">track_changes</span></div>
                 <div class="quick-action-text">开始扫描</div>
             </div>
             <div class="quick-action">
-                <div class="quick-action-icon hot"><span class="material-symbols-rounded">local_fire_department</span></div>
+                <div class="quick-action-icon hot"><span class="material-symbols-rounded">whatshot</span></div>
                 <div class="quick-action-text">热点板块</div>
             </div>
             <div class="quick-action">
-                <div class="quick-action-icon trend"><span class="material-symbols-rounded">insights</span></div>
+                <div class="quick-action-icon trend"><span class="material-symbols-rounded">assessment</span></div>
                 <div class="quick-action-text">趋势研判</div>
             </div>
             <div class="quick-action">
@@ -1168,11 +1548,11 @@
                     </div>
                 </div>
                 <div class="filter-btn" id="volumeFilterBtn" onclick="toggleFilter()">
-                    <span class="material-symbols-rounded icon-sm">local_fire_department</span>
+                    <span class="material-symbols-rounded icon-sm">whatshot</span>
                     <span>只看放量/量价齐升</span>
                 </div>
                 <button class="scan-btn" id="scanBtn" onclick="startScan()">
-                    <span class="material-symbols-rounded">rocket_launch</span>
+                    <span class="material-symbols-rounded">send</span>
                     <span>开始扫描</span>
                 </button>
                 <div class="progress-bar-container" id="progressContainer">
@@ -1183,6 +1563,10 @@
                     <div class="progress-track">
                         <div class="progress-fill" id="progressFill" style="width: 0%"></div>
                     </div>
+                    <button class="cancel-btn" id="cancelBtn" onclick="cancelScan()">
+                        <span class="material-symbols-rounded">close</span>
+                        <span>取消扫描</span>
+                    </button>
                 </div>
             </div>
         </div>
@@ -1219,6 +1603,35 @@
                     <div class="summary-label">覆盖板块</div>
                 </div>
             </div>
+            <!-- 快速筛选标签 -->
+            <div class="filter-tags-container" id="filterTagsContainer">
+                <div class="filter-tags-scroll">
+                    <div class="filter-tag active" data-filter="all" onclick="applyFilter('all')">
+                        <span class="material-symbols-rounded icon-sm">apps</span>全部
+                    </div>
+                    <div class="filter-tag" data-filter="grade-s" onclick="applyFilter('grade-s')">
+                        <span class="material-symbols-rounded icon-sm">star</span>S级
+                    </div>
+                    <div class="filter-tag" data-filter="grade-a" onclick="applyFilter('grade-a')">
+                        <span class="material-symbols-rounded icon-sm">thumb_up</span>A级
+                    </div>
+                    <div class="filter-tag" data-filter="volume-up" onclick="applyFilter('volume-up')">
+                        <span class="material-symbols-rounded icon-sm">trending_up</span>放量
+                    </div>
+                    <div class="filter-tag" data-filter="cmf-in" onclick="applyFilter('cmf-in')">
+                        <span class="material-symbols-rounded icon-sm">attach_money</span>资金流入
+                    </div>
+                    <div class="filter-tag" data-filter="ma-bull" onclick="applyFilter('ma-bull')">
+                        <span class="material-symbols-rounded icon-sm">show_chart</span>多头排列
+                    </div>
+                    <div class="filter-tag" data-filter="macd" onclick="applyFilter('macd')">
+                        <span class="material-symbols-rounded icon-sm">insights</span>MACD金叉
+                    </div>
+                    <div class="filter-tag" data-filter="leader" onclick="applyFilter('leader')">
+                        <span class="material-symbols-rounded icon-sm">military_tech</span>中军
+                    </div>
+                </div>
+            </div>
             <div class="stock-list" id="stockList">
                 <div class="empty-state">
                     <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">target</span></div>
@@ -1250,6 +1663,28 @@
         </div>
     </div>
 
+    <!-- 自选列表页面 -->
+    <div class="watchlist-page" id="watchlistPage">
+        <div class="watchlist-page-header">
+            <div class="watchlist-tabs">
+                <div class="watchlist-tab active">全部 <span id="watchlistCount">0</span></div>
+            </div>
+        </div>
+        <div class="watchlist-table-header">
+            <div class="wt-col wt-col-name">名称/代码</div>
+            <div class="wt-col wt-col-price">最新价</div>
+            <div class="wt-col wt-col-change">涨跌幅</div>
+            <div class="wt-col wt-col-action"></div>
+        </div>
+        <div class="watchlist-page-body" id="watchlistBody">
+            <div class="watchlist-empty">
+                <span class="material-symbols-rounded" style="font-size: 48px; color: #ddd;">star_border</span>
+                <p>暂无自选股票</p>
+                <p class="text-muted">在扫描结果中点击 ⭐ 添加</p>
+            </div>
+        </div>
+    </div>
+
     <!-- 确认对话框 -->
     <div class="confirm-dialog" id="confirmDialog">
         <div class="confirm-box">
@@ -1269,12 +1704,12 @@
             <span class="tab-label">首页</span>
         </div>
         <div class="tab-item" onclick="switchTab(this, 'strategy')">
-            <span class="material-symbols-rounded tab-icon">insights</span>
+            <span class="material-symbols-rounded tab-icon">assessment</span>
             <span class="tab-label">策略</span>
         </div>
         <div class="tab-item tab-center" onclick="startScan()">
             <div class="tab-icon-wrapper">
-                <span class="material-symbols-rounded tab-icon">radar</span>
+                <span class="material-symbols-rounded tab-icon">track_changes</span>
             </div>
             <span class="tab-label">扫描</span>
         </div>
@@ -1299,13 +1734,25 @@
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-body">
+                <!-- 价格信息面板 -->
+                <div class="price-info-panel" id="priceInfoPanel">
+                    <div class="price-main">
+                        <span class="price-value" id="modalPrice">--</span>
+                        <span class="price-change" id="modalPriceChange">--</span>
+                    </div>
+                    <div class="price-date" id="modalPriceDate">--</div>
+                </div>
                 <div class="chart-card chart-main">
-                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">candlestick_chart</span> K线 · 布林带 · 成交量</div>
+                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">show_chart</span> K线 · 布林带 · 成交量</div>
                     <div id="mainChart"></div>
                 </div>
                 <div class="chart-card chart-small">
-                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">compress</span> 带宽收缩信号</div>
+                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">unfold_less</span> 带宽收缩信号</div>
                     <div id="widthChart"></div>
+                </div>
+                <div class="chart-card chart-small">
+                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">attach_money</span> CMF 资金流量指标</div>
+                    <div id="cmfChart"></div>
                 </div>
                 <div class="chart-notes">
                     <div class="note-title"><span class="material-symbols-rounded icon-sm">menu_book</span> 信号解读</div>
@@ -1317,6 +1764,14 @@
                         <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">fiber_manual_record</span>
                         <span><strong>MA5 &lt; MA10</strong>：5日带宽均线低于10日，表示正在收缩</span>
                     </div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #ef5350;">fiber_manual_record</span>
+                        <span><strong>CMF &gt; 0</strong>：资金净流入，红柱越高买盘越强</span>
+                    </div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #26a69a;">fiber_manual_record</span>
+                        <span><strong>CMF &lt; 0</strong>：资金净流出，绿柱越深卖压越大</span>
+                    </div>
                     <div class="note-title" style="margin-top: 12px;"><span class="material-symbols-rounded icon-sm">lightbulb</span> 操作建议</div>
                     <div class="note-item">
                         <span class="material-symbols-rounded icon-sm" style="color: #22c55e;">check_circle</span>
@@ -1324,11 +1779,11 @@
                     </div>
                     <div class="note-item">
                         <span class="material-symbols-rounded icon-sm" style="color: #22c55e;">check_circle</span>
-                        <span>带宽触底反弹 + 放量突破 → 买入信号</span>
+                        <span>带宽触底反弹 + 放量突破 + CMF转正 → 强买入信号</span>
                     </div>
                     <div class="note-item">
                         <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">warning</span>
-                        <span>收缩后可能向上或向下突破，需结合趋势判断</span>
+                        <span>收缩后可能向上或向下突破，需结合趋势和资金流向判断</span>
                     </div>
                 </div>
             </div>
@@ -1340,10 +1795,13 @@
         let currentSector = null;
         let mainChart = null;
         let widthChart = null;
+        let cmfChart = null;
         let pollInterval = null;
         let volumeFilterEnabled = false;
         let currentScanId = null;
         let confirmCallback = null;
+        let currentFilter = 'all';
+        let watchlist = [];
 
         // 更新时间
         function updateTime() {
@@ -1364,6 +1822,63 @@
             volumeFilterEnabled = !volumeFilterEnabled;
             document.getElementById('volumeFilterBtn').classList.toggle('active', volumeFilterEnabled);
             if (currentSector) showSectorResults(currentSector);
+        }
+
+        // 快速筛选功能
+        function applyFilter(filterType) {
+            currentFilter = filterType;
+            
+            // 更新标签选中状态
+            document.querySelectorAll('.filter-tag').forEach(tag => {
+                tag.classList.remove('active');
+                if (tag.dataset.filter === filterType) {
+                    tag.classList.add('active');
+                }
+            });
+            
+            // 重新渲染当前板块
+            if (currentSector) {
+                showSectorResults(currentSector);
+            }
+        }
+
+        function getFilterName(filterType) {
+            const names = {
+                'all': '全部',
+                'grade-s': 'S级',
+                'grade-a': 'A级',
+                'volume-up': '放量',
+                'cmf-in': '资金流入',
+                'ma-bull': '多头排列',
+                'macd': 'MACD金叉',
+                'leader': '中军'
+            };
+            return names[filterType] || filterType;
+        }
+
+        function applyQuickFilter(stocks) {
+            if (currentFilter === 'all') return stocks;
+            
+            return stocks.filter(stock => {
+                switch (currentFilter) {
+                    case 'grade-s':
+                        return stock.grade === 'S';
+                    case 'grade-a':
+                        return stock.grade === 'A';
+                    case 'volume-up':
+                        return stock.is_volume_up || stock.is_volume_price_up;
+                    case 'cmf-in':
+                        return stock.cmf_bullish || stock.cmf_strong_bullish;
+                    case 'ma-bull':
+                        return stock.ma_full_bullish || stock.ma_bullish;
+                    case 'macd':
+                        return stock.macd_golden;
+                    case 'leader':
+                        return stock.is_leader;
+                    default:
+                        return true;
+                }
+            });
         }
 
         // 开始扫描
@@ -1412,13 +1927,20 @@
 
                 if (!status.is_scanning) {
                     clearInterval(pollInterval);
-                    await loadResults();
+                    pollInterval = null;
+                    
+                    // 检查是否被取消
+                    if (status.cancelled) {
+                        showToast('扫描已取消');
+                    } else if (status.error) {
+                        alert('扫描出错: ' + status.error);
+                    } else {
+                        // 正常完成，加载结果
+                        await loadResults();
+                    }
+                    
                     resetScanButton();
                     document.getElementById('progressContainer').classList.remove('active');
-                }
-
-                if (status.error) {
-                    alert('扫描出错: ' + status.error);
                 }
             } catch (error) {
                 console.error('轮询失败:', error);
@@ -1460,7 +1982,7 @@
                     } else {
                         document.getElementById('stockList').innerHTML = `
                             <div class="empty-state">
-                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search_off</span></div>
+                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search</span></div>
                                 <p class="empty-title">未找到符合条件的股票</p>
                                 <p class="empty-desc">尝试调整参数后重新扫描</p>
                             </div>
@@ -1532,16 +2054,25 @@
             }
 
             let stocks = result.stocks;
+            
+            // 量能筛选
             if (volumeFilterEnabled) {
                 stocks = stocks.filter(s => s.is_volume_up || s.is_volume_price_up);
             }
+            
+            // 快速筛选标签
+            stocks = applyQuickFilter(stocks);
 
             if (stocks.length === 0) {
+                let emptyMsg = '该板块无符合条件的股票';
+                if (currentFilter !== 'all') {
+                    emptyMsg = `该板块无"${getFilterName(currentFilter)}"股票`;
+                }
                 document.getElementById('stockList').innerHTML = `
                     <div class="empty-state">
-                        <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">filter_alt_off</span></div>
-                        <p class="empty-title">该板块无放量/量价齐升股票</p>
-                        <p class="empty-desc">取消筛选可查看全部</p>
+                        <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">block</span></div>
+                        <p class="empty-title">${emptyMsg}</p>
+                        <p class="empty-desc">尝试切换筛选条件</p>
                     </div>
                 `;
                 return;
@@ -1555,16 +2086,22 @@
                     let tagClass = 'tag-default';
                     let tagIcon = '';
                     
-                    if (tag.includes('中军')) {
+                    if (tag === 'S级') {
+                        tagClass = 'tag-grade';
+                        tagIcon = 'star';
+                    } else if (tag === 'A级') {
+                        tagClass = 'tag-grade';
+                        tagIcon = 'grade';
+                    } else if (tag.includes('中军')) {
                         tagClass = 'tag-leader';
-                        tagIcon = 'military_tech';
-                    } else if (tag.includes('强势流入')) {
+                        tagIcon = 'stars';
+                    } else if (tag === '强势流入') {
                         tagClass = 'tag-cmf';
-                        tagIcon = 'payments';
-                    } else if (tag.includes('资金流入') || tag.includes('资金净流入')) {
+                        tagIcon = 'attach_money';
+                    } else if (tag === '资金流入' || tag === '资金净流入') {
                         tagClass = 'tag-cmf-weak';
                         tagIcon = 'account_balance';
-                    } else if (tag.includes('超卖回升')) {
+                    } else if (tag === '超卖回升') {
                         tagClass = 'tag-rsv-recover';
                         tagIcon = 'refresh';
                     } else if (tag.includes('RSV')) {
@@ -1572,31 +2109,31 @@
                         tagIcon = 'speed';
                     } else if (tag === '量价齐升') {
                         tagClass = 'tag-hot';
-                        tagIcon = 'local_fire_department';
+                        tagIcon = 'whatshot';
                     } else if (tag === '放量') {
                         tagClass = 'tag-volume';
                         tagIcon = 'equalizer';
-                    } else if (tag.includes('多头') || tag.includes('短多')) {
+                    } else if (tag === '多头排列') {
                         tagClass = 'tag-trend';
                         tagIcon = 'trending_up';
-                    } else if (tag === '平稳上行') {
-                        tagClass = 'tag-gentle';
-                        tagIcon = 'show_chart';
-                    } else if (tag === '人气旺') {
+                    } else if (tag === '短多') {
+                        tagClass = 'tag-trend';
+                        tagIcon = 'trending_up';
+                    } else if (tag === '人气旺' || tag === '超人气') {
                         tagClass = 'tag-popular';
                         tagIcon = 'whatshot';
                     } else if (tag === '有关注') {
                         tagClass = 'tag-watched';
                         tagIcon = 'visibility';
-                    } else if (tag.includes('级')) {
-                        tagClass = 'tag-grade';
-                        tagIcon = 'grade';
                     } else if (tag.includes('MACD')) {
                         tagClass = 'tag-trend';
-                        tagIcon = 'insights';
+                        tagIcon = 'assessment';
                     } else if (tag === '低波蓄势') {
                         tagClass = 'tag-gentle';
-                        tagIcon = 'compress';
+                        tagIcon = 'unfold_less';
+                    } else if (tag === '先锋') {
+                        tagClass = 'tag-hot';
+                        tagIcon = 'bolt';
                     }
                     
                     const iconHtml = tagIcon ? `<span class="material-symbols-rounded tag-icon">${tagIcon}</span>` : '';
@@ -1605,9 +2142,18 @@
                 
                 const topClass = index === 0 ? 'top-1' : index === 1 ? 'top-2' : index === 2 ? 'top-3' : '';
                 const volumeRatio = stock.volume_ratio || 0;
+                const inWatchlist = isStockInWatchlist(stock.code);
+                const sectorName = currentSector || '';
                 
                 return `
                     <div class="stock-card ${topClass} fade-in" onclick="showStockDetail('${stock.code}', '${stock.name}')">
+                        <div class="stock-card-actions">
+                            <button class="btn-watchlist ${inWatchlist ? 'active' : ''}" 
+                                    data-code="${stock.code}"
+                                    onclick="event.stopPropagation(); toggleWatchlist('${stock.code}', '${stock.name}', '${sectorName}')">
+                                <span class="material-symbols-rounded">${inWatchlist ? 'star' : 'star_border'}</span>
+                            </button>
+                        </div>
                         <div class="card-rank">${index + 1}</div>
                         <div class="card-main">
                             <div>
@@ -1627,16 +2173,16 @@
                                 <div class="metric-label">${stock.grade || 'C'}级评分</div>
                             </div>
                             <div class="metric-item">
-                                <div class="metric-value" style="color: ${(stock.cmf || 0) > 0 ? '#10b981' : '#ef4444'}">${((stock.cmf || 0) * 100).toFixed(1)}</div>
-                                <div class="metric-label">CMF%</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-value" style="color: ${(stock.rsv || 50) >= 50 ? '#7c3aed' : '#64748b'}">${(stock.rsv || 50).toFixed(0)}</div>
-                                <div class="metric-label">RSV</div>
+                                <div class="metric-value">${stock.bb_width_pct.toFixed(1)}%</div>
+                                <div class="metric-label">带宽</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-value">${stock.squeeze_days}天</div>
                                 <div class="metric-label">收缩</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-value">${(stock.volume_ratio || 0).toFixed(1)}</div>
+                                <div class="metric-label">量比</div>
                             </div>
                         </div>
                         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
@@ -1668,6 +2214,26 @@
         function renderCharts(data) {
             if (mainChart) { mainChart.remove(); mainChart = null; }
             if (widthChart) { widthChart.remove(); widthChart = null; }
+            if (cmfChart) { cmfChart.remove(); cmfChart = null; }
+
+            // 更新价格信息面板
+            if (data.latest) {
+                const price = data.latest.close;
+                const pctChange = data.latest.pct_change;
+                const date = data.latest.date;
+                
+                document.getElementById('modalPrice').textContent = price.toFixed(2);
+                
+                const changeEl = document.getElementById('modalPriceChange');
+                const sign = pctChange >= 0 ? '+' : '';
+                changeEl.textContent = `${sign}${pctChange.toFixed(2)}%`;
+                changeEl.className = 'price-change ' + (pctChange > 0 ? 'up' : pctChange < 0 ? 'down' : 'flat');
+                
+                // 价格颜色也跟着变
+                document.getElementById('modalPrice').style.color = pctChange > 0 ? '#ef5350' : pctChange < 0 ? '#26a69a' : '#333';
+                
+                document.getElementById('modalPriceDate').textContent = date;
+            }
 
             document.getElementById('mainChart').innerHTML = '';
 
@@ -1697,14 +2263,14 @@
                 },
             });
 
-            const volumeSeries = mainChart.addSeries(LightweightCharts.HistogramSeries, {
+            const volumeSeries = mainChart.addHistogramSeries({
                 priceFormat: { type: 'volume' },
                 priceScaleId: 'volume',
             });
             volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
             volumeSeries.setData(data.volumes);
 
-            const candleSeries = mainChart.addSeries(LightweightCharts.CandlestickSeries, {
+            const candleSeries = mainChart.addCandlestickSeries({
                 upColor: '#ef5350',
                 downColor: '#26a69a',
                 borderUpColor: '#ef5350',
@@ -1715,19 +2281,19 @@
             candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.2 } });
             candleSeries.setData(data.candles);
 
-            const bbUpperSeries = mainChart.addSeries(LightweightCharts.LineSeries, {
-                color: '#ff6b6b', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
+            const bbUpperSeries = mainChart.addLineSeries({
+                color: '#ff6b6b', lineWidth: 1, lineStyle: 2,
                 lastValueVisible: false, priceLineVisible: false,
             });
             bbUpperSeries.setData(data.bb_upper);
 
-            const bbMiddleSeries = mainChart.addSeries(LightweightCharts.LineSeries, {
+            const bbMiddleSeries = mainChart.addLineSeries({
                 color: '#ffd93d', lineWidth: 1, lastValueVisible: false, priceLineVisible: false,
             });
             bbMiddleSeries.setData(data.bb_middle);
 
-            const bbLowerSeries = mainChart.addSeries(LightweightCharts.LineSeries, {
-                color: '#4ecdc4', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
+            const bbLowerSeries = mainChart.addLineSeries({
+                color: '#4ecdc4', lineWidth: 1, lineStyle: 2,
                 lastValueVisible: false, priceLineVisible: false,
             });
             bbLowerSeries.setData(data.bb_lower);
@@ -1764,11 +2330,11 @@
             const ma5Data = data.dates.map((date, i) => ({ time: date, value: data.width_ma5[i] }));
             const ma10Data = data.dates.map((date, i) => ({ time: date, value: data.width_ma10[i] }));
 
-            // 带宽% - 紫色区域
-            const widthSeries = widthChart.addSeries(LightweightCharts.AreaSeries, {
-                lineColor: '#8b5cf6',
-                topColor: 'rgba(139, 92, 246, 0.3)',
-                bottomColor: 'rgba(139, 92, 246, 0.05)',
+            // 带宽% - 红色区域
+            const widthSeries = widthChart.addAreaSeries({
+                lineColor: '#e4393c',
+                topColor: 'rgba(228, 57, 60, 0.3)',
+                bottomColor: 'rgba(228, 57, 60, 0.05)',
                 lineWidth: 2,
                 priceLineVisible: false,
                 lastValueVisible: false,
@@ -1776,7 +2342,7 @@
             widthSeries.setData(widthData);
 
             // MA5 - 橙色线
-            const ma5Series = widthChart.addSeries(LightweightCharts.LineSeries, {
+            const ma5Series = widthChart.addLineSeries({
                 color: '#f59e0b',
                 lineWidth: 1,
                 priceLineVisible: false,
@@ -1785,7 +2351,7 @@
             ma5Series.setData(ma5Data);
 
             // MA10 - 蓝色线
-            const ma10Series = widthChart.addSeries(LightweightCharts.LineSeries, {
+            const ma10Series = widthChart.addLineSeries({
                 color: '#3b82f6',
                 lineWidth: 1,
                 priceLineVisible: false,
@@ -1794,6 +2360,50 @@
             ma10Series.setData(ma10Data);
 
             widthChart.timeScale().fitContent();
+
+            // CMF 资金流量图
+            if (cmfChart) { cmfChart.remove(); cmfChart = null; }
+            const cmfContainer = document.getElementById('cmfChart');
+            cmfContainer.innerHTML = '';
+            cmfChart = LightweightCharts.createChart(cmfContainer, {
+                width: cmfContainer.clientWidth,
+                height: 140,
+                layout: {
+                    background: { type: 'solid', color: '#ffffff' },
+                    textColor: '#64748b',
+                },
+                grid: {
+                    vertLines: { color: '#f1f5f9' },
+                    horzLines: { color: '#f1f5f9' },
+                },
+                rightPriceScale: { borderColor: '#e2e8f0' },
+                timeScale: { 
+                    borderColor: '#e2e8f0', 
+                    timeVisible: false,
+                    fixLeftEdge: true,
+                    fixRightEdge: true,
+                    rightOffset: 0,
+                },
+            });
+
+            // CMF 数据 - 柱状图（红色正值=资金流入，绿色负值=资金流出，符合中国股市红涨绿跌）
+            const cmfData = data.dates.map((date, i) => {
+                const value = data.cmf[i];
+                return {
+                    time: date,
+                    value: value,
+                    color: value >= 0 ? '#ef5350' : '#26a69a'
+                };
+            }).filter(d => d.value !== null);
+
+            const cmfSeries = cmfChart.addHistogramSeries({
+                priceLineVisible: false,
+                lastValueVisible: true,
+            });
+            cmfSeries.setData(cmfData);
+
+            // 零线
+            cmfChart.timeScale().fitContent();
         }
 
         function closeModal() {
@@ -1801,6 +2411,7 @@
             document.body.style.overflow = '';
             if (mainChart) { mainChart.remove(); mainChart = null; }
             if (widthChart) { widthChart.remove(); widthChart = null; }
+            if (cmfChart) { cmfChart.remove(); cmfChart = null; }
         }
 
         // Tab 切换
@@ -1808,16 +2419,225 @@
             document.querySelectorAll('.tab-item:not(.tab-center)').forEach(tab => tab.classList.remove('active'));
             element.classList.add('active');
             
+            // 先隐藏自选页面，显示主容器
+            if (tabName !== 'watchlist') {
+                document.getElementById('watchlistPage').classList.remove('active');
+                document.querySelector('.container').style.display = 'block';
+            }
+            
             if (tabName === 'home') {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             } else if (tabName === 'strategy') {
                 document.querySelector('.quick-actions')?.scrollIntoView({ behavior: 'smooth' });
             } else if (tabName === 'watchlist') {
-                showToast('自选功能开发中...');
+                openWatchlist();
             } else if (tabName === 'me') {
                 showToast('个人中心开发中...');
             }
         }
+
+        // ==================== 自选功能 ====================
+        
+        async function loadWatchlist() {
+            try {
+                const response = await fetch('/api/watchlist');
+                const data = await response.json();
+                if (data.success) {
+                    watchlist = data.data;
+                    return watchlist;
+                }
+            } catch (error) {
+                console.error('加载自选列表失败:', error);
+            }
+            return [];
+        }
+
+        async function openWatchlist() {
+            await loadWatchlist();
+            renderWatchlist();
+            // 隐藏主页面内容，显示自选页面
+            document.querySelector('.container').style.display = 'none';
+            document.getElementById('watchlistPage').classList.add('active');
+        }
+
+        function closeWatchlist() {
+            document.getElementById('watchlistPage').classList.remove('active');
+            document.querySelector('.container').style.display = 'block';
+        }
+
+        function renderWatchlist() {
+            const body = document.getElementById('watchlistBody');
+            const countEl = document.getElementById('watchlistCount');
+            
+            countEl.textContent = watchlist.length;
+            
+            if (watchlist.length === 0) {
+                body.innerHTML = `
+                    <div class="watchlist-empty">
+                        <span class="material-symbols-rounded" style="font-size: 48px; color: #ddd;">star_border</span>
+                        <p>暂无自选股票</p>
+                        <p class="text-muted">在扫描结果中点击 ⭐ 添加</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // 先渲染基本列表，价格显示"--"
+            body.innerHTML = watchlist.map(stock => `
+                <div class="watchlist-row" onclick="viewWatchlistStock('${stock.code}', '${stock.name}')">
+                    <div class="watchlist-row-name">
+                        <div class="watchlist-stock-name">${stock.name}</div>
+                        <div class="watchlist-stock-code">
+                            ${stock.code}
+                            ${stock.sector ? `<span class="watchlist-stock-sector">${stock.sector}</span>` : ''}
+                        </div>
+                    </div>
+                    <div class="watchlist-row-price" id="price-${stock.code}">--</div>
+                    <div class="watchlist-row-change" id="change-${stock.code}">--</div>
+                    <div class="watchlist-row-action">
+                        <button class="watchlist-del-btn" onclick="event.stopPropagation(); removeFromWatchlist('${stock.code}')">
+                            <span class="material-symbols-rounded">close</span>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+            
+            // 异步加载价格数据
+            loadWatchlistPrices();
+        }
+
+        async function loadWatchlistPrices() {
+            // 逐个加载，每个请求间隔1秒避免限流
+            for (let i = 0; i < watchlist.length; i++) {
+                const stock = watchlist[i];
+                
+                // 检查页面是否还在显示
+                if (!document.getElementById('watchlistPage').classList.contains('active')) {
+                    break;
+                }
+                
+                try {
+                    const response = await fetch(`/api/stock/${stock.code}`);
+                    const data = await response.json();
+                    
+                    if (data.success && data.data && data.data.latest) {
+                        const latest = data.data.latest;
+                        const priceEl = document.getElementById(`price-${stock.code}`);
+                        const changeEl = document.getElementById(`change-${stock.code}`);
+                        
+                        if (priceEl) {
+                            priceEl.textContent = latest.close.toFixed(2);
+                        }
+                        
+                        if (changeEl) {
+                            const pct = latest.pct_change;
+                            const sign = pct >= 0 ? '+' : '';
+                            changeEl.textContent = `${sign}${pct.toFixed(2)}%`;
+                            changeEl.className = `watchlist-row-change ${pct >= 0 ? 'up' : 'down'}`;
+                        }
+                    } else if (!data.success) {
+                        // 显示加载失败
+                        const priceEl = document.getElementById(`price-${stock.code}`);
+                        if (priceEl) priceEl.textContent = '--';
+                    }
+                } catch (error) {
+                    console.error(`加载 ${stock.code} 价格失败:`, error);
+                    const priceEl = document.getElementById(`price-${stock.code}`);
+                    if (priceEl) priceEl.textContent = '--';
+                }
+                
+                // 请求间隔1秒，避免API限流
+                if (i < watchlist.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+        }
+
+        async function addToWatchlist(code, name, sector) {
+            try {
+                const response = await fetch('/api/watchlist/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code, name, sector })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    showToast('已添加到自选');
+                    // 更新按钮状态
+                    updateWatchlistButton(code, true);
+                    // 重新加载自选列表
+                    await loadWatchlist();
+                } else {
+                    showToast('添加失败: ' + data.error);
+                }
+            } catch (error) {
+                showToast('添加失败');
+            }
+        }
+
+        async function removeFromWatchlist(code) {
+            try {
+                const response = await fetch('/api/watchlist/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    showToast('已从自选移除');
+                    // 更新按钮状态
+                    updateWatchlistButton(code, false);
+                    // 重新加载并渲染自选列表
+                    await loadWatchlist();
+                    renderWatchlist();
+                } else {
+                    showToast('移除失败: ' + data.error);
+                }
+            } catch (error) {
+                showToast('移除失败');
+            }
+        }
+
+        function toggleWatchlist(code, name, sector) {
+            const btn = document.querySelector(`.btn-watchlist[data-code="${code}"]`);
+            const isInWatchlist = btn && btn.classList.contains('active');
+            
+            if (isInWatchlist) {
+                removeFromWatchlist(code);
+            } else {
+                addToWatchlist(code, name, sector);
+            }
+        }
+
+        function updateWatchlistButton(code, isActive) {
+            const btn = document.querySelector(`.btn-watchlist[data-code="${code}"]`);
+            if (btn) {
+                if (isActive) {
+                    btn.classList.add('active');
+                    btn.innerHTML = '<span class="material-symbols-rounded">star</span>';
+                } else {
+                    btn.classList.remove('active');
+                    btn.innerHTML = '<span class="material-symbols-rounded">star_border</span>';
+                }
+            }
+        }
+
+        function viewWatchlistStock(code, name) {
+            document.getElementById('modalStockName').textContent = name;
+            document.getElementById('modalStockCode').textContent = code;
+            document.getElementById('stockModal').classList.add('active');
+            document.body.style.overflow = 'hidden';
+            loadStockDetail(code);
+        }
+
+        function isStockInWatchlist(code) {
+            return watchlist.some(s => s.code === code);
+        }
+
+        // 页面加载时预加载自选列表
+        loadWatchlist();
 
         // Toast 提示
         function showToast(message) {
@@ -1849,7 +2669,51 @@
         function resetScanButton() {
             const btn = document.getElementById('scanBtn');
             btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span><span>开始扫描</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded">send</span><span>开始扫描</span>';
+            
+            // 重置取消按钮
+            const cancelBtn = document.getElementById('cancelBtn');
+            cancelBtn.disabled = false;
+            cancelBtn.innerHTML = '<span class="material-symbols-rounded">close</span><span>取消扫描</span>';
+        }
+
+        async function cancelScan() {
+            const cancelBtn = document.getElementById('cancelBtn');
+            cancelBtn.disabled = true;
+            cancelBtn.innerHTML = '<span class="material-symbols-rounded">hourglass_empty</span><span>取消中...</span>';
+            
+            try {
+                const response = await fetch('/api/scan/cancel', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    // 停止轮询
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    
+                    document.getElementById('progressSector').textContent = '已取消';
+                    
+                    // 延迟后隐藏进度条
+                    setTimeout(() => {
+                        document.getElementById('progressContainer').classList.remove('active');
+                        resetScanButton();
+                    }, 1000);
+                    
+                    showToast('扫描已取消');
+                } else {
+                    showToast('取消失败: ' + data.error);
+                    cancelBtn.disabled = false;
+                    cancelBtn.innerHTML = '<span class="material-symbols-rounded">close</span><span>取消扫描</span>';
+                }
+            } catch (error) {
+                showToast('请求失败: ' + error);
+                cancelBtn.disabled = false;
+                cancelBtn.innerHTML = '<span class="material-symbols-rounded">close</span><span>取消扫描</span>';
+            }
         }
 
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
@@ -1930,7 +2794,7 @@
                 `;
             }).join('') + `
                 <button class="clear-all-btn" onclick="clearAllScans()">
-                    <span class="material-symbols-rounded icon-sm">delete_sweep</span>
+                    <span class="material-symbols-rounded icon-sm">delete_forever</span>
                     <span>清空全部记录</span>
                 </button>
             `;
@@ -1992,7 +2856,7 @@
                     } else {
                         document.getElementById('stockList').innerHTML = `
                             <div class="empty-state">
-                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search_off</span></div>
+                                <div class="empty-icon"><span class="material-symbols-rounded" style="font-size: 48px; color: #94a3b8;">search</span></div>
                                 <p class="empty-title">该扫描无符合条件的股票</p>
                             </div>
                         `;
