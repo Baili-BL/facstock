@@ -123,6 +123,24 @@ def analyze_single_stock(strategy, stock_info):
             if result['is_leader']:
                 tags.append(f"中军#{result['leader_rank']}")
             
+            # CMF 资金流标签 💰
+            if result.get('cmf_strong_bullish'):
+                tags.append("💰强势流入")
+            elif result.get('cmf_bullish') and result.get('cmf_rising'):
+                tags.append("💰资金流入")
+            elif result.get('cmf_bullish'):
+                tags.append("资金净流入")
+            
+            # RSV 标签
+            if result.get('rsv_recovering'):
+                tags.append("🔄超卖回升")
+            elif result.get('rsv_golden'):
+                rsv_val = result.get('rsv', 50)
+                if rsv_val >= 65:
+                    tags.append(f"RSV强势")
+                else:
+                    tags.append(f"RSV健康")
+            
             # 趋势标签
             if result.get('ma_full_bullish'):
                 tags.append("多头排列")

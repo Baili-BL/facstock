@@ -301,12 +301,19 @@ curl http://127.0.0.1:5002
 ### Step 1：上传代码（本地 Mac 执行）
 
 ```bash
-# 更新 facstock
-scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
+# 更新 facstock（排除 data 目录，保留数据库）
+rsync -av --exclude='data/' --exclude='__pycache__/' --exclude='*.pyc' \
+    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
+
+# 或使用 scp（需要先删除目标的非 data 文件）
+# scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
 
 # 更新 Ticai
-scp -r /Users/kevin/Desktop/Ticai/* root@111.229.238.115:/opt/Ticai/
+rsync -av --exclude='data/' --exclude='__pycache__/' --exclude='*.pyc' \
+    /Users/kevin/Desktop/Ticai/ root@111.229.238.115:/opt/Ticai/
 ```
+
+> **重要**：使用 `rsync --exclude='data/'` 可以保留服务器上的数据库文件，避免被覆盖
 
 ### Step 2：重启服务（服务器执行）
 
@@ -330,32 +337,32 @@ supervisorctl status
 ### 从 GitHub 更新
 
 ```bash
-# === facstock ===
+# === facstock（保留数据库）===
 cd ~/facSstock
 git pull origin main
-cp -r ~/facSstock/* /opt/facstock/
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
 supervisorctl restart facstock
 
 # === Ticai ===
 cd ~/Ticai
 git pull origin main
-cp -r ~/Ticai/* /opt/Ticai/
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
 supervisorctl restart ticai
 ```
 
 ### 从 Gitee 更新
 
 ```bash
-# === facstock ===
+# === facstock（保留数据库）===
 cd ~/facSstock
 git pull gitee main
-cp -r ~/facSstock/* /opt/facstock/
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
 supervisorctl restart facstock
 
 # === Ticai ===
 cd ~/Ticai
 git pull gitee main
-cp -r ~/Ticai/* /opt/Ticai/
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
 supervisorctl restart ticai
 ```
 
@@ -369,7 +376,7 @@ supervisorctl restart ticai
 cat > /root/update_all.sh << 'EOF'
 #!/bin/bash
 echo "=========================================="
-echo "       一键更新脚本"
+echo "       一键更新脚本（保留数据库）"
 echo "=========================================="
 
 echo ""
@@ -377,8 +384,8 @@ echo "=== [1/4] 更新 facstock 代码 ==="
 cd ~/facSstock && git pull origin main
 
 echo ""
-echo "=== [2/4] 部署 facstock ==="
-cp -r ~/facSstock/* /opt/facstock/
+echo "=== [2/4] 部署 facstock（保留 data 目录）==="
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
 supervisorctl restart facstock
 
 echo ""
@@ -387,7 +394,7 @@ cd ~/Ticai && git pull origin main
 
 echo ""
 echo "=== [4/4] 部署 Ticai ==="
-cp -r ~/Ticai/* /opt/Ticai/
+rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
 supervisorctl restart ticai
 
 echo ""
@@ -512,7 +519,29 @@ supervisorctl restart ticai
 grep -B 5 "RemoteDisconnected" /opt/Ticai/logs/supervisor_err.log
 ```
 
-### Q8: 如何切换 Git 源（GitHub/Gitee）
+### Q8: 更新后数据库丢失/扫描历史消失
+
+这是因为使用 `scp -r` 或 `cp -r` 时覆盖了 `data/` 目录。
+
+**解决方案**：使用 rsync 并排除 data 目录：
+
+```bash
+# 正确的更新方式（保留数据库）
+rsync -av --exclude='data/' --exclude='__pycache__/' \
+    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
+```
+
+**恢复数据**：如果数据已丢失，需要重新扫描。建议定期备份数据库：
+
+```bash
+# 备份数据库
+scp root@111.229.238.115:/opt/facstock/data/stock.db ./backup_stock.db
+
+# 恢复数据库
+scp ./backup_stock.db root@111.229.238.115:/opt/facstock/data/stock.db
+```
+
+### Q9: 如何切换 Git 源（GitHub/Gitee）
 
 ```bash
 cd ~/facSstock
@@ -559,9 +588,11 @@ git pull origin main
 ### 一句话更新
 
 ```bash
-# 方式一：本地上传（Mac执行）
-scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/ && ssh root@111.229.238.115 "supervisorctl restart facstock"
+# 方式一：本地上传（Mac执行）- 保留数据库
+rsync -av --exclude='data/' --exclude='__pycache__/' /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/ && ssh root@111.229.238.115 "supervisorctl restart facstock"
 
-# 方式二：服务器Git拉取
-cd ~/facSstock && git pull && cp -r ~/facSstock/* /opt/facstock/ && supervisorctl restart facstock
+# 方式二：服务器Git拉取 - 保留数据库
+cd ~/facSstock && git pull && rsync -av --exclude='data/' ~/facSstock/ /opt/facstock/ && supervisorctl restart facstock
 ```
+
+> **注意**：使用 rsync 并排除 data 目录，确保数据库文件不会被覆盖

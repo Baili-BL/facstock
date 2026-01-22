@@ -56,8 +56,9 @@ gunicorn -w 2 -b 0.0.0.0:5001 app:app
 
 **方式一：本地上传**
 ```bash
-# Mac 本地执行
-scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
+# Mac 本地执行（使用 rsync 保留数据库）
+rsync -av --exclude='data/' --exclude='__pycache__/' \
+    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
 
 # 服务器执行
 supervisorctl restart facstock
@@ -65,11 +66,13 @@ supervisorctl restart facstock
 
 **方式二：Git 拉取**
 ```bash
-# 服务器执行
+# 服务器执行（保留数据库）
 cd ~/facSstock && git pull origin main
-cp -r ~/facSstock/* /opt/facstock/
+rsync -av --exclude='data/' ~/facSstock/ /opt/facstock/
 supervisorctl restart facstock
 ```
+
+> **重要**：使用 `rsync --exclude='data/'` 保留数据库，避免扫描历史被覆盖
 
 ### 常用命令
 

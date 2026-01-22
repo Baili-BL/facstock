@@ -268,96 +268,161 @@ class BollingerSqueezeStrategy:
         # 波动率处于低位 (30%分位以下)
         df['low_volatility'] = df['atr_percentile'] < 30
         
+        # ===== 6. CMF 蔡金资金流量指标 (20周期) =====
+        # Money Flow Multiplier = ((Close - Low) - (High - Close)) / (High - Low)
+        # 当 High == Low 时避免除零
+        mfm_denominator = df['high'] - df['low']
+        mfm_denominator = mfm_denominator.replace(0, np.nan)
+        df['mf_multiplier'] = ((df['close'] - df['low']) - (df['high'] - df['close'])) / mfm_denominator
+        df['mf_multiplier'] = df['mf_multiplier'].fillna(0)
+        
+        # Money Flow Volume = Money Flow Multiplier * Volume
+        df['mf_volume'] = df['mf_multiplier'] * df['volume']
+        
+        # CMF = Sum(Money Flow Volume, 20) / Sum(Volume, 20)
+        cmf_period = 20
+        df['cmf'] = df['mf_volume'].rolling(window=cmf_period).sum() / df['volume'].rolling(window=cmf_period).sum()
+        
+        # CMF 信号判断
+        # CMF > 0.1 表示强势买入压力
+        # CMF > 0 表示买入压力
+        # CMF < -0.1 表示强势卖出压力
+        df['cmf_bullish'] = df['cmf'] > 0  # 资金流入
+        df['cmf_strong_bullish'] = df['cmf'] > 0.1  # 强势资金流入
+        df['cmf_bearish'] = df['cmf'] < 0  # 资金流出
+        
+        # CMF 趋势：CMF 上升中
+        df['cmf_rising'] = df['cmf'] > df['cmf'].shift(1)
+        
+        # ===== 7. RSV 原始随机值 (KDJ的K值前身，9周期) =====
+        rsv_period = 9
+        # RSV = (Close - Lowest Low) / (Highest High - Lowest Low) * 100
+        lowest_low = df['low'].rolling(window=rsv_period).min()
+        highest_high = df['high'].rolling(window=rsv_period).max()
+        rsv_denominator = highest_high - lowest_low
+        rsv_denominator = rsv_denominator.replace(0, np.nan)
+        df['rsv'] = ((df['close'] - lowest_low) / rsv_denominator * 100).fillna(50)
+        
+        # RSV 信号判断
+        # RSV > 80 超买区
+        # RSV < 20 超卖区
+        # 20 <= RSV <= 80 中性区
+        df['rsv_overbought'] = df['rsv'] > 80
+        df['rsv_oversold'] = df['rsv'] < 20
+        df['rsv_neutral'] = (df['rsv'] >= 20) & (df['rsv'] <= 80)
+        
+        # RSV 黄金区间：50-80，表示强势但未超买
+        df['rsv_golden'] = (df['rsv'] >= 50) & (df['rsv'] <= 80)
+        
+        # RSV 从超卖区回升（可能是买入信号）
+        df['rsv_recovering'] = (df['rsv'] > 20) & (df['rsv'].shift(1) <= 20)
+        
         return df
     
     def calculate_composite_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         计算综合评分（满分100分）
         
-        评分维度（收窄+人气权重较高）：
-        - 收窄得分 (30分): 收缩天数、带宽收窄程度、低波动率 ⭐核心指标
-        - 趋势得分 (20分): MA排列、站上均线
-        - 人气得分 (15分): 换手率、市场关注度 🔥新增
-        - 动量得分 (15分): MACD状态、RSI区间
-        - 位置得分 (10分): 布林带位置、中轨上方
-        - 量能得分 (10分): 放量、量价配合
+        评分维度：
+        - 收窄得分 (25分): 收缩天数、带宽收窄程度、低波动率 ⭐核心指标
+        - 趋势得分 (18分): MA排列、站上均线
+        - 资金流得分 (15分): CMF资金流向 💰新增
+        - 动量得分 (15分): MACD状态、RSI区间、RSV位置
+        - 人气得分 (12分): 换手率、市场关注度
+        - 位置得分 (8分): 布林带位置、中轨上方
+        - 量能得分 (7分): 放量、量价配合
         """
         df = df.copy()
         
-        # ===== 收窄得分 (30分) ⭐核心指标 =====
+        # ===== 收窄得分 (25分) ⭐核心指标 =====
         squeeze_score = 0
-        # 连续收缩天数得分 (每天+3分，最高15分)
-        squeeze_days_bonus = df['squeeze_streak'].clip(0, 5) * 3
+        # 连续收缩天数得分 (每天+2.5分，最高12.5分)
+        squeeze_days_bonus = df['squeeze_streak'].clip(0, 5) * 2.5
         squeeze_score += squeeze_days_bonus
-        # 带宽收窄程度 (收缩比越小得分越高，最高10分)
+        # 带宽收窄程度 (收缩比越小得分越高，最高8分)
         squeeze_ratio = df['width_ma_short'] / df['width_ma_long']
         squeeze_ratio_score = squeeze_ratio.apply(
-            lambda x: 10 if x < 0.8 else (7 if x < 0.9 else (4 if x < 0.95 else 0)) if pd.notna(x) else 0
+            lambda x: 8 if x < 0.8 else (5 if x < 0.9 else (3 if x < 0.95 else 0)) if pd.notna(x) else 0
         )
         squeeze_score += squeeze_ratio_score
-        # 低波动率 +5分
-        squeeze_score += df['low_volatility'].astype(int) * 5
-        df['squeeze_score'] = squeeze_score.clip(0, 30)
+        # 低波动率 +4.5分
+        squeeze_score += df['low_volatility'].astype(int) * 4.5
+        df['squeeze_score'] = squeeze_score.clip(0, 25)
         
-        # ===== 趋势得分 (20分) =====
+        # ===== 趋势得分 (18分) =====
         trend_score = 0
-        # MA多头排列 +10分
-        trend_score += df['ma_bullish'].astype(int) * 10
+        # MA多头排列 +8分
+        trend_score += df['ma_bullish'].astype(int) * 8
         # 完全多头 额外+4分
         trend_score += df['ma_full_bullish'].astype(int) * 4
         # 站上MA20 +6分
         trend_score += df['above_ma20'].astype(int) * 6
-        df['trend_score'] = trend_score.clip(0, 20)
+        df['trend_score'] = trend_score.clip(0, 18)
         
-        # ===== 人气得分 (15分) 🔥新增 =====
-        popularity_score = 0
-        # 换手率评分 (3%-10%最佳得15分，1%-3%或10%-15%得8分，其他得0分)
-        if 'turnover' in df.columns:
-            turnover_score = df['turnover'].apply(
-                lambda x: 15 if 3 <= x <= 10 else (10 if 2 <= x <= 15 else (5 if 1 <= x <= 20 else 0)) if pd.notna(x) else 0
-            )
-            popularity_score += turnover_score
-        df['popularity_score'] = popularity_score.clip(0, 15)
+        # ===== 资金流得分 (15分) 💰CMF =====
+        cmf_score = 0
+        # CMF > 0 资金流入 +6分
+        cmf_score += df['cmf_bullish'].astype(int) * 6
+        # CMF > 0.1 强势资金流入 额外+4分
+        cmf_score += df['cmf_strong_bullish'].astype(int) * 4
+        # CMF 上升趋势 +5分
+        cmf_score += df['cmf_rising'].astype(int) * 5
+        df['cmf_score'] = cmf_score.clip(0, 15)
         
         # ===== 动量得分 (15分) =====
         momentum_score = 0
-        # MACD金叉 +6分
-        momentum_score += df['macd_golden'].astype(int) * 6
-        # MACD柱状图为正 +3分
-        momentum_score += df['macd_hist_positive'].astype(int) * 3
-        # MACD即将金叉 +3分
-        momentum_score += df['macd_converging'].astype(int) * 3
-        # RSI在中性区间 +3分
-        momentum_score += df['rsi_neutral'].astype(int) * 3
+        # MACD金叉 +4分
+        momentum_score += df['macd_golden'].astype(int) * 4
+        # MACD柱状图为正 +2分
+        momentum_score += df['macd_hist_positive'].astype(int) * 2
+        # MACD即将金叉 +2分
+        momentum_score += df['macd_converging'].astype(int) * 2
+        # RSI在中性区间 +2分
+        momentum_score += df['rsi_neutral'].astype(int) * 2
+        # RSV黄金区间(50-80) +3分
+        momentum_score += df['rsv_golden'].astype(int) * 3
+        # RSV从超卖回升 +2分
+        momentum_score += df['rsv_recovering'].astype(int) * 2
         df['momentum_score'] = momentum_score.clip(0, 15)
         
-        # ===== 位置得分 (10分) =====
+        # ===== 人气得分 (12分) =====
+        popularity_score = 0
+        # 换手率评分 (3%-10%最佳得12分，1%-3%或10%-15%得7分，其他得0分)
+        if 'turnover' in df.columns:
+            turnover_score = df['turnover'].apply(
+                lambda x: 12 if 3 <= x <= 10 else (7 if 2 <= x <= 15 else (3 if 1 <= x <= 20 else 0)) if pd.notna(x) else 0
+            )
+            popularity_score += turnover_score
+        df['popularity_score'] = popularity_score.clip(0, 12)
+        
+        # ===== 位置得分 (8分) =====
         position_score = 0
-        # 价格在中轨上方 +5分
-        position_score += df['above_bb_middle'].astype(int) * 5
-        # 布林带位置得分 (0.4-0.7最佳，得5分)
+        # 价格在中轨上方 +4分
+        position_score += df['above_bb_middle'].astype(int) * 4
+        # 布林带位置得分 (0.4-0.7最佳，得4分)
         bb_pos_score = df['bb_position'].apply(
-            lambda x: 5 if 0.4 <= x <= 0.7 else (3 if 0.3 <= x <= 0.8 else 0) if pd.notna(x) else 0
+            lambda x: 4 if 0.4 <= x <= 0.7 else (2 if 0.3 <= x <= 0.8 else 0) if pd.notna(x) else 0
         )
         position_score += bb_pos_score
-        df['position_score'] = position_score.clip(0, 10)
+        df['position_score'] = position_score.clip(0, 8)
         
-        # ===== 量能得分 (10分) =====
+        # ===== 量能得分 (7分) =====
         volume_score = 0
-        # 量价齐升 +10分
-        volume_score += df['is_volume_price_up'].astype(int) * 10
-        # 仅放量 +5分
-        volume_score += (~df['is_volume_price_up'] & df['is_volume_up']).astype(int) * 5
-        df['volume_score'] = volume_score.clip(0, 10)
+        # 量价齐升 +7分
+        volume_score += df['is_volume_price_up'].astype(int) * 7
+        # 仅放量 +4分
+        volume_score += (~df['is_volume_price_up'] & df['is_volume_up']).astype(int) * 4
+        df['volume_score'] = volume_score.clip(0, 7)
         
         # ===== 综合得分 =====
         df['total_score'] = (
-            df['squeeze_score'] +     # 收窄30分
-            df['trend_score'] +       # 趋势20分
-            df['popularity_score'] +  # 人气15分 🔥
+            df['squeeze_score'] +     # 收窄25分
+            df['trend_score'] +       # 趋势18分
+            df['cmf_score'] +         # 资金流15分 💰
             df['momentum_score'] +    # 动量15分
-            df['position_score'] +    # 位置10分
-            df['volume_score']        # 量能10分
+            df['popularity_score'] +  # 人气12分
+            df['position_score'] +    # 位置8分
+            df['volume_score']        # 量能7分
         ).clip(0, 100)
         
         # 评级
@@ -475,9 +540,21 @@ class BollingerSqueezeStrategy:
                     # ATR波动率
                     'atr_percentile': round(latest['atr_percentile'], 1) if pd.notna(latest['atr_percentile']) else 50,
                     'low_volatility': bool(latest['low_volatility']) if pd.notna(latest['low_volatility']) else False,
+                    # CMF 资金流量指标
+                    'cmf': round(latest['cmf'], 3) if pd.notna(latest['cmf']) else 0,
+                    'cmf_bullish': bool(latest['cmf_bullish']) if pd.notna(latest['cmf_bullish']) else False,
+                    'cmf_strong_bullish': bool(latest['cmf_strong_bullish']) if pd.notna(latest['cmf_strong_bullish']) else False,
+                    'cmf_rising': bool(latest['cmf_rising']) if pd.notna(latest['cmf_rising']) else False,
+                    # RSV 原始随机值
+                    'rsv': round(latest['rsv'], 1) if pd.notna(latest['rsv']) else 50,
+                    'rsv_golden': bool(latest['rsv_golden']) if pd.notna(latest['rsv_golden']) else False,
+                    'rsv_overbought': bool(latest['rsv_overbought']) if pd.notna(latest['rsv_overbought']) else False,
+                    'rsv_oversold': bool(latest['rsv_oversold']) if pd.notna(latest['rsv_oversold']) else False,
+                    'rsv_recovering': bool(latest['rsv_recovering']) if pd.notna(latest['rsv_recovering']) else False,
                     # 综合评分
                     'squeeze_score': int(latest['squeeze_score']) if pd.notna(latest['squeeze_score']) else 0,
                     'trend_score': int(latest['trend_score']) if pd.notna(latest['trend_score']) else 0,
+                    'cmf_score': int(latest['cmf_score']) if pd.notna(latest['cmf_score']) else 0,
                     'popularity_score': int(latest['popularity_score']) if pd.notna(latest['popularity_score']) else 0,
                     'momentum_score': int(latest['momentum_score']) if pd.notna(latest['momentum_score']) else 0,
                     'position_score': int(latest['position_score']) if pd.notna(latest['position_score']) else 0,

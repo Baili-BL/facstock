@@ -592,6 +592,10 @@
         .tag-watched { background: #eff6ff; color: #3b82f6; }
         .tag-grade { background: #fefce8; color: #ca8a04; }
         .tag-default { background: #f1f5f9; color: #64748b; }
+        .tag-cmf { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+        .tag-cmf-weak { background: #d1fae5; color: #059669; }
+        .tag-rsv { background: #ddd6fe; color: #7c3aed; }
+        .tag-rsv-recover { background: #fef3c7; color: #d97706; }
 
         .tag {
             display: inline-flex;
@@ -1547,13 +1551,25 @@
 
             document.getElementById('stockList').innerHTML = stocks.map((stock, index) => {
                 const tags = stock.tags || [];
-                const tagsHtml = tags.slice(0, 4).map(tag => {
+                const tagsHtml = tags.slice(0, 5).map(tag => {
                     let tagClass = 'tag-default';
                     let tagIcon = '';
                     
                     if (tag.includes('中军')) {
                         tagClass = 'tag-leader';
                         tagIcon = 'military_tech';
+                    } else if (tag.includes('强势流入')) {
+                        tagClass = 'tag-cmf';
+                        tagIcon = 'payments';
+                    } else if (tag.includes('资金流入') || tag.includes('资金净流入')) {
+                        tagClass = 'tag-cmf-weak';
+                        tagIcon = 'account_balance';
+                    } else if (tag.includes('超卖回升')) {
+                        tagClass = 'tag-rsv-recover';
+                        tagIcon = 'refresh';
+                    } else if (tag.includes('RSV')) {
+                        tagClass = 'tag-rsv';
+                        tagIcon = 'speed';
                     } else if (tag === '量价齐升') {
                         tagClass = 'tag-hot';
                         tagIcon = 'local_fire_department';
@@ -1575,6 +1591,12 @@
                     } else if (tag.includes('级')) {
                         tagClass = 'tag-grade';
                         tagIcon = 'grade';
+                    } else if (tag.includes('MACD')) {
+                        tagClass = 'tag-trend';
+                        tagIcon = 'insights';
+                    } else if (tag === '低波蓄势') {
+                        tagClass = 'tag-gentle';
+                        tagIcon = 'compress';
                     }
                     
                     const iconHtml = tagIcon ? `<span class="material-symbols-rounded tag-icon">${tagIcon}</span>` : '';
@@ -1605,16 +1627,16 @@
                                 <div class="metric-label">${stock.grade || 'C'}级评分</div>
                             </div>
                             <div class="metric-item">
-                                <div class="metric-value">${stock.bb_width_pct.toFixed(1)}%</div>
-                                <div class="metric-label">带宽</div>
+                                <div class="metric-value" style="color: ${(stock.cmf || 0) > 0 ? '#10b981' : '#ef4444'}">${((stock.cmf || 0) * 100).toFixed(1)}</div>
+                                <div class="metric-label">CMF%</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-value" style="color: ${(stock.rsv || 50) >= 50 ? '#7c3aed' : '#64748b'}">${(stock.rsv || 50).toFixed(0)}</div>
+                                <div class="metric-label">RSV</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-value">${stock.squeeze_days}天</div>
                                 <div class="metric-label">收缩</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-value">${volumeRatio.toFixed(1)}</div>
-                                <div class="metric-label">量比</div>
                             </div>
                         </div>
                         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
