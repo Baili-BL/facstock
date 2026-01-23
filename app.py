@@ -550,11 +550,17 @@ def get_stock_detail(code: str):
         def safe_list(series):
             return [None if pd.isna(x) else float(x) for x in series]
         
+        # 日期转字符串
+        def date_to_str(d):
+            if hasattr(d, 'strftime'):
+                return d.strftime('%Y-%m-%d')
+            return str(d)
+        
         # 生成蜡烛图数据 (Lightweight Charts格式)
         candles = []
         for _, row in df.iterrows():
             candles.append({
-                'time': row['date'],
+                'time': date_to_str(row['date']),
                 'open': float(row['open']) if pd.notna(row['open']) else None,
                 'high': float(row['high']) if pd.notna(row['high']) else None,
                 'low': float(row['low']) if pd.notna(row['low']) else None,
@@ -567,15 +573,15 @@ def get_stock_detail(code: str):
             # 涨：close >= open -> 红色，跌：close < open -> 绿色
             color = '#ef5350' if row['close'] >= row['open'] else '#26a69a'
             volume_data.append({
-                'time': row['date'],
+                'time': date_to_str(row['date']),
                 'value': float(row['volume']) if pd.notna(row['volume']) else 0,
                 'color': color
             })
         
         # 布林带数据
-        bb_upper_data = [{'time': row['date'], 'value': float(row['bb_upper'])} for _, row in df.iterrows() if pd.notna(row['bb_upper'])]
-        bb_middle_data = [{'time': row['date'], 'value': float(row['bb_middle'])} for _, row in df.iterrows() if pd.notna(row['bb_middle'])]
-        bb_lower_data = [{'time': row['date'], 'value': float(row['bb_lower'])} for _, row in df.iterrows() if pd.notna(row['bb_lower'])]
+        bb_upper_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_upper'])} for _, row in df.iterrows() if pd.notna(row['bb_upper'])]
+        bb_middle_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_middle'])} for _, row in df.iterrows() if pd.notna(row['bb_middle'])]
+        bb_lower_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_lower'])} for _, row in df.iterrows() if pd.notna(row['bb_lower'])]
         
         # CMF 数据
         cmf_data = safe_list(df['cmf']) if 'cmf' in df.columns else []
@@ -590,7 +596,7 @@ def get_stock_detail(code: str):
             latest_info = {
                 'close': float(latest['close']) if pd.notna(latest['close']) else 0,
                 'pct_change': float(latest['pct_change']) if pd.notna(latest['pct_change']) else 0,
-                'date': latest['date'],
+                'date': date_to_str(latest['date']),
             }
         
         data = {

@@ -2300,6 +2300,53 @@
 
             mainChart.timeScale().fitContent();
             mainChart.timeScale().scrollToRealTime();
+            
+            // 创建日期到数据的映射，用于鼠标悬停显示
+            const candleMap = {};
+            data.candles.forEach((candle, i) => {
+                candleMap[candle.time] = {
+                    ...candle,
+                    pct_change: data.pct_change[i]
+                };
+            });
+            
+            // 监听鼠标移动事件，更新价格信息面板
+            mainChart.subscribeCrosshairMove((param) => {
+                if (!param || !param.time) {
+                    // 鼠标离开图表，恢复显示最新数据
+                    if (data.latest) {
+                        const price = data.latest.close;
+                        const pctChange = data.latest.pct_change;
+                        const date = data.latest.date;
+                        
+                        document.getElementById('modalPrice').textContent = price.toFixed(2);
+                        const changeEl = document.getElementById('modalPriceChange');
+                        const sign = pctChange >= 0 ? '+' : '';
+                        changeEl.textContent = `${sign}${pctChange.toFixed(2)}%`;
+                        changeEl.className = 'price-change ' + (pctChange > 0 ? 'up' : pctChange < 0 ? 'down' : 'flat');
+                        document.getElementById('modalPrice').style.color = pctChange > 0 ? '#ef5350' : pctChange < 0 ? '#26a69a' : '#333';
+                        document.getElementById('modalPriceDate').textContent = date;
+                    }
+                    return;
+                }
+                
+                // 获取当前悬停位置的蜡烛数据
+                const timeStr = param.time;
+                const candleData = candleMap[timeStr];
+                
+                if (candleData) {
+                    const price = candleData.close;
+                    const pctChange = candleData.pct_change || 0;
+                    
+                    document.getElementById('modalPrice').textContent = price ? price.toFixed(2) : '--';
+                    const changeEl = document.getElementById('modalPriceChange');
+                    const sign = pctChange >= 0 ? '+' : '';
+                    changeEl.textContent = `${sign}${pctChange.toFixed(2)}%`;
+                    changeEl.className = 'price-change ' + (pctChange > 0 ? 'up' : pctChange < 0 ? 'down' : 'flat');
+                    document.getElementById('modalPrice').style.color = pctChange > 0 ? '#ef5350' : pctChange < 0 ? '#26a69a' : '#333';
+                    document.getElementById('modalPriceDate').textContent = timeStr;
+                }
+            });
 
             // 带宽收缩图 - 使用 Lightweight Charts
             const widthContainer = document.getElementById('widthChart');
