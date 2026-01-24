@@ -93,12 +93,28 @@ def init_db():
             )
         ''')
         
+        # AI分析报告表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                report_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                model TEXT,
+                tokens_used INTEGER DEFAULT 0,
+                news_data TEXT,
+                scan_data_summary TEXT,
+                analysis TEXT NOT NULL,
+                FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE SET NULL
+            )
+        ''')
+        
         # 创建索引
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_records_scan_time ON scan_records(scan_time DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_kline_cache_stock_code ON kline_cache(stock_code)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_kline_cache_scan_id ON kline_cache(scan_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_watchlist_stock_code ON watchlist(stock_code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ai_reports_time ON ai_reports(report_time DESC)')
 
 
 def create_scan_record(params: Dict = None) -> int:
@@ -626,6 +642,131 @@ def clear_watchlist() -> int:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM watchlist')
+        return cursor.rowcount
+
+
+# ==================== AI 报告管理 ====================
+
+def save_ai_report(analysis: str, model: str = None, tokens_used: int = 0, 
+                   scan_id: int = None, news_data: str = None, scan_data_summary: str = None) -> int:
+    """
+    保存 AI 分析报告
+    
+    Args:
+        analysis: AI 分析内容
+        model: 使用的模型
+        tokens_used: 使用的 token 数量
+        scan_id: 关联的扫描记录 ID
+        news_data: 新闻数据摘要
+        scan_data_summary: 扫描数据摘要
+        
+    Returns:
+        报告 ID
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO ai_reports (scan_id, model, tokens_used, news_data, scan_data_summary, analysis)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (scan_id, model, tokens_used, news_data, scan_data_summary, analysis))
+        return cursor.lastrowid
+
+
+def get_ai_reports(limit: int = 20) -> List[Dict]:
+    """
+    获取 AI 报告列表
+    
+    Args:
+        limit: 返回数量限制
+        
+    Returns:
+        报告列表
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, scan_id, report_time, model, tokens_used, 
+                   news_data, scan_data_summary, analysis
+            FROM ai_reports
+            ORDER BY report_time DESC
+            LIMIT ?
+        ''', (limit,))
+        
+        reports = []
+        for row in cursor.fetchall():
+            reports.append({
+                'id': row['id'],
+                'scan_id': row['scan_id'],
+                'report_time': row['report_time'],
+                'model': row['model'],
+                'tokens_used': row['tokens_used'],
+                'news_data': row['news_data'],
+                'scan_data_summary': row['scan_data_summary'],
+                'analysis': row['analysis']
+            })
+        return reports
+
+
+def get_ai_report(report_id: int) -> Optional[Dict]:
+    """
+    获取单个 AI 报告详情
+    
+    Args:
+        report_id: 报告 ID
+        
+    Returns:
+        报告详情
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, scan_id, report_time, model, tokens_used,
+                   news_data, scan_data_summary, analysis
+            FROM ai_reports
+            WHERE id = ?
+        ''', (report_id,))
+        
+        row = cursor.fetchone()
+        if row:
+            return {
+                'id': row['id'],
+                'scan_id': row['scan_id'],
+                'report_time': row['report_time'],
+                'model': row['model'],
+                'tokens_used': row['tokens_used'],
+                'news_data': row['news_data'],
+                'scan_data_summary': row['scan_data_summary'],
+                'analysis': row['analysis']
+            }
+        return None
+
+
+def delete_ai_report(report_id: int) -> bool:
+    """
+    删除 AI 报告
+    
+    Args:
+        report_id: 报告 ID
+        
+    Returns:
+        是否删除成功
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM ai_reports WHERE id = ?', (report_id,))
+        return cursor.rowcount > 0
+
+
+def delete_all_ai_reports() -> int:
+    """
+    删除所有 AI 报告
+    
+    Returns:
+        删除的数量
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM ai_reports')
         return cursor.rowcount
 
 

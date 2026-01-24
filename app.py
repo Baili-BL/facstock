@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 导入数据库模块
 import database as db
 
+# 导入 AI 服务模块
+from ai_service import get_ai_service
+
 app = Flask(__name__)
 
 # 全局变量存储当前扫描状态（用于实时进度查询）
@@ -721,6 +724,164 @@ def clear_watchlist():
             'success': True,
             'message': f'已清空 {count} 只自选股'
         })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ==================== AI 分析接口 ====================
+
+@app.route('/api/ai/config', methods=['GET'])
+def get_ai_config():
+    """获取 AI 配置状态"""
+    ai_service = get_ai_service()
+    return jsonify({
+        'success': True,
+        'configured': ai_service.is_configured()
+    })
+
+
+@app.route('/api/ai/config', methods=['POST'])
+def set_ai_config():
+    """设置 AI API Key"""
+    try:
+        data = request.get_json()
+        api_key = data.get('api_key', '')
+        
+        if not api_key:
+            return jsonify({'success': False, 'error': '请提供 API Key'})
+        
+        # 重新初始化 AI 服务
+        ai_service = get_ai_service(api_key)
+        
+        return jsonify({
+            'success': True,
+            'configured': ai_service.is_configured()
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/ai/analyze', methods=['POST'])
+def ai_analyze():
+    """AI 分析股票"""
+    try:
+        ai_service = get_ai_service()
+        
+        if not ai_service.is_configured():
+            return jsonify({
+                'success': False,
+                'error': 'AI 服务未配置'
+            })
+        
+        # 获取最新的扫描结果
+        latest_scan = db.get_latest_scan()
+        
+        if not latest_scan:
+            return jsonify({
+                'success': False,
+                'error': '没有可分析的扫描数据，请先执行扫描'
+            })
+        
+        # 将板块结果展平为股票列表
+        # results 结构: {'板块名': {'change': float, 'stocks': [...]}, ...}
+        results_dict = latest_scan.get('results', {})
+        all_stocks = []
+        
+        for sector_name, sector_data in results_dict.items():
+            if isinstance(sector_data, dict):
+                stocks = sector_data.get('stocks', [])
+                for stock in stocks:
+                    if isinstance(stock, dict):
+                        stock['sector'] = sector_name  # 添加板块信息
+                        all_stocks.append(stock)
+        
+        if not all_stocks:
+            return jsonify({
+                'success': False,
+                'error': '扫描结果为空，请重新执行扫描'
+            })
+        
+        scan_data = {
+            'results': all_stocks,
+            'scan_time': latest_scan.get('scan_time', '')
+        }
+        
+        # 获取当前时间
+        current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+        
+        # 执行 AI 分析
+        result = ai_service.analyze_stocks(scan_data, current_time)
+        
+        # 保存报告到数据库
+        if result.get('success'):
+            scan_id = latest_scan.get('id') if latest_scan else None
+            report_id = db.save_ai_report(
+                analysis=result.get('analysis', ''),
+                model=result.get('model', ''),
+                tokens_used=result.get('tokens_used', 0),
+                scan_id=scan_id,
+                scan_data_summary=f"共{len(all_stocks)}只股票"
+            )
+            result['report_id'] = report_id
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ==================== AI 报告管理接口 ====================
+
+@app.route('/api/ai/reports')
+def get_ai_reports():
+    """获取 AI 报告列表"""
+    try:
+        limit = request.args.get('limit', 20, type=int)
+        reports = db.get_ai_reports(limit)
+        
+        # 简化返回数据（列表不返回完整分析内容）
+        for report in reports:
+            if report.get('analysis'):
+                # 只返回前100字作为预览
+                report['preview'] = report['analysis'][:100] + '...' if len(report['analysis']) > 100 else report['analysis']
+                del report['analysis']
+        
+        return jsonify({'success': True, 'data': reports})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/ai/reports/<int:report_id>')
+def get_ai_report(report_id: int):
+    """获取单个 AI 报告详情"""
+    try:
+        report = db.get_ai_report(report_id)
+        if report:
+            return jsonify({'success': True, 'data': report})
+        return jsonify({'success': False, 'error': '报告不存在'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/ai/reports/<int:report_id>', methods=['DELETE'])
+def delete_ai_report(report_id: int):
+    """删除 AI 报告"""
+    try:
+        if db.delete_ai_report(report_id):
+            return jsonify({'success': True, 'message': '删除成功'})
+        return jsonify({'success': False, 'error': '报告不存在'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/ai/reports/clear', methods=['DELETE'])
+def clear_ai_reports():
+    """清空所有 AI 报告"""
+    try:
+        count = db.delete_all_ai_reports()
+        return jsonify({'success': True, 'message': f'已删除 {count} 条报告'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
