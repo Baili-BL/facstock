@@ -1,598 +1,417 @@
-# 腾讯云服务器部署指南
+# 布林带收缩策略 - 腾讯云部署指南
 
-> **服务器**：Ubuntu 18.04/20.04/22.04  
-> **项目**：facstock (端口5001) + Ticai (端口5002)  
-> **服务器IP**：111.229.238.115
-
----
-
-# 第一部分：首次部署
-
-> 首次部署需要完成环境安装、代码部署、服务配置等全部步骤
+## 目录
+1. [首次部署（从零开始）](#一首次部署从零开始)
+2. [更新部署（代码更新后）](#二更新部署代码更新后)
+3. [常见问题](#三常见问题)
 
 ---
 
-## 一、环境准备
+## 一、首次部署（从零开始）
 
-### 1.1 安装 Miniconda
+### 1. 购买腾讯云服务器
+
+1. 访问 [腾讯云轻量应用服务器](https://cloud.tencent.com/product/lighthouse)
+2. 选择配置：
+   - **镜像**：Ubuntu 22.04 LTS
+   - **配置**：2核4G 及以上（推荐）
+   - **带宽**：5Mbps 及以上
+3. 完成购买，记住服务器 **公网IP**
+
+### 2. 连接服务器
 
 ```bash
-# 下载（清华镜像）
-cd /tmp
-wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py310_23.1.0-1-Linux-x86_64.sh
+# 方式1：使用密码登录
+ssh root@你的服务器IP
 
-# 安装
-bash Miniconda3-py310_23.1.0-1-Linux-x86_64.sh -b -p $HOME/miniconda
-
-# 环境变量
-export PATH="$HOME/miniconda/bin:$PATH"
-conda init bash
-source ~/.bashrc
-
-# 验证
-conda --version
-python --version
+# 方式2：使用密钥登录（推荐）
+ssh -i ~/.ssh/your_key.pem root@你的服务器IP
 ```
 
-### 1.2 配置镜像源
+### 3. 安装基础环境
 
 ```bash
-# conda 镜像（清华源）
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
-conda config --set show_channel_urls yes
+# 更新系统
+apt update && apt upgrade -y
 
-# pip 镜像（清华源）
-pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple/
+# 安装 Python 3.11+ 和相关工具
+apt install -y python3 python3-pip python3-venv git
+
+# 验证安装
+python3 --version  # 应该显示 3.10+
+pip3 --version
 ```
 
-### 1.3 安装基础软件
+### 4. 克隆项目代码
 
 ```bash
-apt update
-apt install -y supervisor nginx git
+# 进入部署目录
+cd /opt
+
+# 克隆代码（替换为你的仓库地址）
+git clone https://github.com/你的用户名/facSstock.git facstock
+
+# 进入项目目录
+cd facstock
 ```
 
----
-
-## 二、获取代码
-
-> 选择 GitHub 或 Gitee 其中一个源即可
-
-### 方式 A：从 GitHub 克隆
+**如果 git clone 失败**（网络问题），使用以下方法：
 
 ```bash
-# facstock
-git clone https://github.com/Baili-BL/facSstock.git ~/facSstock
+# 配置 git 使用 HTTP/1.1
+git config --global http.version HTTP/1.1
+git config --global http.postBuffer 524288000
 
-# Ticai
-git clone https://github.com/Baili-BL/Ticai.git ~/Ticai
+# 重试
+git clone https://github.com/你的用户名/facSstock.git facstock
 ```
 
-### 方式 B：从 Gitee 克隆（国内更快）
+### 5. 创建虚拟环境
 
 ```bash
-# facstock
-git clone https://gitee.com/Baili-BL/facSstock.git ~/facSstock
-
-# Ticai
-git clone https://gitee.com/Baili-BL/Ticai.git ~/Ticai
-```
-
-### 方式 C：本地上传（无需 Git）
-
-**在本地 Mac 终端执行：**
-
-```bash
-# 创建远程目录
-ssh root@111.229.238.115 "mkdir -p /opt/facstock /opt/Ticai"
-
-# 上传 facstock
-scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
-
-# 上传 Ticai
-scp -r /Users/kevin/Desktop/Ticai/* root@111.229.238.115:/opt/Ticai/
-```
-
-> 如果使用方式 C，可跳过后续的"复制代码到运行目录"步骤
-
----
-
-## 三、部署 facstock
-
-### 3.1 创建 Python 环境
-
-```bash
-conda create -y -n facstock_env python=3.10
-conda activate facstock_env
-```
-
-### 3.2 复制代码到运行目录
-
-```bash
-mkdir -p /opt/facstock
-cp -r ~/facSstock/* /opt/facstock/
-```
-
-### 3.3 安装依赖
-
-```bash
+# 在项目目录创建虚拟环境
 cd /opt/facstock
-conda activate facstock_env
-pip install -r requirements.txt
-pip install gunicorn
+python3 -m venv venv
+
+# 激活虚拟环境
+source venv/bin/activate
+
+# 确认激活成功（命令行前面会显示 (venv)）
+which python  # 应该显示 /opt/facstock/venv/bin/python
 ```
 
-### 3.4 配置 Supervisor
+### 6. 安装依赖
 
 ```bash
-# 创建日志目录
-mkdir -p /opt/facstock/logs
+# 确保在虚拟环境中
+source /opt/facstock/venv/bin/activate
 
-# 创建配置文件
-cat > /etc/supervisor/conf.d/facstock.conf <<'EOF'
-[program:facstock]
-command=/root/miniconda/envs/facstock_env/bin/gunicorn -w 2 -b 0.0.0.0:5001 app:app
-directory=/opt/facstock
-user=root
-autostart=true
-autorestart=true
-stdout_logfile=/opt/facstock/logs/supervisor_out.log
-stderr_logfile=/opt/facstock/logs/supervisor_err.log
+# 升级 pip
+pip install --upgrade pip
+
+# 安装项目依赖
+pip install -r requirements.txt
+
+# 验证安装
+python -c "import flask; import akshare; print('依赖安装成功')"
+```
+
+### 7. 创建数据目录
+
+```bash
+# 创建数据目录（存储 SQLite 数据库）
+mkdir -p /opt/facstock/data
+
+# 设置权限
+chmod 755 /opt/facstock/data
+```
+
+### 8. 测试运行
+
+```bash
+# 激活虚拟环境
+source /opt/facstock/venv/bin/activate
+
+# 测试运行（前台模式）
+cd /opt/facstock
+python app.py
+
+# 应该看到：
+# * Running on http://0.0.0.0:5001
+# 按 Ctrl+C 停止
+```
+
+### 9. 配置 Systemd 服务（开机自启）
+
+```bash
+# 创建服务文件
+cat > /etc/systemd/system/facstock.service << 'EOF'
+[Unit]
+Description=FacStock - Bollinger Squeeze Strategy
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/facstock
+Environment=PATH=/opt/facstock/venv/bin:/usr/bin
+ExecStart=/opt/facstock/venv/bin/gunicorn -w 2 -b 0.0.0.0:5001 --timeout 300 app:app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 EOF
+
+# 重新加载 systemd
+systemctl daemon-reload
 
 # 启动服务
-systemctl start supervisor
-systemctl enable supervisor
-supervisorctl reread
-supervisorctl update
-supervisorctl start facstock
+systemctl start facstock
+
+# 设置开机自启
+systemctl enable facstock
+
+# 查看状态
+systemctl status facstock
 ```
 
----
-
-## 四、部署 Ticai
-
-### 4.1 创建 Python 环境
+### 10. 配置防火墙
 
 ```bash
-conda create -y -n ticai_env python=3.10
-conda activate ticai_env
-```
+# 腾讯云控制台操作：
+# 1. 进入轻量应用服务器控制台
+# 2. 点击服务器 -> 防火墙
+# 3. 添加规则：
+#    - 端口：5001
+#    - 协议：TCP
+#    - 策略：允许
+#    - 来源：0.0.0.0/0
 
-### 4.2 复制代码到运行目录
-
-```bash
-mkdir -p /opt/Ticai
-cp -r ~/Ticai/* /opt/Ticai/
-```
-
-### 4.3 安装依赖
-
-```bash
-cd /opt/Ticai
-conda activate ticai_env
-pip install -r requirements.txt
-pip install gunicorn
-```
-
-### 4.4 修改端口配置
-
-```bash
-# 把 port=80 改成 port=5002
-sed -i 's/port=80/port=5002/g' /opt/Ticai/main.py
-
-# 验证修改
-grep "port=" /opt/Ticai/main.py
-```
-
-### 4.5 配置 Supervisor
-
-```bash
-# 创建日志目录
-mkdir -p /opt/Ticai/logs
-
-# 创建配置文件（注意：使用 create_app() 工厂模式）
-cat > /etc/supervisor/conf.d/ticai.conf <<'EOF'
-[program:ticai]
-command=/root/miniconda/envs/ticai_env/bin/gunicorn -w 2 -b 0.0.0.0:5002 "main:create_app()"
-directory=/opt/Ticai
-user=root
-autostart=true
-autorestart=true
-stdout_logfile=/opt/Ticai/logs/supervisor_out.log
-stderr_logfile=/opt/Ticai/logs/supervisor_err.log
-EOF
-
-# 启动服务
-supervisorctl reread
-supervisorctl update
-supervisorctl start ticai
-```
-
----
-
-## 五、配置 Nginx
-
-```bash
-# 创建配置文件
-cat > /etc/nginx/sites-available/facstock <<'EOF'
-server {
-    listen 80;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:5001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 120s;
-    }
-}
-EOF
-
-# 启用配置
-ln -sf /etc/nginx/sites-available/facstock /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-
-# 测试并重载
-nginx -t && systemctl reload nginx
-systemctl enable nginx
-```
-
----
-
-## 六、配置防火墙
-
-### 6.1 服务器防火墙 (ufw)
-
-```bash
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
+# 或者使用命令行（如果使用 ufw）
 ufw allow 5001/tcp
-ufw allow 5002/tcp
-ufw --force enable
-ufw status
 ```
 
-### 6.2 腾讯云安全组（必须配置！）
+### 11. 访问应用
 
-1. 登录 [腾讯云控制台](https://console.cloud.tencent.com/)
-2. 进入 **轻量应用服务器** 或 **云服务器**
-3. 点击 **防火墙** 或 **安全组**
-4. 添加入站规则：
-
-| 端口 | 协议 | 策略 | 说明 |
-|------|------|------|------|
-| 22 | TCP | 允许 | SSH |
-| 80 | TCP | 允许 | HTTP |
-| 5001 | TCP | 允许 | facstock |
-| 5002 | TCP | 允许 | Ticai |
+打开浏览器访问：
+```
+http://你的服务器IP:5001
+```
 
 ---
 
-## 七、验证部署
+## 二、更新部署（代码更新后）
+
+### 方式1：Git Pull 更新（推荐）
+
+**本地操作：提交并推送代码**
 
 ```bash
-# 查看服务状态
-supervisorctl status
+# 在本地项目目录
+cd /Users/kevin/Desktop/facSstock
 
-# 本地测试
-curl http://127.0.0.1:5001
-curl http://127.0.0.1:5002
+# 添加所有更改
+git add .
+
+# 提交
+git commit -m "更新说明"
+
+# 推送到 GitHub
+git push origin main
 ```
 
-**访问地址：**
-
-| 应用 | 地址 |
-|------|------|
-| facstock | http://111.229.238.115 或 http://111.229.238.115:5001 |
-| Ticai | http://111.229.238.115:5002 |
-
----
-
-# 第二部分：更新部署
-
-> 代码更新只需要 **上传代码 + 重启服务**，无需重复环境配置
-
----
-
-## 方式一：本地上传更新（推荐）
-
-### Step 1：上传代码（本地 Mac 执行）
+**服务器操作：拉取并重启**
 
 ```bash
-# 更新 facstock（排除 data 目录，保留数据库）
-rsync -av --exclude='data/' --exclude='__pycache__/' --exclude='*.pyc' \
-    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
+# SSH 连接服务器
+ssh root@你的服务器IP
 
-# 或使用 scp（需要先删除目标的非 data 文件）
-# scp -r /Users/kevin/Desktop/facSstock/* root@111.229.238.115:/opt/facstock/
+# 进入项目目录
+cd /opt/facstock
 
-# 更新 Ticai
-rsync -av --exclude='data/' --exclude='__pycache__/' --exclude='*.pyc' \
-    /Users/kevin/Desktop/Ticai/ root@111.229.238.115:/opt/Ticai/
-```
+# 拉取最新代码
+git pull origin main
 
-> **重要**：使用 `rsync --exclude='data/'` 可以保留服务器上的数据库文件，避免被覆盖
-
-### Step 2：重启服务（服务器执行）
-
-```bash
-ssh root@111.229.238.115
+# 如果 git pull 报错，尝试：
+git config --global http.version HTTP/1.1
+git pull origin main
 
 # 重启服务
-supervisorctl restart facstock
-supervisorctl restart ticai
+systemctl restart facstock
 
-# 确认状态
-supervisorctl status
+# 查看状态
+systemctl status facstock
 ```
 
----
+### 方式2：Rsync 直接同步（网络不稳定时）
 
-## 方式二：Git 拉取更新
-
-> 从 GitHub 或 Gitee 拉取最新代码
-
-### 从 GitHub 更新
+**在本地执行一条命令即可：**
 
 ```bash
-# === facstock（保留数据库）===
-cd ~/facSstock
-git pull origin main
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
-supervisorctl restart facstock
+# 同步代码到服务器（排除数据目录和缓存）
+rsync -avz --progress \
+  --exclude='data/' \
+  --exclude='__pycache__/' \
+  --exclude='.git/' \
+  --exclude='*.pyc' \
+  --exclude='venv/' \
+  /Users/kevin/Desktop/facSstock/ \
+  root@你的服务器IP:/opt/facstock/
 
-# === Ticai ===
-cd ~/Ticai
-git pull origin main
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
-supervisorctl restart ticai
+# 然后 SSH 到服务器重启
+ssh root@你的服务器IP "systemctl restart facstock"
 ```
 
-### 从 Gitee 更新
+**一键更新脚本（保存为 deploy.sh）：**
 
 ```bash
-# === facstock（保留数据库）===
-cd ~/facSstock
-git pull gitee main
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
-supervisorctl restart facstock
-
-# === Ticai ===
-cd ~/Ticai
-git pull gitee main
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
-supervisorctl restart ticai
-```
-
----
-
-## 方式三：一键更新脚本
-
-### 创建更新脚本（首次执行）
-
-```bash
-cat > /root/update_all.sh << 'EOF'
 #!/bin/bash
-echo "=========================================="
-echo "       一键更新脚本（保留数据库）"
-echo "=========================================="
+SERVER_IP="你的服务器IP"
 
-echo ""
-echo "=== [1/4] 更新 facstock 代码 ==="
-cd ~/facSstock && git pull origin main
+echo "📦 同步代码到服务器..."
+rsync -avz --progress \
+  --exclude='data/' \
+  --exclude='__pycache__/' \
+  --exclude='.git/' \
+  --exclude='*.pyc' \
+  --exclude='venv/' \
+  /Users/kevin/Desktop/facSstock/ \
+  root@${SERVER_IP}:/opt/facstock/
 
-echo ""
-echo "=== [2/4] 部署 facstock（保留 data 目录）==="
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/facSstock/ /opt/facstock/
-supervisorctl restart facstock
+echo "🔄 重启服务..."
+ssh root@${SERVER_IP} "systemctl restart facstock && systemctl status facstock"
 
-echo ""
-echo "=== [3/4] 更新 Ticai 代码 ==="
-cd ~/Ticai && git pull origin main
-
-echo ""
-echo "=== [4/4] 部署 Ticai ==="
-rsync -av --exclude='data/' --exclude='__pycache__/' ~/Ticai/ /opt/Ticai/
-supervisorctl restart ticai
-
-echo ""
-echo "=========================================="
-echo "       更新完成！服务状态："
-echo "=========================================="
-supervisorctl status
-EOF
-
-chmod +x /root/update_all.sh
+echo "✅ 部署完成！访问 http://${SERVER_IP}:5001"
 ```
 
-### 执行更新
-
+使用方法：
 ```bash
-/root/update_all.sh
+chmod +x deploy.sh
+./deploy.sh
 ```
 
 ---
 
-# 第三部分：运维管理
+## 三、常见问题
 
----
+### 1. Git Clone/Pull 失败
 
-## 常用命令速查
-
-| 操作 | 命令 |
-|------|------|
-| 查看状态 | `supervisorctl status` |
-| 重启 facstock | `supervisorctl restart facstock` |
-| 重启 Ticai | `supervisorctl restart ticai` |
-| 重启全部 | `supervisorctl restart all` |
-| 停止服务 | `supervisorctl stop facstock` |
-| 启动服务 | `supervisorctl start facstock` |
-
----
-
-## 日志查看
-
-```bash
-# facstock 日志
-tail -50 /opt/facstock/logs/supervisor_out.log   # 输出日志
-tail -50 /opt/facstock/logs/supervisor_err.log   # 错误日志
-
-# Ticai 日志
-tail -50 /opt/Ticai/logs/supervisor_out.log
-tail -50 /opt/Ticai/logs/supervisor_err.log
-
-# 实时查看（Ctrl+C 退出）
-tail -f /opt/facstock/logs/supervisor_out.log
-tail -f /opt/Ticai/logs/supervisor_err.log
+**错误信息：**
+```
+error: RPC failed; curl 16 Error in the HTTP2 framing layer
 ```
 
----
-
-## 常见问题
-
-### Q1: SSH 报错 "REMOTE HOST IDENTIFICATION HAS CHANGED"
-
+**解决方案：**
 ```bash
-# 在本地 Mac 执行
-ssh-keygen -R 111.229.238.115
-```
+# 禁用 HTTP/2
+git config --global http.version HTTP/1.1
+git config --global http.postBuffer 524288000
 
-### Q2: Port 80 is in use
-
-不要直接运行 `python main.py`，用 supervisor 管理：
-
-```bash
-supervisorctl restart ticai
-```
-
-### Q3: supervisor 报错 "no such file"
-
-```bash
-mkdir -p /opt/facstock/logs
-mkdir -p /opt/Ticai/logs
-supervisorctl reread
-supervisorctl update
-```
-
-### Q4: 外网无法访问
-
-1. 检查服务是否运行：`supervisorctl status`
-2. 本地测试：`curl http://127.0.0.1:5001`
-3. 检查 ufw：`ufw status`
-4. **检查腾讯云安全组/防火墙是否开放端口**
-
-### Q5: gunicorn 报错 "Failed to find attribute 'app'"
-
-Ticai 使用工厂模式，gunicorn 命令要用：
-
-```bash
-gunicorn -w 2 -b 0.0.0.0:5002 "main:create_app()"
-```
-
-### Q6: Git pull 后代码没更新
-
-Git 仓库在 `~/项目名`，但服务运行在 `/opt/项目名`，需要复制：
-
-```bash
-# facstock
-cp -r ~/facSstock/* /opt/facstock/
-supervisorctl restart facstock
-
-# Ticai
-cp -r ~/Ticai/* /opt/Ticai/
-supervisorctl restart ticai
-```
-
-### Q7: RemoteDisconnected 网络错误
-
-外部 API 连接问题，尝试重启：
-
-```bash
-supervisorctl restart ticai
-```
-
-如果持续报错，检查是哪个 API：
-
-```bash
-grep -B 5 "RemoteDisconnected" /opt/Ticai/logs/supervisor_err.log
-```
-
-### Q8: 更新后数据库丢失/扫描历史消失
-
-这是因为使用 `scp -r` 或 `cp -r` 时覆盖了 `data/` 目录。
-
-**解决方案**：使用 rsync 并排除 data 目录：
-
-```bash
-# 正确的更新方式（保留数据库）
-rsync -av --exclude='data/' --exclude='__pycache__/' \
-    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
-```
-
-**恢复数据**：如果数据已丢失，需要重新扫描。建议定期备份数据库：
-
-```bash
-# 备份数据库
-scp root@111.229.238.115:/opt/facstock/data/stock.db ./backup_stock.db
-
-# 恢复数据库
-scp ./backup_stock.db root@111.229.238.115:/opt/facstock/data/stock.db
-```
-
-### Q9: 如何切换 Git 源（GitHub/Gitee）
-
-```bash
-cd ~/facSstock
-
-# 查看当前远程仓库
-git remote -v
-
-# 添加 Gitee 源
-git remote add gitee https://gitee.com/Baili-BL/facSstock.git
-
-# 从 Gitee 拉取
-git pull gitee main
-
-# 从 GitHub 拉取
+# 重试
 git pull origin main
 ```
 
----
+### 2. 依赖安装失败
 
-## 快速参考卡片
+**错误信息：** pip 安装超时
 
-### 目录结构
-
-| 位置 | 说明 |
-|------|------|
-| `~/facSstock` | Git 仓库目录 |
-| `/opt/facstock` | 服务运行目录 |
-| `/opt/facstock/logs` | 日志目录 |
-| `/etc/supervisor/conf.d/` | Supervisor 配置 |
-
-### 访问地址
-
-| 应用 | 地址 |
-|------|------|
-| facstock | http://111.229.238.115 (或 :5001) |
-| Ticai | http://111.229.238.115:5002 |
-
-### 更新流程
-
-```
-本地修改 → 上传/Git推送 → 服务器拉取 → 复制到/opt → 重启服务
+**解决方案：使用国内镜像**
+```bash
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-### 一句话更新
+### 3. 服务启动失败
+
+**查看日志：**
+```bash
+# 查看服务日志
+journalctl -u facstock -f
+
+# 或查看最近100行
+journalctl -u facstock -n 100
+```
+
+**常见原因：**
+- 端口被占用：`lsof -i:5001`
+- 依赖未安装：重新执行 `pip install -r requirements.txt`
+- 权限问题：`chown -R root:root /opt/facstock`
+
+### 4. 数据库被覆盖
+
+**问题：** 每次部署后历史数据丢失
+
+**解决方案：** 确保同步时排除 data 目录
+```bash
+rsync --exclude='data/' ...
+```
+
+### 5. 服务器内存不足
+
+**查看内存：**
+```bash
+free -h
+```
+
+**解决方案：** 添加 Swap
+```bash
+# 创建 2G Swap
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+
+# 永久生效
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+### 6. 查看应用日志
 
 ```bash
-# 方式一：本地上传（Mac执行）- 保留数据库
-rsync -av --exclude='data/' --exclude='__pycache__/' /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/ && ssh root@111.229.238.115 "supervisorctl restart facstock"
+# 实时查看日志
+journalctl -u facstock -f
 
-# 方式二：服务器Git拉取 - 保留数据库
-cd ~/facSstock && git pull && rsync -av --exclude='data/' ~/facSstock/ /opt/facstock/ && supervisorctl restart facstock
+# 查看最近的错误
+journalctl -u facstock -p err -n 50
 ```
 
-> **注意**：使用 rsync 并排除 data 目录，确保数据库文件不会被覆盖
+### 7. 手动重启服务
+
+```bash
+# 重启
+systemctl restart facstock
+
+# 停止
+systemctl stop facstock
+
+# 启动
+systemctl start facstock
+
+# 查看状态
+systemctl status facstock
+```
+
+---
+
+## 四、快速参考
+
+### 服务器信息
+- **项目目录**：`/opt/facstock`
+- **虚拟环境**：`/opt/facstock/venv`
+- **数据目录**：`/opt/facstock/data`
+- **服务名称**：`facstock`
+- **端口**：`5001`
+
+### 常用命令速查
+
+```bash
+# 连接服务器
+ssh root@服务器IP
+
+# 进入项目
+cd /opt/facstock
+
+# 激活虚拟环境
+source venv/bin/activate
+
+# 拉取代码
+git pull origin main
+
+# 重启服务
+systemctl restart facstock
+
+# 查看状态
+systemctl status facstock
+
+# 查看日志
+journalctl -u facstock -f
+```
+
+### 本地一键部署
+
+```bash
+# 使用 rsync 同步并重启
+rsync -avz --exclude='data/' --exclude='__pycache__/' --exclude='.git/' --exclude='venv/' \
+  /Users/kevin/Desktop/facSstock/ root@服务器IP:/opt/facstock/ && \
+  ssh root@服务器IP "systemctl restart facstock"
+```

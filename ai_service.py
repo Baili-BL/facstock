@@ -363,9 +363,9 @@ class AIAnalysisService:
         main_board_stocks = [s for s in results if s.get('code', '').startswith(('60', '00'))]
         other_stocks = [s for s in results if not s.get('code', '').startswith(('60', '00'))]
         
-        # 按评分排序
-        main_board_stocks = sorted(main_board_stocks, key=lambda x: x.get('score', 0), reverse=True)[:15]
-        other_stocks = sorted(other_stocks, key=lambda x: x.get('score', 0), reverse=True)[:5]
+        # 按评分排序（字段名是 total_score）
+        main_board_stocks = sorted(main_board_stocks, key=lambda x: x.get('total_score', 0), reverse=True)[:15]
+        other_stocks = sorted(other_stocks, key=lambda x: x.get('total_score', 0), reverse=True)[:5]
         
         lines = [f"共扫描到 {len(results)} 只股票，以下为筛选结果：\n"]
         
@@ -378,7 +378,7 @@ class AIAnalysisService:
                 code = stock.get('code', '')
                 name = stock.get('name', '')
                 sector = stock.get('sector', '')
-                score = stock.get('score', 0)
+                score = stock.get('total_score', 0)  # 使用 total_score
                 grade = stock.get('grade', '')
                 squeeze_ratio = stock.get('squeeze_ratio', 0)
                 bb_width_pct = stock.get('bb_width_pct', 0)
@@ -395,7 +395,7 @@ class AIAnalysisService:
             for i, stock in enumerate(other_stocks, 1):
                 code = stock.get('code', '')
                 name = stock.get('name', '')
-                score = stock.get('score', 0)
+                score = stock.get('total_score', 0)  # 使用 total_score
                 lines.append(f"- {name}（{code}）评分{score}分")
             lines.append("")
         
