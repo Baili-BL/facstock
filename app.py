@@ -494,38 +494,50 @@ def get_stock_detail(code: str):
     try:
         from datetime import timedelta
         
-        # 先检查缓存（延长缓存时间到8小时，减少API调用）
-        cached_data = db.get_kline_cache(code, max_age_hours=8)
+        # 先检查缓存（延长缓存时间到24小时，大幅减少API调用）
+        cached_data = db.get_kline_cache(code, max_age_hours=24)
         if cached_data:
             print(f"[CACHE HIT] 股票 {code} 使用缓存数据")
             return jsonify({'success': True, 'data': cached_data, 'cached': True})
         
         print(f"[CACHE MISS] 股票 {code} 从API获取数据")
         
-        # 全局限流：确保两次API调用之间至少间隔 API_REQUEST_INTERVAL 秒
+        # 全局限流：确保两次API调用之间至少间隔 1 秒
         current_time = time.time()
         time_since_last = current_time - last_api_request_time
-        if time_since_last < API_REQUEST_INTERVAL:
-            time.sleep(API_REQUEST_INTERVAL - time_since_last)
+        if time_since_last < 1.0:
+            time.sleep(1.0 - time_since_last)
         
         last_api_request_time = time.time()
         
-        # 带重试机制获取股票历史数据（增加重试次数和延迟）
-        df = retry_request(
-            lambda: ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
-                end_date=datetime.now().strftime("%Y%m%d"),
-                adjust="qfq"
-            ),
-            max_retries=5,
-            delay=1.0,
-            silent=True
-        )
+        # 带重试机制获取股票历史数据
+        df = None
+        last_error = None
+        for attempt in range(5):
+            try:
+                if attempt > 0:
+                    wait_time = attempt * 2  # 递增等待：2, 4, 6, 8 秒
+                    print(f"[RETRY] 股票 {code} 第 {attempt + 1} 次重试，等待 {wait_time} 秒")
+                    time.sleep(wait_time)
+                
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
+                    end_date=datetime.now().strftime("%Y%m%d"),
+                    adjust="qfq"
+                )
+                
+                if df is not None and not df.empty:
+                    break
+            except Exception as e:
+                last_error = str(e)
+                print(f"[ERROR] 股票 {code} 获取失败: {e}")
+                continue
         
         if df is None or df.empty:
-            return jsonify({'success': False, 'error': '数据获取失败，请稍后重试'})
+            error_msg = f'数据获取失败: {last_error}' if last_error else '数据获取失败，请稍后重试'
+            return jsonify({'success': False, 'error': error_msg})
         
         # 重命名列
         df = df.rename(columns={

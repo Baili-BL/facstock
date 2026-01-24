@@ -663,12 +663,15 @@ def save_ai_report(analysis: str, model: str = None, tokens_used: int = 0,
     Returns:
         报告 ID
     """
+    from datetime import datetime
+    local_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO ai_reports (scan_id, model, tokens_used, news_data, scan_data_summary, analysis)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (scan_id, model, tokens_used, news_data, scan_data_summary, analysis))
+            INSERT INTO ai_reports (scan_id, report_time, model, tokens_used, news_data, scan_data_summary, analysis)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (scan_id, local_time, model, tokens_used, news_data, scan_data_summary, analysis))
         return cursor.lastrowid
 
 
