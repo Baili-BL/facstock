@@ -37,35 +37,42 @@
 ### 方式一：Docker 部署（推荐）
 
 ```bash
-# SSH 登录服务器
+# 1. 在 Mac 终端连接服务器
 ssh root@<服务器IP>
 
-# 一键部署（自动安装 Docker + MySQL + 应用）
-git clone https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+# 2. 克隆代码（国内用 ghproxy 加速）
+git clone https://ghproxy.com/https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+
+# 3. 一键部署
 cd /opt/stock-scanner/deploy/docker
 chmod +x install.sh && ./install.sh
 
-# 访问
-open http://<服务器IP>:5001
+# 4. 访问
+http://<服务器IP>:5001
+```
+
+**更新代码：**
+```bash
+# 方式1：git pull（网络好时）
+cd /opt/stock-scanner && git pull
+cd deploy/docker && docker compose up -d --build
+
+# 方式2：rsync 上传（更稳定，在 Mac 执行）
+rsync -avz --exclude='__pycache__/' --exclude='.git/' --exclude='venv/' \
+  ~/Desktop/facSstock/ root@<服务器IP>:/opt/stock-scanner/
+# 然后服务器上：cd /opt/stock-scanner/deploy/docker && docker compose up -d --build
 ```
 
 **常用命令：**
 ```bash
 cd /opt/stock-scanner/deploy/docker
-
-# 查看状态
-docker-compose ps
-
-# 查看日志
-docker-compose logs -f app
-
-# 重启
-docker-compose restart
-
-# 更新代码
-cd /opt/stock-scanner && git pull
-cd deploy/docker && docker-compose up -d --build
+docker compose ps          # 查看状态
+docker compose logs -f app # 查看日志
+docker compose restart     # 重启
+docker compose down        # 停止
 ```
+
+**常见问题见：** [deploy/MANUAL_DEPLOY.md](deploy/MANUAL_DEPLOY.md)
 
 ### 方式二：腾讯云部署（传统方式）
 

@@ -1,4 +1,105 @@
-# 布林带收缩策略 - 腾讯云部署指南
+# 布林带收缩策略 - 部署指南
+
+## 快速部署（Docker 方式，推荐）
+
+### 首次部署
+
+```bash
+# 1. 在 Mac 终端连接服务器
+ssh root@<服务器IP>
+
+# 2. 克隆代码（国内服务器用 ghproxy 加速）
+git clone https://ghproxy.com/https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+
+# 如果 ghproxy 也不行，在 Mac 本地执行 rsync 上传：
+# rsync -avz --exclude='__pycache__/' --exclude='.git/' --exclude='venv/' \
+#   ~/Desktop/facSstock/ root@<服务器IP>:/opt/stock-scanner/
+
+# 3. 安装 Docker（脚本会自动安装）
+cd /opt/stock-scanner/deploy/docker
+chmod +x install.sh
+./install.sh
+
+# 如果 Docker Compose 下载卡住，Ctrl+C 中断后手动安装：
+apt update && apt install -y docker-compose-plugin
+
+# 4. 启动服务
+docker compose up -d --build
+
+# 5. 检查状态
+docker compose ps
+docker compose logs app --tail 30
+```
+
+### 更新部署
+
+```bash
+# 方式1：服务器上 git pull（如果网络通）
+ssh root@<服务器IP>
+cd /opt/stock-scanner
+git pull
+cd deploy/docker
+docker compose up -d --build
+
+# 方式2：本地 rsync 上传（推荐，更稳定）
+# 在 Mac 终端执行：
+rsync -avz --exclude='__pycache__/' --exclude='.git/' --exclude='venv/' \
+  ~/Desktop/facSstock/ root@<服务器IP>:/opt/stock-scanner/
+
+# 然后在服务器上重建：
+ssh root@<服务器IP>
+cd /opt/stock-scanner/deploy/docker
+docker compose up -d --build
+```
+
+### 常见问题
+
+#### 1. 端口 5001 被占用
+```bash
+# 查看占用进程
+lsof -i :5001
+
+# 杀掉进程
+fuser -k 5001/tcp
+
+# 如果有旧的 systemd 服务
+systemctl stop stock-scanner
+systemctl disable stock-scanner
+rm -f /etc/systemd/system/stock-scanner.service
+systemctl daemon-reload
+```
+
+#### 2. GitHub 连接超时
+```bash
+# 使用 ghproxy 代理
+git clone https://ghproxy.com/https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+
+# 或者从本地 rsync 上传
+```
+
+#### 3. Docker Compose 下载卡住
+```bash
+# Ctrl+C 中断，用 apt 安装
+apt update && apt install -y docker-compose-plugin
+
+# 注意：命令变成 docker compose（没有横杠）
+```
+
+#### 4. MySQL 连接失败 (cryptography 错误)
+确保 `requirements.txt` 包含 `cryptography>=41.0.0`
+
+#### 5. 容器不断重启
+```bash
+# 查看日志
+docker compose logs app --tail 50
+
+# 完全重建
+docker compose down -v
+docker network prune -f
+docker compose up -d --build
+```
+
+---
 
 ## 架构概览
 
