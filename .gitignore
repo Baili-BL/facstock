@@ -1,6 +1,5 @@
-# 数据库文件（保留在服务器，不要覆盖）
+# 数据目录（MySQL 数据在服务器，不需要同步）
 data/
-*.db
 
 # Python
 __pycache__/
@@ -44,3 +43,18 @@ Thumbs.db
 # 日志
 logs/
 *.log
+
+# 敏感配置
+.env
+.env.local
+*.pem
+*.key
+
+# 测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Kiro/Cursor
+.cursor/
+.kiro/specs/

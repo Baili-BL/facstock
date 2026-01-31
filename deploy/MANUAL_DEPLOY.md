@@ -1,9 +1,22 @@
 # 布林带收缩策略 - 腾讯云部署指南
 
-## 目录
-1. [首次部署（从零开始）](#一首次部署从零开始)
-2. [更新部署（代码更新后）](#二更新部署代码更新后)
-3. [常见问题](#三常见问题)
+## 架构概览
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    腾讯云轻量服务器                       │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐ │
+│  │   Nginx     │───▶│  Gunicorn   │───▶│  MySQL 8.0  │ │
+│  │   (80)      │    │   (5001)    │    │   (3306)    │ │
+│  └─────────────┘    └─────────────┘    └─────────────┘ │
+│         │                 │                             │
+│         ▼                 ▼                             │
+│  ┌─────────────┐    ┌─────────────┐                    │
+│  │  Systemd    │    │   Python    │                    │
+│  │  进程管理    │    │   venv      │                    │
+│  └─────────────┘    └─────────────┘                    │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -21,121 +34,149 @@
 ### 2. 连接服务器
 
 ```bash
-# 方式1：使用密码登录
-ssh root@你的服务器IP
-
-# 方式2：使用密钥登录（推荐）
-ssh -i ~/.ssh/your_key.pem root@你的服务器IP
+ssh root@<服务器IP>
 ```
 
-### 3. 安装基础环境
+### 3. 安装系统依赖
 
 ```bash
 # 更新系统
 apt update && apt upgrade -y
 
-# 安装 Python 3.11+ 和相关工具
-apt install -y python3 python3-pip python3-venv git
+# 安装基础工具
+apt install -y git curl wget vim htop
+
+# 安装 Python 3 和开发工具
+apt install -y python3 python3-pip python3-venv build-essential libffi-dev libssl-dev
+
+# 安装 Nginx
+apt install -y nginx
 
 # 验证安装
 python3 --version  # 应该显示 3.10+
-pip3 --version
 ```
 
-### 4. 克隆项目代码
+### 4. 安装 MySQL 8.0
+
+```bash
+# 安装 MySQL 8.0
+apt install -y mysql-server mysql-client libmysqlclient-dev
+
+# 启动并设置开机自启
+systemctl enable mysql
+systemctl start mysql
+
+# 设置 root 密码（替换 YourPassword123 为你的密码）
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'YourPassword123';"
+
+# 创建数据库
+mysql -u root -p'YourPassword123' -e "CREATE DATABASE stock_scanner CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 验证
+mysql -u root -p'YourPassword123' -e "SHOW DATABASES;"
+```
+
+### 5. 克隆项目代码
 
 ```bash
 # 进入部署目录
 cd /opt
 
-# 克隆代码（替换为你的仓库地址）
-git clone https://github.com/你的用户名/facSstock.git facstock
+# 克隆代码
+git clone https://github.com/Baili-BL/facSstock.git stock-scanner
 
 # 进入项目目录
-cd facstock
+cd stock-scanner
 ```
 
-**如果 git clone 失败**（网络问题），使用以下方法：
-
+**如果 git clone 失败**（网络问题）：
 ```bash
-# 配置 git 使用 HTTP/1.1
 git config --global http.version HTTP/1.1
 git config --global http.postBuffer 524288000
-
-# 重试
-git clone https://github.com/你的用户名/facSstock.git facstock
+git clone https://github.com/Baili-BL/facSstock.git stock-scanner
 ```
 
-### 5. 创建虚拟环境
+### 6. 配置 Python 环境
 
 ```bash
-# 在项目目录创建虚拟环境
-cd /opt/facstock
+cd /opt/stock-scanner
+
+# 创建虚拟环境
 python3 -m venv venv
 
 # 激活虚拟环境
 source venv/bin/activate
 
-# 确认激活成功（命令行前面会显示 (venv)）
-which python  # 应该显示 /opt/facstock/venv/bin/python
-```
-
-### 6. 安装依赖
-
-```bash
-# 确保在虚拟环境中
-source /opt/facstock/venv/bin/activate
-
 # 升级 pip
 pip install --upgrade pip
 
-# 安装项目依赖
-pip install -r requirements.txt
+# 安装依赖（使用国内镜像加速）
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 安装 gunicorn
+pip install gunicorn
 
 # 验证安装
-python -c "import flask; import akshare; print('依赖安装成功')"
+python -c "import flask; import akshare; import pymysql; print('依赖安装成功')"
 ```
 
-### 7. 创建数据目录
+### 7. 配置环境变量
 
 ```bash
-# 创建数据目录（存储 SQLite 数据库）
-mkdir -p /opt/facstock/data
+# 创建环境变量文件
+cat > /opt/stock-scanner/.env << 'EOF'
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=YourPassword123
+MYSQL_DATABASE=stock_scanner
+EOF
 
 # 设置权限
-chmod 755 /opt/facstock/data
+chmod 600 /opt/stock-scanner/.env
 ```
 
 ### 8. 测试运行
 
 ```bash
 # 激活虚拟环境
-source /opt/facstock/venv/bin/activate
+source /opt/stock-scanner/venv/bin/activate
 
-# 测试运行（前台模式）
-cd /opt/facstock
+# 设置环境变量
+export MYSQL_HOST=localhost
+export MYSQL_PORT=3306
+export MYSQL_USER=root
+export MYSQL_PASSWORD=YourPassword123
+export MYSQL_DATABASE=stock_scanner
+
+# 测试运行
+cd /opt/stock-scanner
 python app.py
 
-# 应该看到：
-# * Running on http://0.0.0.0:5001
+# 应该看到：* Running on http://0.0.0.0:5001
 # 按 Ctrl+C 停止
 ```
 
-### 9. 配置 Systemd 服务（开机自启）
+### 9. 配置 Systemd 服务
 
 ```bash
 # 创建服务文件
-cat > /etc/systemd/system/facstock.service << 'EOF'
+cat > /etc/systemd/system/stock-scanner.service << 'EOF'
 [Unit]
-Description=FacStock - Bollinger Squeeze Strategy
-After=network.target
+Description=Stock Scanner - Bollinger Squeeze Strategy
+After=network.target mysql.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/facstock
-Environment=PATH=/opt/facstock/venv/bin:/usr/bin
-ExecStart=/opt/facstock/venv/bin/gunicorn -w 2 -b 0.0.0.0:5001 --timeout 300 app:app
+WorkingDirectory=/opt/stock-scanner
+Environment=PATH=/opt/stock-scanner/venv/bin:/usr/bin
+Environment=MYSQL_HOST=localhost
+Environment=MYSQL_PORT=3306
+Environment=MYSQL_USER=root
+Environment=MYSQL_PASSWORD=YourPassword123
+Environment=MYSQL_DATABASE=stock_scanner
+ExecStart=/opt/stock-scanner/venv/bin/gunicorn -w 2 -b 127.0.0.1:5001 --timeout 300 app:app
 Restart=always
 RestartSec=10
 
@@ -147,249 +188,261 @@ EOF
 systemctl daemon-reload
 
 # 启动服务
-systemctl start facstock
+systemctl start stock-scanner
 
 # 设置开机自启
-systemctl enable facstock
+systemctl enable stock-scanner
 
 # 查看状态
-systemctl status facstock
+systemctl status stock-scanner
 ```
 
-### 10. 配置防火墙
+### 10. 配置 Nginx 反向代理
 
 ```bash
-# 腾讯云控制台操作：
-# 1. 进入轻量应用服务器控制台
-# 2. 点击服务器 -> 防火墙
-# 3. 添加规则：
-#    - 端口：5001
-#    - 协议：TCP
-#    - 策略：允许
-#    - 来源：0.0.0.0/0
+# 创建 Nginx 配置
+cat > /etc/nginx/sites-available/stock-scanner << 'EOF'
+server {
+    listen 80;
+    server_name _;
 
-# 或者使用命令行（如果使用 ufw）
-ufw allow 5001/tcp
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
+    location /static/ {
+        alias /opt/stock-scanner/static/;
+        expires 7d;
+    }
+}
+EOF
+
+# 启用站点
+ln -sf /etc/nginx/sites-available/stock-scanner /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# 测试并重载
+nginx -t
+systemctl reload nginx
 ```
 
-### 11. 访问应用
+### 11. 配置防火墙
 
-打开浏览器访问：
+在腾讯云控制台操作：
+1. 进入轻量应用服务器控制台
+2. 点击服务器 → 防火墙
+3. 添加规则：
+
+| 端口 | 协议 | 策略 | 说明 |
+|------|------|------|------|
+| 22 | TCP | 允许 | SSH |
+| 80 | TCP | 允许 | HTTP |
+| 443 | TCP | 允许 | HTTPS（可选） |
+
+### 12. 访问应用
+
 ```
-http://你的服务器IP:5001
+http://<服务器IP>
 ```
 
 ---
 
-## 二、更新部署（代码更新后）
+## 二、更新部署
 
 ### 方式1：Git Pull 更新（推荐）
 
-**本地操作：提交并推送代码**
-
-```bash
-# 在本地项目目录
-cd /Users/kevin/Desktop/facSstock
-
-# 添加所有更改
-git add .
-
-# 提交
-git commit -m "更新说明"
-
-# 推送到 GitHub
-git push origin main
-```
-
-**服务器操作：拉取并重启**
-
 ```bash
 # SSH 连接服务器
-ssh root@你的服务器IP
+ssh root@<服务器IP>
 
-# 进入项目目录
-cd /opt/facstock
-
-# 拉取最新代码
+# 进入项目目录并拉取代码
+cd /opt/stock-scanner
 git pull origin main
 
-# 如果 git pull 报错，尝试：
-git config --global http.version HTTP/1.1
-git pull origin main
+# 更新依赖（如有变化）
+source venv/bin/activate
+pip install -r requirements.txt
 
 # 重启服务
-systemctl restart facstock
+systemctl restart stock-scanner
 
 # 查看状态
-systemctl status facstock
+systemctl status stock-scanner
 ```
 
-### 方式2：Rsync 直接同步（网络不稳定时）
-
-**在本地执行一条命令即可：**
+### 方式2：Rsync 直接同步
 
 ```bash
-# 同步代码到服务器（排除数据目录和缓存）
+# 本地执行（排除不需要同步的目录）
 rsync -avz --progress \
-  --exclude='data/' \
   --exclude='__pycache__/' \
   --exclude='.git/' \
   --exclude='*.pyc' \
   --exclude='venv/' \
+  --exclude='.env' \
   /Users/kevin/Desktop/facSstock/ \
-  root@你的服务器IP:/opt/facstock/
+  root@<服务器IP>:/opt/stock-scanner/
 
-# 然后 SSH 到服务器重启
-ssh root@你的服务器IP "systemctl restart facstock"
+# 重启服务
+ssh root@<服务器IP> "systemctl restart stock-scanner"
 ```
 
-**一键更新脚本（保存为 deploy.sh）：**
+### 一键部署脚本
+
+保存为 `deploy.sh`：
 
 ```bash
 #!/bin/bash
-SERVER_IP="你的服务器IP"
+SERVER_IP="<你的服务器IP>"
 
 echo "📦 同步代码到服务器..."
 rsync -avz --progress \
-  --exclude='data/' \
   --exclude='__pycache__/' \
   --exclude='.git/' \
   --exclude='*.pyc' \
   --exclude='venv/' \
+  --exclude='.env' \
   /Users/kevin/Desktop/facSstock/ \
-  root@${SERVER_IP}:/opt/facstock/
+  root@${SERVER_IP}:/opt/stock-scanner/
 
 echo "🔄 重启服务..."
-ssh root@${SERVER_IP} "systemctl restart facstock && systemctl status facstock"
+ssh root@${SERVER_IP} "systemctl restart stock-scanner && systemctl status stock-scanner"
 
-echo "✅ 部署完成！访问 http://${SERVER_IP}:5001"
-```
-
-使用方法：
-```bash
-chmod +x deploy.sh
-./deploy.sh
+echo "✅ 部署完成！访问 http://${SERVER_IP}"
 ```
 
 ---
 
-## 三、常见问题
+## 三、日常运维
+
+### 查看服务状态
+
+```bash
+systemctl status stock-scanner
+```
+
+### 重启服务
+
+```bash
+systemctl restart stock-scanner
+```
+
+### 查看日志
+
+```bash
+# 实时日志
+journalctl -u stock-scanner -f
+
+# 最近100行
+journalctl -u stock-scanner -n 100
+
+# 错误日志
+journalctl -u stock-scanner -p err
+```
+
+### 数据库操作
+
+```bash
+# 连接数据库
+mysql -u root -p stock_scanner
+
+# 备份数据库
+mysqldump -u root -p stock_scanner > backup_$(date +%Y%m%d).sql
+
+# 恢复数据库
+mysql -u root -p stock_scanner < backup_20240101.sql
+```
+
+### 查看磁盘空间
+
+```bash
+df -h
+```
+
+### 查看内存使用
+
+```bash
+free -h
+htop
+```
+
+---
+
+## 四、常见问题
 
 ### 1. Git Clone/Pull 失败
 
-**错误信息：**
-```
-error: RPC failed; curl 16 Error in the HTTP2 framing layer
-```
-
-**解决方案：**
 ```bash
 # 禁用 HTTP/2
 git config --global http.version HTTP/1.1
 git config --global http.postBuffer 524288000
-
-# 重试
 git pull origin main
 ```
 
-### 2. 依赖安装失败
+### 2. MySQL 连接失败
 
-**错误信息：** pip 安装超时
-
-**解决方案：使用国内镜像**
 ```bash
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 检查 MySQL 状态
+systemctl status mysql
+
+# 检查连接
+mysql -u root -p -e "SELECT 1;"
+
+# 查看错误日志
+tail -f /var/log/mysql/error.log
 ```
 
 ### 3. 服务启动失败
 
-**查看日志：**
 ```bash
-# 查看服务日志
-journalctl -u facstock -f
+# 查看详细日志
+journalctl -u stock-scanner -n 50
 
-# 或查看最近100行
-journalctl -u facstock -n 100
+# 手动测试运行
+cd /opt/stock-scanner
+source venv/bin/activate
+export MYSQL_HOST=localhost MYSQL_PORT=3306 MYSQL_USER=root MYSQL_PASSWORD=YourPassword123 MYSQL_DATABASE=stock_scanner
+python app.py
 ```
 
-**常见原因：**
-- 端口被占用：`lsof -i:5001`
-- 依赖未安装：重新执行 `pip install -r requirements.txt`
-- 权限问题：`chown -R root:root /opt/facstock`
+### 4. 内存不足
 
-### 4. 数据库被覆盖
-
-**问题：** 每次部署后历史数据丢失
-
-**解决方案：** 确保同步时排除 data 目录
 ```bash
-rsync --exclude='data/' ...
-```
-
-### 5. 服务器内存不足
-
-**查看内存：**
-```bash
-free -h
-```
-
-**解决方案：** 添加 Swap
-```bash
-# 创建 2G Swap
+# 添加 2G Swap
 fallocate -l 2G /swapfile
 chmod 600 /swapfile
 mkswap /swapfile
 swapon /swapfile
-
-# 永久生效
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
-```
-
-### 6. 查看应用日志
-
-```bash
-# 实时查看日志
-journalctl -u facstock -f
-
-# 查看最近的错误
-journalctl -u facstock -p err -n 50
-```
-
-### 7. 手动重启服务
-
-```bash
-# 重启
-systemctl restart facstock
-
-# 停止
-systemctl stop facstock
-
-# 启动
-systemctl start facstock
-
-# 查看状态
-systemctl status facstock
 ```
 
 ---
 
-## 四、快速参考
+## 五、快速参考
 
 ### 服务器信息
-- **项目目录**：`/opt/facstock`
-- **虚拟环境**：`/opt/facstock/venv`
-- **数据目录**：`/opt/facstock/data`
-- **服务名称**：`facstock`
-- **端口**：`5001`
 
-### 常用命令速查
+| 项目 | 路径/值 |
+|------|---------|
+| 项目目录 | `/opt/stock-scanner` |
+| 虚拟环境 | `/opt/stock-scanner/venv` |
+| 服务名称 | `stock-scanner` |
+| 应用端口 | `5001` |
+| 数据库 | `stock_scanner` |
+
+### 常用命令
 
 ```bash
 # 连接服务器
-ssh root@服务器IP
+ssh root@<服务器IP>
 
 # 进入项目
-cd /opt/facstock
+cd /opt/stock-scanner
 
 # 激活虚拟环境
 source venv/bin/activate
@@ -398,20 +451,11 @@ source venv/bin/activate
 git pull origin main
 
 # 重启服务
-systemctl restart facstock
+systemctl restart stock-scanner
 
 # 查看状态
-systemctl status facstock
+systemctl status stock-scanner
 
 # 查看日志
-journalctl -u facstock -f
-```
-
-### 本地一键部署
-
-```bash
-# 使用 rsync 同步并重启
-rsync -avz --exclude='data/' --exclude='__pycache__/' --exclude='.git/' --exclude='venv/' \
-  /Users/kevin/Desktop/facSstock/ root@服务器IP:/opt/facstock/ && \
-  ssh root@服务器IP "systemctl restart facstock"
+journalctl -u stock-scanner -f
 ```

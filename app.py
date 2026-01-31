@@ -4,21 +4,29 @@
 布林带收缩策略 - Flask Web 应用
 """
 
+import sys
+# 禁用输出缓冲，确保 print 立即显示
+sys.stdout.reconfigure(line_buffering=True)
+
 from flask import Flask, render_template, jsonify, request
-from bollinger_squeeze_strategy import BollingerSqueezeStrategy, HotSectorScanner, retry_request
-import akshare as ak
+from bollinger_squeeze_strategy import BollingerSqueezeStrategy
+from utils.retry import retry_request
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import time
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 
 # 导入数据库模块
 import database as db
 
 # 导入 AI 服务模块
 from ai_service import get_ai_service
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -41,38 +49,91 @@ def index():
 
 @app.route('/api/hot-sectors')
 def get_hot_sectors():
-    """获取热点板块列表"""
-    try:
-        df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
-        if df is not None and len(df) > 0:
-            df = df.sort_values(by='涨跌幅', ascending=False)
-            sectors = []
-            for _, row in df.head(20).iterrows():
-                sectors.append({
-                    'name': row['板块名称'],
-                    'change': round(row['涨跌幅'], 2),
-                    'leader': row.get('领涨股票', ''),
-                    'leader_change': round(row.get('领涨股票-涨跌幅', 0), 2)
-                })
-            return jsonify({'success': True, 'data': sectors})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    """
+    获取热点板块列表（同花顺数据源）
     
-    return jsonify({'success': False, 'error': '无法获取数据'})
+    返回当前A股市场涨幅前20的热点板块信息。
+    
+    Query Parameters:
+        limit (int, optional): 返回数量限制，默认20，最大50
+        
+    Returns:
+        JSON: {
+            success: bool,
+            data: [{name, change, leader, leader_change}, ...],
+            error: str (仅失败时)
+        }
+    """
+    try:
+        from utils.ths_crawler import get_ths_industry_list
+        
+        # 获取并验证 limit 参数
+        limit = request.args.get('limit', 20, type=int)
+        limit = max(1, min(50, limit))  # 限制在 1-50 之间
+        
+        logger.info(f"获取热点板块列表(THS)，limit={limit}")
+        
+        df = retry_request(get_ths_industry_list, max_retries=3, delay=1.0)
+        
+        if df is None or len(df) == 0:
+            logger.warning("热点板块数据为空")
+            return jsonify({'success': False, 'error': '无法获取数据'})
+        
+        # 构建返回数据（已按涨跌幅排序）
+        sectors = []
+        for _, row in df.head(limit).iterrows():
+            sectors.append({
+                'name': row['板块'],
+                'change': round(float(row['涨跌幅']), 2),
+                'leader': row.get('领涨股', ''),
+                'leader_change': round(float(row.get('领涨股-涨跌幅', 0)), 2)
+            })
+        
+        logger.info(f"成功获取 {len(sectors)} 个热点板块")
+        return jsonify({'success': True, 'data': sectors})
+        
+    except Exception as e:
+        logger.error(f"获取热点板块失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/scan/start', methods=['POST'])
 def start_scan():
-    """开始扫描"""
+    """
+    开始扫描任务
+    
+    启动后台扫描线程，扫描热点板块中符合布林带收缩条件的股票。
+    
+    Request Body (JSON):
+        sectors (int, optional): 扫描板块数量，默认5，范围1-20
+        min_days (int, optional): 最小收缩天数，默认3，范围1-10
+        period (int, optional): 布林带周期，默认20，范围10-60
+        
+    Returns:
+        JSON: {
+            success: bool,
+            message: str,
+            scan_id: int (成功时)
+        }
+    """
     global scan_status
     
     if scan_status['is_scanning']:
         return jsonify({'success': False, 'error': '扫描正在进行中'})
     
     data = request.json or {}
+    
+    # 参数验证和默认值
     top_sectors = data.get('sectors', 5)
     min_days = data.get('min_days', 3)
     period = data.get('period', 20)
+    
+    # 参数范围验证
+    top_sectors = max(1, min(20, int(top_sectors)))
+    min_days = max(1, min(10, int(min_days)))
+    period = max(10, min(60, int(period)))
+    
+    logger.info(f"开始扫描: sectors={top_sectors}, min_days={min_days}, period={period}")
     
     # 创建数据库记录
     params = {
@@ -93,12 +154,17 @@ def start_scan():
     }
     
     # 在后台线程执行扫描
+    import sys
+    print(f"🚀 启动扫描线程: scan_id={scan_id}", flush=True)
+    sys.stdout.flush()
     thread = threading.Thread(
         target=run_scan,
         args=(scan_id, top_sectors, min_days, period)
     )
     thread.daemon = True
     thread.start()
+    print(f"✅ 扫描线程已启动", flush=True)
+    sys.stdout.flush()
     
     return jsonify({'success': True, 'message': '扫描已开始', 'scan_id': scan_id})
 
@@ -117,17 +183,32 @@ def cancel_scan():
     return jsonify({'success': True, 'message': '正在取消扫描'})
 
 
-def analyze_single_stock(strategy, stock_info):
-    """分析单只股票（用于并发）"""
-    # 随机延迟 0.1-0.3 秒，错开请求时间避免API限流
-    time.sleep(random.uniform(0.1, 0.3))
+def analyze_single_stock(strategy, stock_info, precache_kline=True):
+    """分析单只股票（用于并发）
+    
+    Args:
+        strategy: 策略实例
+        stock_info: 股票信息字典
+        precache_kline: 是否预缓存K线数据（默认True）
+    """
+    # 随机延迟 0.05-0.15 秒，错开请求时间避免API限流
+    time.sleep(random.uniform(0.05, 0.15))
     
     try:
         code = stock_info['code']
         name = stock_info['name']
-        result = strategy.analyze_stock(code, name)
+        result = strategy.analyze_stock(code, name, return_df=precache_kline)
+        
         if result:
-            # print(f"[DEBUG] 股票 {code} {name} 符合条件")
+            # 如果返回了df，提取并缓存K线数据
+            df = None
+            if isinstance(result, tuple):
+                result, df = result
+            
+            # 添加板块信息
+            result['sector_name'] = stock_info.get('sector_name', '')
+            result['sector_change'] = stock_info.get('sector_change', 0)
+            
             # 添加标签信息
             result['is_leader'] = stock_info.get('is_leader', False)
             result['leader_rank'] = stock_info.get('leader_rank', 0)
@@ -202,180 +283,427 @@ def analyze_single_stock(strategy, stock_info):
             
             result['tags'] = tags
             
+            # 如果有df，预缓存K线数据
+            if df is not None and precache_kline:
+                try:
+                    kline_data = prepare_kline_data(df)
+                    if kline_data:
+                        db.save_kline_cache(code, kline_data)
+                except Exception as e:
+                    print(f"[WARN] 预缓存K线数据失败 {code}: {e}")
+            
             return result
     except Exception:
         pass
     return None
 
 
+def prepare_kline_data(df):
+    """从DataFrame准备K线数据（供缓存使用）"""
+    try:
+        # 移除包含NaN的行
+        df = df.dropna(subset=['bb_upper', 'bb_lower', 'bb_middle', 'width_ma_short', 'width_ma_long'])
+        
+        # 取最近60天数据
+        df = df.tail(60)
+        
+        if len(df) == 0:
+            return None
+        
+        # 转换为列表，处理可能的NaN值
+        def safe_list(series):
+            return [None if pd.isna(x) else float(x) for x in series]
+        
+        # 日期转字符串
+        def date_to_str(d):
+            if hasattr(d, 'strftime'):
+                return d.strftime('%Y-%m-%d')
+            return str(d)
+        
+        # 生成蜡烛图数据 (Lightweight Charts格式)
+        candles = []
+        for _, row in df.iterrows():
+            candles.append({
+                'time': date_to_str(row['date']),
+                'open': float(row['open']) if pd.notna(row['open']) else None,
+                'high': float(row['high']) if pd.notna(row['high']) else None,
+                'low': float(row['low']) if pd.notna(row['low']) else None,
+                'close': float(row['close']) if pd.notna(row['close']) else None,
+            })
+        
+        # 生成成交量数据（红涨绿跌，与蜡烛图一致）
+        volume_data = []
+        for _, row in df.iterrows():
+            color = '#ef5350' if row['close'] >= row['open'] else '#26a69a'
+            volume_data.append({
+                'time': date_to_str(row['date']),
+                'value': float(row['volume']) if pd.notna(row['volume']) else 0,
+                'color': color
+            })
+        
+        # 布林带数据
+        bb_upper_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_upper'])} for _, row in df.iterrows() if pd.notna(row['bb_upper'])]
+        bb_middle_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_middle'])} for _, row in df.iterrows() if pd.notna(row['bb_middle'])]
+        bb_lower_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_lower'])} for _, row in df.iterrows() if pd.notna(row['bb_lower'])]
+        
+        # CMF 数据
+        cmf_data = safe_list(df['cmf']) if 'cmf' in df.columns else []
+        
+        # 涨跌幅数据
+        pct_change_data = safe_list(df['pct_change']) if 'pct_change' in df.columns else []
+        
+        # 最新价格信息
+        latest = df.iloc[-1] if len(df) > 0 else None
+        latest_info = None
+        if latest is not None:
+            latest_info = {
+                'close': float(latest['close']) if pd.notna(latest['close']) else 0,
+                'pct_change': float(latest['pct_change']) if pd.notna(latest['pct_change']) else 0,
+                'date': date_to_str(latest['date']),
+            }
+        
+        return {
+            'candles': candles,
+            'volumes': volume_data,
+            'bb_upper': bb_upper_data,
+            'bb_middle': bb_middle_data,
+            'bb_lower': bb_lower_data,
+            'bb_width': safe_list(df['bb_width_pct']),
+            'width_ma5': safe_list(df['width_ma_short']),
+            'width_ma10': safe_list(df['width_ma_long']),
+            'cmf': cmf_data,
+            'pct_change': pct_change_data,
+            'latest': latest_info,
+            'dates': df['date'].astype(str).tolist(),
+        }
+    except Exception as e:
+        print(f"[ERROR] prepare_kline_data 失败: {e}")
+        return None
+
+
+# ==================== 并发控制工具 ====================
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# 全局信号量，控制 API 请求频率
+api_semaphore = threading.Semaphore(3)  # 最多3个并发请求
+
+
+def fetch_with_rate_limit(func, delay=0.3):
+    """带限流的请求包装器"""
+    with api_semaphore:
+        time.sleep(delay)
+        return func()
+
+
 def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
-    """执行扫描任务（并发版本），结果保存到数据库"""
+    """
+    高效扫描任务（使用同花顺数据源）
+    
+    数据流程：
+    1. 同花顺行业排行 → 获取热点板块
+    2. 同花顺行业成分股 → 爬取成分股列表
+    3. 新浪K线接口 → 获取K线数据
+    4. pandas向量化 → 计算技术指标
+    
+    优化策略：
+    1. 成分股缓存：当日有效，避免重复爬取
+    2. K线缓存：当日有效，大幅减少API调用
+    3. 并发获取：5线程并发获取K线
+    """
     global scan_status
     
-    # 并发线程数（降低并发数避免被限流）
-    MAX_WORKERS = 3
-    # 每批请求后的休息时间（秒）
-    BATCH_DELAY = 0.5
-    
-    # 用于临时存储热点板块信息
-    hot_sectors_list = []
+    # 导入同花顺爬虫
+    from utils.ths_crawler import (
+        get_ths_industry_list, 
+        fetch_ths_industry_stocks,
+        get_stock_kline_sina
+    )
     
     try:
-        print(f"[DEBUG] 开始扫描: scan_id={scan_id}, top_sectors={top_sectors}, min_days={min_days}, period={period}")
+        start_time = time.time()
+        print(f"🚀 开始扫描(THS数据源): scan_id={scan_id}, sectors={top_sectors}, min_days={min_days}, period={period}")
         
         strategy = BollingerSqueezeStrategy(
             period=period,
             min_squeeze_days=min_days
         )
         
-        # 获取热点板块
-        try:
-            print("[DEBUG] 正在获取热点板块...")
-            df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
-            print(f"[DEBUG] 获取到板块数据: {len(df) if df is not None else 0} 条")
-            
-            if df is not None and len(df) > 0:
-                df = df.sort_values(by='涨跌幅', ascending=False)
-                hot_sectors_df = df.head(top_sectors)
-                
-                hot_sectors_list = [
-                    {'name': row['板块名称'], 'change': round(row['涨跌幅'], 2)}
-                    for _, row in hot_sectors_df.iterrows()
-                ]
-                
-                # 保存热点板块到数据库
-                db.save_hot_sectors(scan_id, hot_sectors_list)
-                
-                print(f"[DEBUG] 热点板块: {[s['name'] for s in hot_sectors_list]}")
-            else:
-                error_msg = '无法获取热点板块'
-                scan_status['error'] = error_msg
-                scan_status['is_scanning'] = False
-                db.update_scan_status(scan_id, 'error', error_msg)
-                print("[DEBUG] 无法获取热点板块数据")
-                return
-        except Exception as e:
-            error_msg = f'获取热点板块失败: {str(e)}'
-            scan_status['error'] = error_msg
-            scan_status['is_scanning'] = False
-            db.update_scan_status(scan_id, 'error', error_msg)
-            print(f"[DEBUG] 获取热点板块异常: {e}")
-            return
+        # ========== 1. 获取热点板块（同花顺）==========
+        print("📊 获取同花顺热点板块...")
+        scan_status['current_sector'] = '获取热点板块...'
         
-        total_sectors = len(hot_sectors_list)
+        df = retry_request(get_ths_industry_list, max_retries=3, delay=1.0)
         
-        for i, sector in enumerate(hot_sectors_list):
-            # 检查是否取消
-            if scan_status.get('cancelled'):
-                print(f"[DEBUG] 扫描已被用户取消")
-                scan_status['is_scanning'] = False
-                scan_status['current_sector'] = '已取消'
-                db.update_scan_status(scan_id, 'cancelled', '用户取消扫描')
-                return
+        if df is None or len(df) == 0:
+            raise Exception('无法获取热点板块数据')
+        
+        # 取前N个热点板块（DataFrame 已包含代码）
+        hot_sectors_list = []
+        for _, row in df.head(top_sectors).iterrows():
+            hot_sectors_list.append({
+                'name': row['板块'],
+                'code': row.get('代码', ''),
+                'change': round(float(row['涨跌幅']), 2),
+                'leader': row.get('领涨股', ''),
+                'leader_change': round(float(row.get('领涨股-涨跌幅', 0)), 2)
+            })
+        
+        db.save_hot_sectors(scan_id, hot_sectors_list)
+        sector_names = [s['name'] for s in hot_sectors_list]
+        print(f"✅ 热点板块: {sector_names}")
+        
+        # ========== 2. 获取成分股（优先缓存，爬虫获取）==========
+        print(f"\n📥 获取 {len(hot_sectors_list)} 个板块的成分股...")
+        scan_status['current_sector'] = '获取成分股...'
+        scan_status['progress'] = 10
+        
+        # 先查缓存
+        cached_sectors = db.get_all_sector_stocks_cache(sector_names)
+        print(f"  📦 缓存命中: {len(cached_sectors)}/{len(sector_names)} 个板块")
+        
+        # 需要爬取的板块
+        sectors_to_fetch = [s for s in hot_sectors_list if s['name'] not in cached_sectors]
+        
+        all_sector_stocks = dict(cached_sectors)  # 从缓存开始
+        
+        if sectors_to_fetch:
+            print(f"  🌐 需要爬取: {len(sectors_to_fetch)} 个板块")
             
-            sector_name = sector['name']
-            progress = int((i / total_sectors) * 100)
-            
-            scan_status['current_sector'] = f"{sector_name} (并发分析中...)"
-            scan_status['progress'] = progress
-            
-            # 更新数据库进度
-            db.update_scan_progress(scan_id, progress, scan_status['current_sector'])
-            
-            print(f"[DEBUG] 扫描板块 {i+1}/{total_sectors}: {sector_name}")
-            
-            try:
-                # 获取成分股（含市值信息），带重试机制
-                stocks_df = retry_request(
-                    lambda sn=sector_name: ak.stock_board_industry_cons_em(symbol=sn),
-                    max_retries=3,
-                    delay=1.0
-                )
-                if stocks_df is None or stocks_df.empty:
-                    print(f"[DEBUG] 板块 {sector_name} 无成分股数据")
+            for sector_info in sectors_to_fetch:
+                if scan_status.get('cancelled'):
+                    break
+                    
+                sector_name = sector_info['name']
+                sector_code = sector_info['code']
+                
+                if not sector_code:
+                    print(f"  ⚠️ {sector_name}: 无行业代码，跳过")
                     continue
                 
-                print(f"[DEBUG] 板块 {sector_name} 有 {len(stocks_df)} 只成分股")
-                
-                # 构建股票信息列表
-                stocks = []
-                for _, row in stocks_df.iterrows():
-                    stock_info = {
-                        'code': row['代码'],
-                        'name': row['名称'],
-                        'market_cap': row.get('总市值', 0) or 0,
+                try:
+                    print(f"  📥 爬取 {sector_name}({sector_code})...")
+                    stocks = fetch_ths_industry_stocks(sector_code, sector_name)
+                    
+                    if stocks:
+                        # 按市值排序
+                        stocks.sort(key=lambda x: x.get('market_cap', 0), reverse=True)
+                        # 保存到缓存
+                        db.save_sector_stocks_cache(sector_name, stocks)
+                        all_sector_stocks[sector_name] = stocks
+                        print(f"  ✅ {sector_name}: {len(stocks)} 只")
+                    else:
+                        print(f"  ⚠️ {sector_name}: 无成分股数据")
+                        
+                except Exception as e:
+                    print(f"  ❌ {sector_name}: {e}")
+        
+        # 合并去重，添加板块信息
+        stock_info_map = {}
+        for sector_info in hot_sectors_list:
+            sector_name = sector_info['name']
+            stocks = all_sector_stocks.get(sector_name, [])
+            for idx, stock in enumerate(stocks):
+                code = stock['code']
+                if code not in stock_info_map:
+                    stock_info_map[code] = {
+                        **stock,
+                        'sector_name': sector_name,
+                        'sector_change': sector_info['change'],
+                        'is_leader': idx < 3,
+                        'leader_rank': idx + 1 if idx < 3 else 0,
                     }
-                    stocks.append(stock_info)
+        
+        stock_codes = list(stock_info_map.keys())
+        print(f"📊 成分股: {len(stock_codes)} 只（去重后）\n")
+        
+        # ========== 3. 获取K线数据（新浪接口，优先缓存）==========
+        print(f"📈 获取K线数据(新浪接口)...")
+        scan_status['current_sector'] = '获取K线数据...'
+        scan_status['progress'] = 25
+        
+        # 批量查缓存
+        cached_klines = db.get_kline_cache_batch(stock_codes)
+        print(f"  📦 K线缓存命中: {len(cached_klines)}/{len(stock_codes)}")
+        
+        # 需要获取的股票
+        codes_to_fetch = [c for c in stock_codes if c not in cached_klines]
+        
+        kline_data = dict(cached_klines)  # 从缓存开始
+        
+        if codes_to_fetch:
+            print(f"  🌐 需要获取: {len(codes_to_fetch)} 只股票K线")
+            
+            def fetch_kline(code):
+                try:
+                    # 使用新浪接口
+                    kline_df = get_stock_kline_sina(code, days=120)
+                    if kline_df is not None and len(kline_df) >= period + 10:
+                        return (code, kline_df)
+                    return (code, None)
+                except:
+                    return (code, None)
+            
+            # 并发获取K线（5线程）
+            fetched_count = 0
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for code in codes_to_fetch:
+                    future = executor.submit(
+                        fetch_with_rate_limit,
+                        lambda c=code: fetch_kline(c),
+                        delay=0.2
+                    )
+                    futures.append(future)
                 
-                # 按市值排序，标记中军（前3名）
-                stocks_sorted = sorted(stocks, key=lambda x: x['market_cap'], reverse=True)
-                for idx, stock in enumerate(stocks_sorted):
-                    stock['is_leader'] = idx < 3
-                    stock['leader_rank'] = idx + 1 if idx < 3 else 0
-                
-                # 使用线程池并发分析股票（控制并发数和请求间隔）
-                sector_results = []
-                total_stocks = len(stocks)
-                
-                # 分批处理，每批 MAX_WORKERS 个
-                for batch_start in range(0, total_stocks, MAX_WORKERS):
-                    # 检查是否取消
+                for future in as_completed(futures):
                     if scan_status.get('cancelled'):
                         break
-                    
-                    batch_end = min(batch_start + MAX_WORKERS, total_stocks)
-                    batch_stocks = stocks[batch_start:batch_end]
-                    
-                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                        future_to_stock = {
-                            executor.submit(analyze_single_stock, strategy, stock_info): stock_info
-                            for stock_info in batch_stocks
-                        }
+                    code, df = future.result()
+                    if df is not None:
+                        kline_data[code] = df
+                        fetched_count += 1
                         
-                        for future in as_completed(future_to_stock):
-                            result = future.result()
-                            if result:
-                                sector_results.append(result)
-                    
-                    # 更新进度显示
-                    completed = batch_end
-                    sector_progress = int((i + completed / total_stocks) / total_sectors * 100)
-                    scan_status['progress'] = min(sector_progress, 99)
-                    scan_status['current_sector'] = f"{sector_name} ({completed}/{total_stocks})"
-                    
-                    # 批次间休息，避免请求过快
-                    if batch_end < total_stocks:
-                        time.sleep(BATCH_DELAY)
+                        # 更新进度
+                        if fetched_count % 50 == 0:
+                            progress = 25 + int(fetched_count / len(codes_to_fetch) * 30)
+                            scan_status['progress'] = min(55, progress)
+                            print(f"  📊 K线进度: {fetched_count}/{len(codes_to_fetch)}")
+            
+            print(f"  ✅ K线获取完成: {fetched_count}/{len(codes_to_fetch)}")
+        
+        # ========== 4. 批量计算指标并筛选 ==========
+        print(f"\n📈 计算技术指标...")
+        scan_status['current_sector'] = '计算指标...'
+        scan_status['progress'] = 60
+        
+        analyzed_results = []
+        total = len(kline_data)
+        
+        for idx, (code, df) in enumerate(kline_data.items()):
+            if scan_status.get('cancelled'):
+                print("⚠️ 扫描已取消")
+                break
+            
+            if df is None or (isinstance(df, pd.DataFrame) and len(df) < period + 10):
+                continue
+            
+            try:
+                # 如果是缓存的dict，跳过（已经是分析结果）
+                if isinstance(df, dict):
+                    # 缓存的是原始K线数据，需要转换
+                    continue
                 
-                print(f"[DEBUG] 板块 {sector_name} 分析完成，符合条件: {len(sector_results)} 只")
+                # 计算指标
+                df = strategy.calculate_bollinger_bands(df)
+                df = strategy.calculate_squeeze_signal(df)
+                df = strategy.calculate_volume_signal(df)
+                df = strategy.calculate_trend_indicators(df)
+                df = strategy.calculate_composite_score(df)
                 
-                if sector_results:
-                    # 按综合评分从高到低排序
-                    sector_results.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+                latest = df.iloc[-1]
+                
+                # 筛选
+                if latest['squeeze_streak'] >= min_days:
+                    info = stock_info_map.get(code, {})
+                    result = {
+                        'code': code,
+                        'name': info.get('name', ''),
+                        'sector_name': info.get('sector_name', ''),
+                        'sector_change': info.get('sector_change', 0),
+                        'is_leader': info.get('is_leader', False),
+                        'leader_rank': info.get('leader_rank', 0),
+                        'market_cap': info.get('market_cap', 0),
+                        'close': round(float(latest['close']), 2),
+                        'pct_change': round(float(latest.get('pct_change', 0)), 2),
+                        'turnover': round(float(latest.get('turnover', 0)), 2),
+                        'squeeze_days': int(latest['squeeze_streak']),
+                        'total_score': int(latest['total_score']),
+                        'grade': latest['grade'],
+                        'bb_width_pct': round(float(latest['bb_width_pct']), 2),
+                        'ma_bullish': bool(latest.get('ma_bullish', False)),
+                        'macd_golden': bool(latest.get('macd_golden', False)),
+                        'cmf_bullish': bool(latest.get('cmf_bullish', False)),
+                        'is_volume_up': bool(latest.get('is_volume_up', False)),
+                        'is_volume_price_up': bool(latest.get('is_volume_price_up', False)),
+                        'low_volatility': bool(latest.get('low_volatility', False)),
+                    }
                     
-                    # 保存到数据库
-                    db.save_sector_result(scan_id, sector_name, sector['change'], sector_results)
+                    # 生成标签
+                    tags = []
+                    if result['grade'] in ['S', 'A']:
+                        tags.append(f"{result['grade']}级")
+                    if result['is_leader']:
+                        tags.append(f"中军#{result['leader_rank']}")
+                    if result.get('cmf_bullish'):
+                        tags.append("资金流入")
+                    if result.get('is_volume_price_up'):
+                        tags.append("量价齐升")
+                    result['tags'] = tags
                     
-            except Exception as e:
-                print(f"[DEBUG] 板块 {sector_name} 扫描异常: {e}")
+                    analyzed_results.append(result)
+                
+                # 更新进度
+                if (idx + 1) % 100 == 0:
+                    progress = 60 + int((idx + 1) / total * 30)
+                    scan_status['progress'] = min(90, progress)
+                    
+            except Exception:
                 continue
         
+        print(f"📈 分析完成，符合条件: {len(analyzed_results)} 只")
+        
+        # ========== 5. 保存结果 ==========
+        scan_status['current_sector'] = '保存结果...'
+        scan_status['progress'] = 95
+        
+        sector_results = {}
+        for r in analyzed_results:
+            sector = r.get('sector_name', '未知')
+            if sector not in sector_results:
+                sector_results[sector] = []
+            sector_results[sector].append(r)
+        
+        for sector_name, results in sector_results.items():
+            results.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+            sector_change = results[0].get('sector_change', 0) if results else 0
+            db.save_sector_result(scan_id, sector_name, sector_change, results)
+            print(f"  💾 {sector_name}: {len(results)} 只")
+        
+        elapsed = time.time() - start_time
         scan_status['progress'] = 100
         scan_status['current_sector'] = '扫描完成'
-        
-        # 更新数据库状态为完成
         db.update_scan_status(scan_id, 'completed')
+        print(f"\n✅ 扫描完成! 耗时: {elapsed:.1f}秒")
         
     except Exception as e:
         scan_status['error'] = str(e)
         db.update_scan_status(scan_id, 'error', str(e))
+        print(f"❌ 扫描出错: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         scan_status['is_scanning'] = False
 
 
 @app.route('/api/scan/status')
 def get_scan_status():
-    """获取扫描状态"""
+    """
+    获取当前扫描状态
+    
+    返回当前扫描任务的实时状态信息。
+    
+    Returns:
+        JSON: {
+            is_scanning: bool,      # 是否正在扫描
+            scan_id: int,           # 当前扫描ID
+            progress: int,          # 进度百分比 (0-100)
+            current_sector: str,    # 当前扫描的板块
+            error: str,             # 错误信息（如有）
+            cancelled: bool         # 是否已取消
+        }
+    """
     return jsonify({
         'is_scanning': scan_status['is_scanning'],
         'scan_id': scan_status.get('scan_id'),
@@ -388,7 +716,23 @@ def get_scan_status():
 
 @app.route('/api/scan/results')
 def get_scan_results():
-    """获取扫描结果（最新一次完成的扫描）"""
+    """
+    获取扫描结果
+    
+    返回指定扫描或最新完成扫描的结果数据。
+    
+    Query Parameters:
+        scan_id (int, optional): 指定扫描ID，不传则返回最新完成的扫描
+        
+    Returns:
+        JSON: {
+            success: bool,
+            scan_id: int,
+            results: {板块名: {change: float, stocks: [...]}},
+            hot_sectors: [{name, change}, ...],
+            last_update: str
+        }
+    """
     # 从请求参数获取 scan_id，如果没有则获取最新的
     scan_id = request.args.get('scan_id', type=int)
     
@@ -416,8 +760,17 @@ def get_scan_results():
 
 @app.route('/api/scan/history')
 def get_scan_history():
-    """获取历史扫描记录列表"""
+    """
+    获取历史扫描记录列表
+    
+    Query Parameters:
+        limit (int, optional): 返回数量限制，默认20
+        
+    Returns:
+        JSON: {success: bool, data: [...]}
+    """
     limit = request.args.get('limit', 20, type=int)
+    limit = max(1, min(100, limit))  # 限制在 1-100 之间
     records = db.get_scan_list(limit=limit)
     return jsonify({
         'success': True,
@@ -427,7 +780,15 @@ def get_scan_history():
 
 @app.route('/api/scan/<int:scan_id>', methods=['GET'])
 def get_scan_detail(scan_id: int):
-    """获取指定扫描的详细结果"""
+    """
+    获取指定扫描的详细结果
+    
+    Args:
+        scan_id: 扫描记录ID
+        
+    Returns:
+        JSON: {success: bool, data: {...}}
+    """
     scan_detail = db.get_scan_detail(scan_id)
     
     if not scan_detail:
@@ -484,159 +845,80 @@ def clear_all_scans():
 
 # 全局请求限流器
 last_api_request_time = 0
-API_REQUEST_INTERVAL = 0.5  # 最小请求间隔（秒）
+API_REQUEST_INTERVAL = 1.0  # 最小请求间隔（秒）
 
 @app.route('/api/stock/<code>')
 def get_stock_detail(code: str):
-    """获取单只股票详情（带缓存）"""
+    """
+    获取单只股票详情（使用新浪接口）
+    
+    返回指定股票的K线数据和技术指标。优先使用缓存数据。
+    
+    Args:
+        code: 股票代码（6位数字）
+        
+    Returns:
+        JSON: {
+            success: bool,
+            data: {candles, volumes, bb_*, cmf, ...},
+            cached: bool,  # 是否来自缓存
+            error: str (仅失败时)
+        }
+        
+    Note:
+        - 缓存有效期为当日
+        - 两次API请求间隔至少1秒（限流保护）
+    """
     global last_api_request_time
     
+    from utils.ths_crawler import get_stock_kline_sina
+    
+    # 参数验证
+    if not code or not code.isdigit() or len(code) != 6:
+        return jsonify({'success': False, 'error': '无效的股票代码'})
+    
     try:
-        from datetime import timedelta
-        
-        # 先检查缓存（延长缓存时间到24小时，大幅减少API调用）
-        cached_data = db.get_kline_cache(code, max_age_hours=24)
+        # 先检查缓存（当日有效）
+        cached_data = db.get_kline_cache(code)
         if cached_data:
-            print(f"[CACHE HIT] 股票 {code} 使用缓存数据")
+            logger.info(f"[CACHE HIT] 股票 {code} 使用缓存数据")
             return jsonify({'success': True, 'data': cached_data, 'cached': True})
         
-        print(f"[CACHE MISS] 股票 {code} 从API获取数据")
+        logger.info(f"[CACHE MISS] 股票 {code} 从新浪API获取数据")
         
         # 全局限流：确保两次API调用之间至少间隔 1 秒
         current_time = time.time()
         time_since_last = current_time - last_api_request_time
-        if time_since_last < 1.0:
-            time.sleep(1.0 - time_since_last)
+        if time_since_last < API_REQUEST_INTERVAL:
+            time.sleep(API_REQUEST_INTERVAL - time_since_last)
         
         last_api_request_time = time.time()
         
-        # 带重试机制获取股票历史数据
-        df = None
-        last_error = None
-        for attempt in range(5):
-            try:
-                if attempt > 0:
-                    wait_time = attempt * 2  # 递增等待：2, 4, 6, 8 秒
-                    print(f"[RETRY] 股票 {code} 第 {attempt + 1} 次重试，等待 {wait_time} 秒")
-                    time.sleep(wait_time)
-                
-                df = ak.stock_zh_a_hist(
-                    symbol=code,
-                    period="daily",
-                    start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
-                    end_date=datetime.now().strftime("%Y%m%d"),
-                    adjust="qfq"
-                )
-                
-                if df is not None and not df.empty:
-                    break
-            except Exception as e:
-                last_error = str(e)
-                print(f"[ERROR] 股票 {code} 获取失败: {e}")
-                continue
+        # 使用新浪接口获取K线（已包含重试）
+        df = get_stock_kline_sina(code, days=120)
         
         if df is None or df.empty:
-            error_msg = f'数据获取失败: {last_error}' if last_error else '数据获取失败，请稍后重试'
-            return jsonify({'success': False, 'error': error_msg})
-        
-        # 重命名列
-        df = df.rename(columns={
-            '日期': 'date',
-            '开盘': 'open',
-            '收盘': 'close',
-            '最高': 'high',
-            '最低': 'low',
-            '成交量': 'volume',
-            '涨跌幅': 'pct_change'
-        })
+            return jsonify({'success': False, 'error': '数据获取失败，请稍后重试'})
         
         strategy = BollingerSqueezeStrategy()
         df = strategy.calculate_bollinger_bands(df)
         df = strategy.calculate_squeeze_signal(df)
         df = strategy.calculate_trend_indicators(df)  # 包含 CMF 计算
         
-        # 移除包含NaN的行（布林带计算前期数据）
-        df = df.dropna(subset=['bb_upper', 'bb_lower', 'bb_middle', 'width_ma_short', 'width_ma_long'])
+        # 使用公共函数准备K线数据
+        data = prepare_kline_data(df)
         
-        # 取最近60天数据
-        df = df.tail(60)
+        if data is None:
+            return jsonify({'success': False, 'error': '数据处理失败'})
         
-        # 转换为列表，处理可能的NaN值
-        def safe_list(series):
-            return [None if pd.isna(x) else float(x) for x in series]
-        
-        # 日期转字符串
-        def date_to_str(d):
-            if hasattr(d, 'strftime'):
-                return d.strftime('%Y-%m-%d')
-            return str(d)
-        
-        # 生成蜡烛图数据 (Lightweight Charts格式)
-        candles = []
-        for _, row in df.iterrows():
-            candles.append({
-                'time': date_to_str(row['date']),
-                'open': float(row['open']) if pd.notna(row['open']) else None,
-                'high': float(row['high']) if pd.notna(row['high']) else None,
-                'low': float(row['low']) if pd.notna(row['low']) else None,
-                'close': float(row['close']) if pd.notna(row['close']) else None,
-            })
-        
-        # 生成成交量数据（红涨绿跌，与蜡烛图一致）
-        volume_data = []
-        for _, row in df.iterrows():
-            # 涨：close >= open -> 红色，跌：close < open -> 绿色
-            color = '#ef5350' if row['close'] >= row['open'] else '#26a69a'
-            volume_data.append({
-                'time': date_to_str(row['date']),
-                'value': float(row['volume']) if pd.notna(row['volume']) else 0,
-                'color': color
-            })
-        
-        # 布林带数据
-        bb_upper_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_upper'])} for _, row in df.iterrows() if pd.notna(row['bb_upper'])]
-        bb_middle_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_middle'])} for _, row in df.iterrows() if pd.notna(row['bb_middle'])]
-        bb_lower_data = [{'time': date_to_str(row['date']), 'value': float(row['bb_lower'])} for _, row in df.iterrows() if pd.notna(row['bb_lower'])]
-        
-        # CMF 数据
-        cmf_data = safe_list(df['cmf']) if 'cmf' in df.columns else []
-        
-        # 涨跌幅数据
-        pct_change_data = safe_list(df['pct_change']) if 'pct_change' in df.columns else []
-        
-        # 最新价格信息
-        latest = df.iloc[-1] if len(df) > 0 else None
-        latest_info = None
-        if latest is not None:
-            latest_info = {
-                'close': float(latest['close']) if pd.notna(latest['close']) else 0,
-                'pct_change': float(latest['pct_change']) if pd.notna(latest['pct_change']) else 0,
-                'date': date_to_str(latest['date']),
-            }
-        
-        data = {
-            'candles': candles,
-            'volumes': volume_data,
-            'bb_upper': bb_upper_data,
-            'bb_middle': bb_middle_data,
-            'bb_lower': bb_lower_data,
-            'bb_width': safe_list(df['bb_width_pct']),
-            'width_ma5': safe_list(df['width_ma_short']),
-            'width_ma10': safe_list(df['width_ma_long']),
-            'cmf': cmf_data,
-            'pct_change': pct_change_data,
-            'latest': latest_info,
-            'dates': df['date'].astype(str).tolist(),
-        }
-        
-        # 保存到缓存（关联当前扫描ID）
-        current_scan_id = scan_status.get('scan_id')
-        db.save_kline_cache(code, data, scan_id=current_scan_id)
-        print(f"[CACHE SAVE] 股票 {code} 数据已缓存")
+        # 保存到缓存
+        db.save_kline_cache(code, data)
+        logger.info(f"[CACHE SAVE] 股票 {code} 数据已缓存")
         
         return jsonify({'success': True, 'data': data, 'cached': False})
         
     except Exception as e:
+        logger.error(f"获取股票 {code} 详情失败: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 
@@ -652,10 +934,9 @@ def get_cache_stats():
 
 @app.route('/api/cache/clear', methods=['DELETE'])
 def clear_cache():
-    """清理过期缓存"""
+    """清理过期缓存（非当日）"""
     try:
-        # 清理超过72小时的缓存
-        count = db.delete_expired_kline_cache(max_age_hours=72)
+        count = db.delete_expired_kline_cache()
         return jsonify({
             'success': True,
             'message': f'已清理 {count} 条过期缓存'
@@ -899,4 +1180,4 @@ def clear_ai_reports():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=False, host='0.0.0.0', port=5001)

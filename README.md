@@ -14,6 +14,12 @@
 3. **收缩信号**：带宽的5日均值 < 10日均值，表示波动性正在收缩
 4. **连续收缩**：连续多日满足收缩条件，预示可能即将出现突破
 
+### 数据源
+
+- **行业板块排行**：同花顺 (https://q.10jqka.com.cn/thshy/)
+- **行业成分股**：同花顺爬虫
+- **K线数据**：同花顺日K接口
+
 ### 综合评分系统
 
 | 维度 | 权重 | 说明 |
@@ -26,77 +32,62 @@
 
 ---
 
-## 腾讯云部署
+## 快速部署
 
-> 详细部署文档见 [deploy/MANUAL_DEPLOY.md](deploy/MANUAL_DEPLOY.md)
-
-### 快速开始
-
-#### 首次部署（3步）
+### 方式一：Docker 部署（推荐）
 
 ```bash
-# 1. 克隆代码（GitHub 或 Gitee 二选一）
-git clone https://github.com/Baili-BL/facSstock.git ~/facSstock
-# 或
-git clone https://gitee.com/Baili-BL/facSstock.git ~/facSstock
+# SSH 登录服务器
+ssh root@<服务器IP>
 
-# 2. 安装环境
-conda create -y -n facstock_env python=3.10
-conda activate facstock_env
-pip install -r ~/facSstock/requirements.txt gunicorn
+# 一键部署（自动安装 Docker + MySQL + 应用）
+git clone https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+cd /opt/stock-scanner/deploy/docker
+chmod +x install.sh && ./install.sh
 
-# 3. 启动服务
-cd ~/facSstock
-gunicorn -w 2 -b 0.0.0.0:5001 app:app
+# 访问
+open http://<服务器IP>:5001
 ```
 
-访问：`http://服务器IP:5001`
-
-#### 更新部署（2步）
-
-**方式一：本地上传**
+**常用命令：**
 ```bash
-# Mac 本地执行（使用 rsync 保留数据库）
-rsync -av --exclude='data/' --exclude='__pycache__/' \
-    /Users/kevin/Desktop/facSstock/ root@111.229.238.115:/opt/facstock/
+cd /opt/stock-scanner/deploy/docker
 
-# 服务器执行
-supervisorctl restart facstock
-```
-
-**方式二：Git 拉取**
-```bash
-# 服务器执行（保留数据库）
-cd ~/facSstock && git pull origin main
-rsync -av --exclude='data/' ~/facSstock/ /opt/facstock/
-supervisorctl restart facstock
-```
-
-> **重要**：使用 `rsync --exclude='data/'` 保留数据库，避免扫描历史被覆盖
-
-### 常用命令
-
-```bash
-# 查看服务状态
-supervisorctl status
-
-# 重启服务
-supervisorctl restart facstock
+# 查看状态
+docker-compose ps
 
 # 查看日志
-tail -f /opt/facstock/logs/supervisor_out.log
+docker-compose logs -f app
+
+# 重启
+docker-compose restart
+
+# 更新代码
+cd /opt/stock-scanner && git pull
+cd deploy/docker && docker-compose up -d --build
 ```
 
-### 腾讯云安全组配置
+### 方式二：腾讯云部署（传统方式）
 
-在腾讯云控制台 → 安全组 → 添加入站规则：
+详见 [deploy/MANUAL_DEPLOY.md](deploy/MANUAL_DEPLOY.md)
 
-| 协议 | 端口 | 来源 | 说明 |
-|------|------|------|------|
-| TCP | 22 | 0.0.0.0/0 | SSH |
-| TCP | 80 | 0.0.0.0/0 | HTTP |
-| TCP | 5001 | 0.0.0.0/0 | facstock |
-| TCP | 5002 | 0.0.0.0/0 | Ticai（如需） |
+```bash
+# 一键部署
+git clone https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+cd /opt/stock-scanner/deploy/tencent
+chmod +x install.sh && ./install.sh
+```
+
+### 方式三：火山引擎部署
+
+详见 [deploy/volcengine/DEPLOY.md](deploy/volcengine/DEPLOY.md)
+
+```bash
+# 一键部署
+git clone https://github.com/Baili-BL/facSstock.git /opt/stock-scanner
+cd /opt/stock-scanner/deploy/volcengine
+chmod +x install.sh && ./install.sh
+```
 
 ---
 
@@ -114,6 +105,32 @@ git clone https://gitee.com/Baili-BL/facstock.git
 cd facstock
 pip install -r requirements.txt
 ```
+
+### MySQL 数据库配置
+
+项目使用 MySQL 存储扫描结果和缓存数据。
+
+**macOS 安装 MySQL：**
+```bash
+brew install mysql@8.0
+brew services start mysql@8.0
+```
+
+**创建数据库：**
+```bash
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS stock_scanner CHARACTER SET utf8mb4;"
+```
+
+**环境变量配置（可选）：**
+```bash
+export MYSQL_HOST=localhost      # 默认 localhost
+export MYSQL_PORT=3306           # 默认 3306
+export MYSQL_USER=root           # 默认 root
+export MYSQL_PASSWORD=           # 默认空
+export MYSQL_DATABASE=stock_scanner  # 默认 stock_scanner
+```
+
+> 程序启动时会自动创建所需的表结构
 
 ### 启动 Web 界面
 

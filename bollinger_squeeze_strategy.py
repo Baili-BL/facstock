@@ -9,8 +9,6 @@
 2. 计算带宽的5日均值和10日均值
 3. 当5日均值 < 10日均值时，表示布林带正在收缩
 4. 连续收缩的股票为潜在突破标的
-
-作者: AI Assistant
 日期: 2026-01-18
 """
 
@@ -21,6 +19,10 @@ from typing import Optional, List, Dict, Tuple
 from tqdm import tqdm
 from tabulate import tabulate
 import time
+import logging
+
+# 导入重试工具
+from utils.retry import retry_request
 
 try:
     import akshare as ak
@@ -28,49 +30,8 @@ except ImportError:
     print("请先安装 akshare: pip install akshare")
     exit(1)
 
-
-def retry_request(func, max_retries=5, delay=1.0, silent=False):
-    """
-    重试装饰器，用于处理网络请求失败的情况
-    
-    Args:
-        func: 要执行的函数
-        max_retries: 最大重试次数
-        delay: 重试间隔（秒）
-        silent: 是否静默模式（失败不抛异常，返回None）
-    
-    Returns:
-        函数执行结果，如果全部失败返回 None 或抛出异常
-    """
-    import requests
-    
-    last_exception = None
-    for attempt in range(max_retries):
-        try:
-            return func()
-        except (requests.exceptions.ConnectionError, 
-                requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError,
-                ConnectionResetError,
-                ConnectionAbortedError) as e:
-            # 网络连接类错误，等待更长时间后重试
-            last_exception = e
-            if attempt < max_retries - 1:
-                wait_time = delay * (attempt + 1) * 2  # 更长的递增延迟
-                # print(f"[RETRY] 网络连接错误，{wait_time}秒后重试 ({attempt+1}/{max_retries})")
-                time.sleep(wait_time)
-        except Exception as e:
-            # 其他错误
-            last_exception = e
-            if attempt < max_retries - 1:
-                time.sleep(delay * (attempt + 1))
-    
-    # 所有重试都失败
-    if silent:
-        return None
-    if last_exception:
-        raise last_exception
-    return None
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 class BollingerSqueezeStrategy:
@@ -110,13 +71,42 @@ class BollingerSqueezeStrategy:
         """
         计算布林带指标
         
+        计算布林带的中轨、上轨、下轨和带宽指标。
+        
         Args:
-            df: 包含 'close' 列的DataFrame
+            df: 包含 'close' 列的DataFrame，数据长度应 >= period
             
         Returns:
-            添加了布林带指标的DataFrame
+            添加了以下列的DataFrame:
+            - bb_middle: 中轨（N日移动平均线）
+            - bb_std: N日标准差
+            - bb_upper: 上轨（中轨 + K * 标准差）
+            - bb_lower: 下轨（中轨 - K * 标准差）
+            - bb_width: 带宽（上轨 - 下轨）
+            - bb_width_pct: 带宽百分比（带宽 / 收盘价 * 100）
+            
+        Raises:
+            ValueError: 当 df 为空或不包含 'close' 列时
+            
+        Note:
+            - 前 period-1 行的布林带值为 NaN（数据不足）
+            - 布林带计算公式:
+              - bb_middle = close 的 period 日移动平均
+              - bb_upper = bb_middle + std_dev × 标准差
+              - bb_lower = bb_middle - std_dev × 标准差
         """
+        # 输入验证
+        if df is None or len(df) == 0:
+            raise ValueError("输入数据不能为空")
+        
+        if 'close' not in df.columns:
+            raise ValueError("DataFrame 必须包含 'close' 列")
+        
         df = df.copy()
+        
+        # 数据不足时记录警告
+        if len(df) < self.period:
+            logger.warning(f"数据长度 {len(df)} 小于布林带周期 {self.period}，结果将全为 NaN")
         
         # 中轨 = N日移动平均线
         df['bb_middle'] = df['close'].rolling(window=self.period).mean()
@@ -142,12 +132,31 @@ class BollingerSqueezeStrategy:
         """
         计算布林带收缩信号
         
+        计算带宽的短期和长期均值，判断是否处于收缩状态，并统计连续收缩天数。
+        
         Args:
-            df: 已计算布林带的DataFrame
+            df: 已计算布林带的DataFrame，必须包含 'bb_width_pct' 列
             
         Returns:
-            添加了收缩信号的DataFrame
+            添加了以下列的DataFrame:
+            - width_ma_short: 带宽的短期均值（默认5日）
+            - width_ma_long: 带宽的长期均值（默认10日）
+            - is_squeezing: 是否处于收缩状态（短期均值 < 长期均值）
+            - squeeze_streak: 连续收缩天数
+            
+        Raises:
+            ValueError: 当 df 为空或不包含 'bb_width_pct' 列时
+            
+        Note:
+            收缩信号判断: 当 width_ma_short < width_ma_long 时，表示布林带正在收缩
         """
+        # 输入验证
+        if df is None or len(df) == 0:
+            raise ValueError("输入数据不能为空")
+        
+        if 'bb_width_pct' not in df.columns:
+            raise ValueError("DataFrame 必须包含 'bb_width_pct' 列，请先调用 calculate_bollinger_bands")
+        
         df = df.copy()
         
         # 带宽的5日均值
@@ -340,14 +349,39 @@ class BollingerSqueezeStrategy:
         """
         计算综合评分（满分100分）
         
-        评分维度：
+        基于多个维度计算股票的综合评分，并生成评级。
+        
+        评分维度（总计100分）：
         - 收窄得分 (25分): 收缩天数、带宽收窄程度、低波动率 ⭐核心指标
         - 趋势得分 (18分): MA排列、站上均线
-        - 资金流得分 (15分): CMF资金流向 💰新增
+        - 资金流得分 (15分): CMF资金流向
         - 动量得分 (15分): MACD状态、RSI区间、RSV位置
         - 人气得分 (12分): 换手率、市场关注度
         - 位置得分 (8分): 布林带位置、中轨上方
         - 量能得分 (7分): 放量、量价配合
+        
+        Args:
+            df: 已计算所有技术指标的DataFrame
+            
+        Returns:
+            添加了以下列的DataFrame:
+            - squeeze_score: 收窄得分 (0-25)
+            - trend_score: 趋势得分 (0-18)
+            - cmf_score: 资金流得分 (0-15)
+            - momentum_score: 动量得分 (0-15)
+            - popularity_score: 人气得分 (0-12)
+            - position_score: 位置得分 (0-8)
+            - volume_score: 量能得分 (0-7)
+            - total_score: 综合得分 (0-100)
+            - grade: 评级 (S/A/B/C)
+            - volume_up_streak: 连续放量天数
+            
+        Note:
+            评级映射规则:
+            - S级: total_score >= 75
+            - A级: 60 <= total_score < 75
+            - B级: 45 <= total_score < 60
+            - C级: total_score < 45
         """
         df = df.copy()
         
@@ -432,6 +466,7 @@ class BollingerSqueezeStrategy:
         df['volume_score'] = volume_score.clip(0, 7)
         
         # ===== 综合得分 =====
+        # 确保总分在 0-100 范围内
         df['total_score'] = (
             df['squeeze_score'] +     # 收窄25分
             df['trend_score'] +       # 趋势18分
@@ -442,9 +477,9 @@ class BollingerSqueezeStrategy:
             df['volume_score']        # 量能7分
         ).clip(0, 100)
         
-        # 评级
+        # 评级映射: S (>=75), A (>=60), B (>=45), C (<45)
         df['grade'] = df['total_score'].apply(
-            lambda x: 'S' if x >= 75 else 'A' if x >= 60 else 'B' if x >= 45 else 'C'
+            lambda x: 'S' if x >= 75 else ('A' if x >= 60 else ('B' if x >= 45 else 'C'))
         )
         
         # 连续放量天数
@@ -459,16 +494,18 @@ class BollingerSqueezeStrategy:
         
         return df
     
-    def analyze_stock(self, stock_code: str, stock_name: str = "") -> Optional[Dict]:
+    def analyze_stock(self, stock_code: str, stock_name: str = "", return_df: bool = False):
         """
         分析单只股票的布林带收缩情况
         
         Args:
             stock_code: 股票代码
             stock_name: 股票名称
+            return_df: 是否同时返回计算后的DataFrame（用于预缓存K线数据）
             
         Returns:
-            分析结果字典，如果不符合条件返回None
+            如果 return_df=False: 分析结果字典，如果不符合条件返回None
+            如果 return_df=True: (分析结果字典, DataFrame) 元组，如果不符合条件返回None
         """
         try:
             # 获取股票历史数据 (最近60个交易日)，带重试机制
@@ -521,7 +558,7 @@ class BollingerSqueezeStrategy:
             
             # 检查是否满足收缩条件
             if latest['squeeze_streak'] >= self.min_squeeze_days:
-                return {
+                result = {
                     'code': stock_code,
                     'name': stock_name,
                     'close': round(latest['close'], 2),
@@ -579,6 +616,11 @@ class BollingerSqueezeStrategy:
                     'total_score': int(latest['total_score']) if pd.notna(latest['total_score']) else 0,
                     'grade': latest['grade'] if pd.notna(latest['grade']) else 'C',
                 }
+                
+                # 根据参数决定返回格式
+                if return_df:
+                    return (result, df)
+                return result
             
             return None
             
@@ -591,85 +633,208 @@ class BollingerSqueezeStrategy:
 
 
 class HotSectorScanner:
-    """热点板块扫描器"""
+    """热点板块扫描器（使用同花顺数据源）
+    
+    负责协调整个扫描流程，包括获取板块数据、调度股票分析、管理并发。
+    
+    数据源：
+    - 行业板块排行：同花顺 (https://q.10jqka.com.cn/thshy/)
+    - 行业成分股：同花顺爬虫
+    - K线数据：同花顺日K接口
+    
+    Attributes:
+        strategy: 布林带收缩策略实例
+    """
     
     def __init__(self, strategy: BollingerSqueezeStrategy):
+        """
+        初始化扫描器
+        
+        Args:
+            strategy: 布林带收缩策略实例
+        """
         self.strategy = strategy
         
     def get_hot_sectors(self, top_n: int = 10) -> pd.DataFrame:
         """
-        获取热点板块
+        获取热点板块列表（同花顺数据源）
+        
+        从同花顺获取行业板块数据，按涨跌幅降序排列后返回前N个热点板块。
         
         Args:
-            top_n: 返回前N个热点板块
+            top_n: 返回前N个热点板块，必须为正整数，默认10
             
         Returns:
-            热点板块DataFrame
-        """
-        try:
-            # 获取板块涨幅排名，带重试机制
-            df = retry_request(ak.stock_board_industry_name_em, max_retries=3, delay=1.0)
-            if df is not None and len(df) > 0:
-                # 按涨跌幅排序
-                df = df.sort_values(by='涨跌幅', ascending=False)
-                return df.head(top_n)
-        except Exception as e:
-            print(f"获取热点板块失败: {e}")
+            热点板块DataFrame，包含板块名称、涨跌幅、领涨股票等信息。
+            如果获取失败返回空DataFrame。
             
-        return pd.DataFrame()
+        Raises:
+            ValueError: 当 top_n 不是正整数时
+            
+        Example:
+            >>> scanner = HotSectorScanner(strategy)
+            >>> sectors = scanner.get_hot_sectors(top_n=5)
+            >>> print(sectors['板块名称'].tolist())
+        """
+        # 参数验证
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError(f"top_n 必须为正整数，当前值: {top_n}")
+        
+        try:
+            from utils.ths_crawler import get_ths_industry_list
+            
+            logger.info(f"正在获取热点板块数据(THS)，top_n={top_n}")
+            
+            # 使用同花顺爬虫获取板块数据
+            df = retry_request(get_ths_industry_list, max_retries=3, delay=1.0)
+            
+            if df is None or len(df) == 0:
+                logger.warning("获取热点板块数据为空")
+                return pd.DataFrame()
+            
+            # 重命名列以保持兼容性
+            df = df.rename(columns={'板块': '板块名称'})
+            result = df.head(top_n)
+            
+            logger.info(f"成功获取 {len(result)} 个热点板块")
+            return result
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"获取热点板块失败: {e}")
+            return pd.DataFrame()
     
     def get_sector_stocks(self, sector_name: str) -> List[Dict]:
         """
-        获取板块成分股（含市值等信息）
+        获取板块成分股列表（同花顺数据源）
+        
+        获取指定板块的所有成分股，按总市值降序排列，并标记前3名为中军股票。
         
         Args:
-            sector_name: 板块名称
+            sector_name: 板块名称，不能为空
             
         Returns:
-            成分股列表 [{'code': ..., 'name': ..., 'market_cap': ..., ...}, ...]
-        """
-        try:
-            # 带重试机制
-            df = retry_request(
-                lambda: ak.stock_board_industry_cons_em(symbol=sector_name),
-                max_retries=3,
-                delay=1.0
-            )
-            if df is not None and len(df) > 0:
-                stocks = []
-                for _, row in df.iterrows():
-                    stock_info = {
-                        'code': row['代码'],
-                        'name': row['名称'],
-                        'market_cap': row.get('总市值', 0) or 0,
-                        'circulating_cap': row.get('流通市值', 0) or 0,
-                        'sector_change': row.get('涨跌幅', 0) or 0,
-                    }
-                    stocks.append(stock_info)
-                
-                # 按市值排序，标记中军（前3名）
-                stocks_sorted = sorted(stocks, key=lambda x: x['market_cap'], reverse=True)
-                for i, stock in enumerate(stocks_sorted):
-                    if i < 3:
-                        stock['is_leader'] = True  # 中军标记
-                        stock['leader_rank'] = i + 1
-                    else:
-                        stock['is_leader'] = False
-                        stock['leader_rank'] = 0
-                
-                return stocks
-        except Exception as e:
-            pass
+            成分股列表，每个元素包含:
+            - code: 股票代码
+            - name: 股票名称
+            - market_cap: 总市值
+            - is_leader: 是否为中军（市值前3名）
+            - leader_rank: 中军排名（1-3，非中军为0）
             
-        return []
+            如果获取失败返回空列表。
+            
+        Raises:
+            ValueError: 当 sector_name 为空时
+        """
+        from utils.ths_crawler import fetch_ths_industry_stocks, get_ths_industry_list
+        
+        # 参数验证
+        if not sector_name or not isinstance(sector_name, str):
+            raise ValueError(f"sector_name 必须为非空字符串，当前值: {sector_name}")
+        
+        try:
+            logger.info(f"正在获取板块 '{sector_name}' 的成分股(THS)")
+            
+            # 从板块列表中查找代码
+            df = get_ths_industry_list()
+            # 兼容两种列名
+            name_col = '板块名称' if '板块名称' in df.columns else '板块'
+            row = df[df[name_col] == sector_name]
+            sector_code = ''
+            if len(row) > 0:
+                sector_code = row.iloc[0].get('代码', '')
+            
+            if not sector_code:
+                logger.warning(f"未找到板块 '{sector_name}' 的代码")
+                return []
+            
+            # 使用同花顺爬虫获取成分股
+            stocks = fetch_ths_industry_stocks(sector_code, sector_name)
+            
+            if not stocks:
+                logger.warning(f"板块 '{sector_name}' 成分股数据为空")
+                return []
+            
+            # 按市值降序排序
+            stocks_sorted = sorted(stocks, key=lambda x: x.get('market_cap', 0), reverse=True)
+            
+            # 标记中军（市值前3名）
+            for i, stock in enumerate(stocks_sorted):
+                if i < 3:
+                    stock['is_leader'] = True
+                    stock['leader_rank'] = i + 1
+                else:
+                    stock['is_leader'] = False
+                    stock['leader_rank'] = 0
+            
+            logger.info(f"板块 '{sector_name}' 共有 {len(stocks_sorted)} 只成分股")
+            return stocks_sorted
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"获取板块 '{sector_name}' 成分股失败: {e}")
+            return []
     
-    def scan_hot_sectors(self, top_sectors: int = 5, progress: bool = True) -> Dict[str, List[Dict]]:
+    def get_all_sector_stocks_concurrent(self, sector_names: List[str], max_workers: int = 5) -> Dict[str, List[Dict]]:
+        """
+        并发获取多个板块的成分股列表
+        
+        Args:
+            sector_names: 板块名称列表
+            max_workers: 最大并发数，默认5
+            
+        Returns:
+            {板块名称: [成分股列表], ...}
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+        import random
+        
+        results = {}
+        
+        def fetch_sector_stocks(sector_name: str) -> Tuple[str, List[Dict]]:
+            """获取单个板块成分股（带随机延迟避免限流）"""
+            time.sleep(random.uniform(0.1, 0.3))
+            print(f"  📥 获取板块成分股: {sector_name}")
+            stocks = self.get_sector_stocks(sector_name)
+            print(f"  ✅ {sector_name}: {len(stocks)} 只成分股")
+            return (sector_name, stocks)
+        
+        print(f"⚡ 并发获取 {len(sector_names)} 个板块成分股 (并发数: {max_workers})")
+        logger.info(f"并发获取 {len(sector_names)} 个板块的成分股，max_workers={max_workers}")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_sector = {
+                executor.submit(fetch_sector_stocks, name): name 
+                for name in sector_names
+            }
+            
+            for future in as_completed(future_to_sector):
+                sector_name = future_to_sector[future]
+                try:
+                    name, stocks = future.result()
+                    results[name] = stocks
+                    logger.info(f"板块 '{name}' 获取到 {len(stocks)} 只成分股")
+                except Exception as e:
+                    print(f"  ❌ {sector_name}: 获取失败 - {e}")
+                    logger.error(f"获取板块 '{sector_name}' 成分股失败: {e}")
+                    results[sector_name] = []
+        
+        total_stocks = sum(len(s) for s in results.values())
+        print(f"📊 成分股获取完成，共 {total_stocks} 只股票")
+        
+        return results
+    
+    def scan_hot_sectors(self, top_sectors: int = 5, progress: bool = True, concurrent_fetch: bool = True) -> Dict[str, List[Dict]]:
         """
         扫描热点板块中的布林带收缩股票
         
         Args:
             top_sectors: 扫描前N个热点板块
             progress: 是否显示进度条
+            concurrent_fetch: 是否并发获取板块成分股列表（默认True）
             
         Returns:
             {板块名称: [股票分析结果, ...], ...}
@@ -692,13 +857,27 @@ class HotSectorScanner:
             print(f"  {row['板块名称']}: {row['涨跌幅']:+.2f}%")
         print()
         
-        # 遍历热点板块
+        # 获取所有板块名称
+        sector_names = hot_sectors['板块名称'].tolist()
+        
+        # 并发或串行获取所有板块的成分股
+        if concurrent_fetch:
+            all_sector_stocks = self.get_all_sector_stocks_concurrent(sector_names, max_workers=5)
+        else:
+            print("📥 串行获取板块成分股列表...")
+            all_sector_stocks = {}
+            for name in sector_names:
+                print(f"  📥 获取: {name}")
+                all_sector_stocks[name] = self.get_sector_stocks(name)
+                print(f"  ✅ {name}: {len(all_sector_stocks[name])} 只成分股")
+        
+        # 遍历热点板块进行分析
         for _, sector in hot_sectors.iterrows():
             sector_name = sector['板块名称']
             print(f"\n🔍 扫描板块: {sector_name}")
             
-            # 获取成分股
-            stocks = self.get_sector_stocks(sector_name)
+            # 从预获取的数据中取成分股
+            stocks = all_sector_stocks.get(sector_name, [])
             if not stocks:
                 print(f"  ⚠️ 无法获取 {sector_name} 成分股")
                 continue

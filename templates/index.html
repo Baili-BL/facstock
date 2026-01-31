@@ -1236,6 +1236,63 @@
             to { transform: rotate(360deg); }
         }
 
+        /* K线图加载状态 */
+        .chart-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: var(--text-muted);
+        }
+
+        .chart-loading .loading-icon {
+            font-size: 36px;
+            color: var(--accent-primary);
+            animation: spin 1s linear infinite;
+            margin-bottom: 12px;
+        }
+
+        .chart-loading p {
+            font-size: 0.85rem;
+        }
+
+        .chart-error {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: var(--text-muted);
+        }
+
+        .chart-error .material-symbols-rounded {
+            font-size: 48px;
+            color: #ef4444;
+            margin-bottom: 12px;
+        }
+
+        .chart-error p {
+            font-size: 0.85rem;
+            margin-bottom: 16px;
+            text-align: center;
+            max-width: 80%;
+        }
+
+        .chart-error button {
+            padding: 8px 20px;
+            background: var(--accent-primary);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .chart-error button:hover {
+            opacity: 0.9;
+        }
+
         .ai-strategy-hint {
             background: linear-gradient(135deg, #fff3e0, #ffe0b2);
             border-radius: 12px;
@@ -2596,18 +2653,66 @@
             document.getElementById('stockModal').classList.add('active');
             document.body.style.overflow = 'hidden';
 
+            // 显示loading状态
+            showChartLoading();
+
             try {
                 const response = await fetch(`/api/stock/${code}`);
                 const data = await response.json();
 
                 if (data.success) {
+                    hideChartLoading();
                     renderCharts(data.data);
                 } else {
-                    alert('获取数据失败: ' + data.error);
+                    hideChartLoading();
+                    showChartError(data.error || '获取数据失败');
                 }
             } catch (error) {
-                alert('请求失败: ' + error);
+                hideChartLoading();
+                showChartError('网络请求失败: ' + error.message);
             }
+        }
+
+        function showChartLoading() {
+            // 重置价格显示
+            document.getElementById('modalPrice').textContent = '--';
+            document.getElementById('modalPriceChange').textContent = '加载中...';
+            document.getElementById('modalPriceChange').className = 'price-change';
+            document.getElementById('modalPriceDate').textContent = '';
+            
+            // 显示loading动画
+            const loadingHtml = `
+                <div class="chart-loading">
+                    <span class="material-symbols-rounded loading-icon">autorenew</span>
+                    <p>正在加载K线数据...</p>
+                </div>
+            `;
+            document.getElementById('mainChart').innerHTML = loadingHtml;
+            document.getElementById('widthChart').innerHTML = loadingHtml;
+            document.getElementById('cmfChart').innerHTML = loadingHtml;
+        }
+
+        function hideChartLoading() {
+            // loading会被renderCharts覆盖，这里不需要特别处理
+        }
+
+        function showChartError(message) {
+            const errorHtml = `
+                <div class="chart-error">
+                    <span class="material-symbols-rounded">error_outline</span>
+                    <p>${message}</p>
+                    <button onclick="retryLoadChart()">重试</button>
+                </div>
+            `;
+            document.getElementById('mainChart').innerHTML = errorHtml;
+            document.getElementById('widthChart').innerHTML = '';
+            document.getElementById('cmfChart').innerHTML = '';
+        }
+
+        function retryLoadChart() {
+            const code = document.getElementById('modalStockCode').textContent;
+            const name = document.getElementById('modalStockName').textContent;
+            showStockDetail(code, name);
         }
 
         function renderCharts(data) {
