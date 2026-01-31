@@ -44,13 +44,29 @@ def get_connection():
         conn.close()
 
 
-def init_db():
-    """初始化数据库表"""
+def init_db(max_retries: int = 10, retry_delay: int = 3):
+    """初始化数据库表（带重试机制，适配 Docker 环境）"""
+    import time
+    
     # 先创建数据库（如果不存在）
     config_no_db = DB_CONFIG.copy()
     db_name = config_no_db.pop('database')
     
-    conn = pymysql.connect(**config_no_db)
+    # 重试连接（Docker 环境下 DNS 可能需要时间）
+    conn = None
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            conn = pymysql.connect(**config_no_db)
+            break
+        except Exception as e:
+            last_error = e
+            print(f"[DB] 连接数据库失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+    
+    if conn is None:
+        raise Exception(f"无法连接数据库，已重试 {max_retries} 次: {last_error}")
     try:
         cursor = conn.cursor()
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
