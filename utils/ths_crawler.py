@@ -216,25 +216,66 @@ def _parse_market_cap(s: str) -> float:
 
 def get_stock_kline_sina(stock_code: str, days: int = 120) -> Optional[pd.DataFrame]:
     """
-    爬取同花顺K线数据（替代新浪接口）
-    
-    数据源: https://d.10jqka.com.cn/v6/line/hs_{code}/01/last.js
+    获取股票K线数据（使用新浪接口，数据更及时）
     
     Args:
         stock_code: 股票代码（6位数字）
-        days: 获取天数（同花顺接口返回约140条，足够使用）
+        days: 获取天数
         
     Returns:
         DataFrame: K线数据，包含 date, open, close, high, low, volume, pct_change
     """
+    # 判断股票市场（沪市6开头，深市0/3开头）
+    if stock_code.startswith('6'):
+        symbol = f'sh{stock_code}'
+    else:
+        symbol = f'sz{stock_code}'
+    
+    # 优先使用新浪接口（数据及时且稳定）
     try:
-        # 同花顺日K线接口
+        df = ak.stock_zh_a_daily(symbol=symbol, adjust='qfq')
+        
+        if df is None or df.empty:
+            raise Exception("新浪接口返回空数据")
+        
+        # 统一列名
+        df = df.rename(columns={
+            'open': 'open',
+            'close': 'close',
+            'high': 'high',
+            'low': 'low',
+            'volume': 'volume',
+        })
+        
+        # 确保 date 是字符串格式
+        df['date'] = df['date'].astype(str)
+        
+        # 计算涨跌幅
+        df['pct_change'] = df['close'].pct_change() * 100
+        df['pct_change'] = df['pct_change'].fillna(0).round(2)
+        
+        # 添加 amount 和 turnover（如果没有）
+        if 'amount' not in df.columns:
+            df['amount'] = 0
+        if 'turnover' not in df.columns:
+            df['turnover'] = 0
+        
+        # 只返回最近 days 天
+        if len(df) > days:
+            df = df.tail(days).reset_index(drop=True)
+        
+        return df
+        
+    except Exception as e:
+        print(f"[WARN] 新浪接口获取 {stock_code} 失败: {e}，尝试同花顺接口")
+    
+    # 降级使用同花顺接口
+    try:
         url = f'https://d.10jqka.com.cn/v6/line/hs_{stock_code}/01/last.js'
         
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
         
-        # 解析 JSONP 格式: quotebridge_v6_line_hs_xxx_01_last({...})
         import re
         import json
         
@@ -249,8 +290,6 @@ def get_stock_kline_sina(stock_code: str, days: int = 120) -> Optional[pd.DataFr
         if not raw_data:
             return None
         
-        # 解析K线数据
-        # 格式: 日期,开盘,最高,最低,收盘,成交量,成交额,涨跌幅,...
         lines = raw_data.split(';')
         
         records = []
