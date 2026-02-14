@@ -243,7 +243,9 @@ class BollingerSqueezeStrategy:
         df['above_bb_middle'] = df['close'] > df['bb_middle']
         
         # 价格在布林带位置 (0=下轨, 0.5=中轨, 1=上轨)
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        bb_range = df['bb_upper'] - df['bb_lower']
+        bb_range = bb_range.replace(0, np.nan)
+        df['bb_position'] = (df['close'] - df['bb_lower']) / bb_range
         
         # ===== 3. MACD指标 =====
         exp1 = df['close'].ewm(span=12, adjust=False).mean()

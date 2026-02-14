@@ -27,16 +27,75 @@ HEADERS = {
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
 
+# THS 可用性标记：一旦检测到 403，本次进程内不再尝试 THS，直接走东方财富
+_ths_available = True
+_ths_fail_time = 0
+_THS_COOLDOWN = 3600  # THS 被封后冷却 1 小时再重试
+
+
+def _is_ths_available() -> bool:
+    """检查 THS 是否可用（冷却期内不重试）"""
+    global _ths_available, _ths_fail_time
+    if _ths_available:
+        return True
+    # 冷却期过了，允许重试
+    if time.time() - _ths_fail_time > _THS_COOLDOWN:
+        _ths_available = True
+        print("[THS] 冷却期结束，重新尝试同花顺接口")
+        return True
+    return False
+
+
+def _mark_ths_unavailable():
+    """标记 THS 不可用，进入冷却期"""
+    global _ths_available, _ths_fail_time
+    if _ths_available:
+        print("[THS] 同花顺接口不可用(403)，切换到东方财富，冷却1小时")
+    _ths_available = False
+    _ths_fail_time = time.time()
+
+
+def _get_industry_list_em() -> pd.DataFrame:
+    """使用东方财富接口获取行业板块列表"""
+    print("[EM] 使用东方财富行业板块接口...")
+    try:
+        df_em = ak.stock_board_industry_name_em()
+    except Exception as e:
+        print(f"[EM] ak.stock_board_industry_name_em() 调用失败: {e}")
+        raise
+    if df_em is None or df_em.empty:
+        raise Exception("东方财富接口返回空数据")
+    print(f"[EM] 原始数据列: {df_em.columns.tolist()}")
+    df_result = pd.DataFrame({
+        '序号': range(1, len(df_em) + 1),
+        '板块': df_em['板块名称'],
+        '代码': df_em['板块代码'],
+        '涨跌幅': df_em['涨跌幅'].astype(float),
+        '上涨家数': df_em['上涨家数'].astype(int),
+        '下跌家数': df_em['下跌家数'].astype(int),
+        '领涨股': df_em['领涨股票'],
+        '领涨股-涨跌幅': df_em['领涨股票-涨跌幅'].astype(float),
+    })
+    df_result = df_result.sort_values(by='涨跌幅', ascending=False).reset_index(drop=True)
+    print(f"[EM] 东方财富接口成功，{len(df_result)} 个行业")
+    return df_result
+
 
 def get_ths_industry_list() -> pd.DataFrame:
     """
-    爬取同花顺行业板块列表（按涨跌幅排序）
+    获取行业板块列表（按涨跌幅排序）
     
-    数据源: https://q.10jqka.com.cn/thshy/
+    优先使用同花顺，403 时自动切换东方财富并记住状态，
+    冷却期内直接走东方财富，避免反复触发封禁。
     
     Returns:
         DataFrame: 包含 板块、代码、涨跌幅、领涨股 等信息
     """
+    # 如果 THS 已被标记不可用，直接走东方财富
+    if not _is_ths_available():
+        print("[THS] 冷却期内，跳过同花顺，直接使用东方财富")
+        return _get_industry_list_em()
+
     url = 'https://q.10jqka.com.cn/thshy/'
     
     try:
@@ -68,7 +127,6 @@ def get_ths_industry_list() -> pd.DataFrame:
                 if '/code/' in href:
                     code = href.split('/code/')[-1].rstrip('/')
                 
-                # 表头: 序号, 板块, 涨跌幅(%), 总成交量, 总成交额, 净流入, 上涨家数, 下跌家数, 均价, 领涨股, 最新价, 涨跌幅(%)
                 industry = {
                     '序号': _parse_int(cells[0].get_text(strip=True)),
                     '板块': cells[1].get_text(strip=True),
@@ -88,20 +146,23 @@ def get_ths_industry_list() -> pd.DataFrame:
                 continue
         
         df = pd.DataFrame(industries)
-        # 按涨跌幅降序排序
         df = df.sort_values(by='涨跌幅', ascending=False).reset_index(drop=True)
         return df
         
     except Exception as e:
         print(f"[ERROR] 爬取行业列表失败: {e}")
-        # 降级使用 akshare
+        # 任何 THS 请求失败都标记不可用（403、连接断开、超时等）
+        _mark_ths_unavailable()
+        # 降级使用东方财富接口
+        em_error = None
         try:
-            df = ak.stock_board_industry_summary_ths()
-            code_map = get_ths_industry_code_map()
-            df['代码'] = df['板块'].map(code_map)
-            return df
-        except:
-            raise e
+            return _get_industry_list_em()
+        except Exception as e2:
+            em_error = e2
+            print(f"[ERROR] 东方财富接口也失败: {e2}")
+            import traceback
+            traceback.print_exc()
+        raise Exception(f"所有数据源均失败 - THS: {e} | 东方财富: {em_error}")
 
 
 def get_ths_industry_code_map() -> Dict[str, str]:
@@ -132,39 +193,43 @@ def _parse_int(s: str) -> int:
 
 def fetch_ths_industry_stocks(industry_code: str, industry_name: str = '') -> List[Dict]:
     """
-    爬取同花顺行业成分股
+    获取行业成分股
+    
+    优先同花顺爬虫，THS 不可用时直接走东方财富。
     
     Args:
-        industry_code: 行业代码，如 '881101'
-        industry_name: 行业名称（用于日志）
+        industry_code: 行业代码（THS 格式如 '881101' 或东方财富格式如 'BK0486'）
+        industry_name: 行业名称（东方财富用名称查询）
         
     Returns:
-        List[Dict]: 成分股列表，每个元素包含 code, name, price, change 等
+        List[Dict]: 成分股列表
     """
+    # THS 不可用时直接走东方财富
+    if not _is_ths_available():
+        return _fetch_industry_stocks_em(industry_name)
+
     url = f'https://q.10jqka.com.cn/thshy/detail/code/{industry_code}/'
     
     try:
-        # 随机延迟，避免被封
         time.sleep(random.uniform(0.3, 0.8))
         
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        resp.encoding = 'gbk'  # 同花顺页面编码
+        resp.encoding = 'gbk'
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 查找股票表格
         table = soup.find('table', class_='m-table')
         if not table:
             print(f"[WARN] {industry_name}({industry_code}) 未找到股票表格")
-            return []
+            return _fetch_industry_stocks_em(industry_name)
         
         stocks = []
-        rows = table.find_all('tr')[1:]  # 跳过表头
+        rows = table.find_all('tr')[1:]
         
         for row in rows:
             cells = row.find_all('td')
-            if len(cells) < 12:
+            if len(cells) < 13:
                 continue
             
             try:
@@ -185,7 +250,8 @@ def fetch_ths_industry_stocks(industry_code: str, industry_name: str = '') -> Li
         
     except Exception as e:
         print(f"[ERROR] 爬取 {industry_name}({industry_code}) 失败: {e}")
-        return []
+        _mark_ths_unavailable()
+        return _fetch_industry_stocks_em(industry_name)
 
 
 def _parse_float(s: str) -> float:
@@ -196,6 +262,54 @@ def _parse_float(s: str) -> float:
         return float(s.replace(',', '').replace('%', ''))
     except:
         return 0.0
+
+
+def _fetch_industry_stocks_em(industry_name: str) -> List[Dict]:
+    """
+    使用东方财富接口获取行业成分股（降级方案）
+    
+    Args:
+        industry_name: 行业名称（东方财富用名称查询）
+        
+    Returns:
+        List[Dict]: 成分股列表，格式与同花顺爬虫一致
+    """
+    try:
+        print(f"[FALLBACK] 使用东方财富接口获取 {industry_name} 成分股...")
+        df = ak.stock_board_industry_cons_em(symbol=industry_name)
+        
+        if df is None or df.empty:
+            print(f"[FALLBACK] 东方财富 {industry_name} 返回空数据")
+            return []
+        
+        stocks = []
+        for _, row in df.iterrows():
+            code = str(row.get('代码', ''))
+            if not code:
+                continue
+            stocks.append({
+                'code': code,
+                'name': row.get('名称', ''),
+                'price': float(row.get('最新价', 0) or 0),
+                'change': float(row.get('涨跌幅', 0) or 0),
+                'turnover': float(row.get('换手率', 0) or 0),
+                'volume_ratio': 0,
+                'market_cap': float(row.get('总市值', 0) or 0) if '总市值' in df.columns else 0,
+                # 东方财富额外数据（题材挖掘可用）
+                'amount': float(row.get('成交额', 0) or 0),
+                'amplitude': float(row.get('振幅', 0) or 0),
+                'high': float(row.get('最高', 0) or 0),
+                'low': float(row.get('最低', 0) or 0),
+                'open': float(row.get('今开', 0) or 0),
+                'prev_close': float(row.get('昨收', 0) or 0),
+            })
+        
+        print(f"[FALLBACK] 东方财富 {industry_name}: {len(stocks)} 只")
+        return stocks
+        
+    except Exception as e:
+        print(f"[ERROR] 东方财富接口获取 {industry_name} 失败: {e}")
+        return []
 
 
 def _parse_market_cap(s: str) -> float:
@@ -267,89 +381,46 @@ def get_stock_kline_sina(stock_code: str, days: int = 120) -> Optional[pd.DataFr
         return df
         
     except Exception as e:
-        print(f"[WARN] 新浪接口获取 {stock_code} 失败: {e}，尝试同花顺接口")
+        print(f"[WARN] 新浪接口获取 {stock_code} 失败: {e}，尝试东方财富接口")
     
-    # 降级使用同花顺接口
+    # 降级使用东方财富接口（akshare）
     try:
-        url = f'https://d.10jqka.com.cn/v6/line/hs_{stock_code}/01/last.js'
+        df = ak.stock_zh_a_hist(symbol=stock_code, period='daily', adjust='qfq')
         
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        
-        import re
-        import json
-        
-        match = re.search(r'\((\{.*\})\)', resp.text)
-        if not match:
-            print(f"[WARN] {stock_code} K线数据格式错误")
+        if df is None or df.empty:
+            print(f"[WARN] 东方财富接口 {stock_code} 也返回空数据")
             return None
         
-        data = json.loads(match.group(1))
-        raw_data = data.get('data', '')
+        df = df.rename(columns={
+            '日期': 'date',
+            '开盘': 'open',
+            '收盘': 'close',
+            '最高': 'high',
+            '最低': 'low',
+            '成交量': 'volume',
+            '成交额': 'amount',
+            '换手率': 'turnover',
+            '涨跌幅': 'pct_change',
+        })
         
-        if not raw_data:
-            return None
+        df['date'] = df['date'].astype(str)
         
-        lines = raw_data.split(';')
+        if 'pct_change' not in df.columns:
+            df['pct_change'] = df['close'].pct_change() * 100
+            df['pct_change'] = df['pct_change'].fillna(0).round(2)
         
-        records = []
-        prev_close = None
+        if 'amount' not in df.columns:
+            df['amount'] = 0
+        if 'turnover' not in df.columns:
+            df['turnover'] = 0
         
-        for line in lines:
-            parts = line.split(',')
-            if len(parts) < 7:
-                continue
-            
-            try:
-                date_str = parts[0]
-                open_price = float(parts[1])
-                high = float(parts[2])
-                low = float(parts[3])
-                close = float(parts[4])
-                volume = float(parts[5])
-                amount = float(parts[6].replace('.00', ''))
-                
-                # 计算涨跌幅
-                pct_change = 0.0
-                if prev_close and prev_close > 0:
-                    pct_change = round((close - prev_close) / prev_close * 100, 2)
-                prev_close = close
-                
-                # 计算换手率（如果有流通股数据）
-                turnover = 0.0
-                if len(parts) > 9 and parts[9]:
-                    try:
-                        turnover = float(parts[7].replace(',', '')) if parts[7] else 0.0
-                    except:
-                        pass
-                
-                records.append({
-                    'date': f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}',
-                    'open': open_price,
-                    'high': high,
-                    'low': low,
-                    'close': close,
-                    'volume': volume,
-                    'amount': amount,
-                    'pct_change': pct_change,
-                    'turnover': turnover,
-                })
-            except Exception:
-                continue
-        
-        if not records:
-            return None
-        
-        df = pd.DataFrame(records)
-        
-        # 只返回最近 days 天的数据
         if len(df) > days:
             df = df.tail(days).reset_index(drop=True)
         
         return df
         
-    except Exception as e:
-        print(f"[ERROR] 获取 {stock_code} K线失败: {e}")
+    except Exception as e2:
+        print(f"[ERROR] 东方财富接口获取 {stock_code} K线也失败: {e2}")
         return None
 
 

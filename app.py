@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# 注册题材挖掘蓝图
+from ticai.routes import ticai_bp
+app.register_blueprint(ticai_bp)
+
 # 全局变量存储当前扫描状态（用于实时进度查询）
+scan_lock = threading.Lock()
 scan_status = {
     'is_scanning': False,
     'scan_id': None,
@@ -73,7 +78,7 @@ def get_hot_sectors():
         
         logger.info(f"获取热点板块列表(THS)，limit={limit}")
         
-        df = retry_request(get_ths_industry_list, max_retries=3, delay=1.0)
+        df = get_ths_industry_list()
         
         if df is None or len(df) == 0:
             logger.warning("热点板块数据为空")
@@ -118,8 +123,9 @@ def start_scan():
     """
     global scan_status
     
-    if scan_status['is_scanning']:
-        return jsonify({'success': False, 'error': '扫描正在进行中'})
+    with scan_lock:
+        if scan_status['is_scanning']:
+            return jsonify({'success': False, 'error': '扫描正在进行中'})
     
     data = request.json or {}
     
@@ -144,25 +150,33 @@ def start_scan():
     scan_id = db.create_scan_record(params)
     
     # 重置状态
-    scan_status = {
-        'is_scanning': True,
-        'scan_id': scan_id,
-        'progress': 0,
-        'current_sector': '准备中...',
-        'error': None,
-        'cancelled': False
-    }
+    with scan_lock:
+        scan_status = {
+            'is_scanning': True,
+            'scan_id': scan_id,
+            'progress': 0,
+            'current_sector': '准备中...',
+            'error': None,
+            'cancelled': False
+        }
     
     # 在后台线程执行扫描
     import sys
     print(f"🚀 启动扫描线程: scan_id={scan_id}", flush=True)
     sys.stdout.flush()
-    thread = threading.Thread(
-        target=run_scan,
-        args=(scan_id, top_sectors, min_days, period)
-    )
-    thread.daemon = True
-    thread.start()
+    try:
+        thread = threading.Thread(
+            target=run_scan,
+            args=(scan_id, top_sectors, min_days, period)
+        )
+        thread.daemon = True
+        thread.start()
+    except Exception as e:
+        with scan_lock:
+            scan_status['is_scanning'] = False
+            scan_status['error'] = str(e)
+        db.update_scan_status(scan_id, 'error', str(e))
+        return jsonify({'success': False, 'error': f'启动扫描线程失败: {e}'})
     print(f"✅ 扫描线程已启动", flush=True)
     sys.stdout.flush()
     
@@ -429,11 +443,16 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
             min_squeeze_days=min_days
         )
         
-        # ========== 1. 获取热点板块（同花顺）==========
-        print("📊 获取同花顺热点板块...")
+        # ========== 1. 获取热点板块（同花顺/东方财富）==========
+        print("📊 获取热点板块...")
         scan_status['current_sector'] = '获取热点板块...'
         
-        df = retry_request(get_ths_industry_list, max_retries=3, delay=1.0)
+        try:
+            df = get_ths_industry_list()
+        except Exception as e1:
+            print(f"[WARN] 第一次获取失败: {e1}，重试...")
+            time.sleep(2)
+            df = get_ths_industry_list()
         
         if df is None or len(df) == 0:
             raise Exception('无法获取热点板块数据')
@@ -522,14 +541,11 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         scan_status['current_sector'] = '获取K线数据...'
         scan_status['progress'] = 25
         
-        # 批量查缓存
-        cached_klines = db.get_kline_cache_batch(stock_codes)
-        print(f"  📦 K线缓存命中: {len(cached_klines)}/{len(stock_codes)}")
+        # 获取所有股票的原始K线数据用于分析
+        # 注意：kline_cache 存储的是图表展示数据（dict），不能用于策略计算
+        codes_to_fetch = stock_codes
         
-        # 需要获取的股票
-        codes_to_fetch = [c for c in stock_codes if c not in cached_klines]
-        
-        kline_data = dict(cached_klines)  # 从缓存开始
+        kline_data = {}
         
         if codes_to_fetch:
             print(f"  🌐 需要获取: {len(codes_to_fetch)} 只股票K线")
@@ -590,11 +606,6 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                 continue
             
             try:
-                # 如果是缓存的dict，跳过（已经是分析结果）
-                if isinstance(df, dict):
-                    # 缓存的是原始K线数据，需要转换
-                    continue
-                
                 # 计算指标
                 df = strategy.calculate_bollinger_bands(df)
                 df = strategy.calculate_squeeze_signal(df)
@@ -684,7 +695,8 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         import traceback
         traceback.print_exc()
     finally:
-        scan_status['is_scanning'] = False
+        with scan_lock:
+            scan_status['is_scanning'] = False
 
 
 @app.route('/api/scan/status')

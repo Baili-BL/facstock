@@ -1904,9 +1904,9 @@
                 <div class="quick-action-icon ai"><span class="material-symbols-rounded">auto_awesome</span></div>
                 <div class="quick-action-text">AI选股</div>
             </div>
-            <div class="quick-action">
+            <div class="quick-action" onclick="window.location.href='/ticai'">
                 <div class="quick-action-icon trend"><span class="material-symbols-rounded">assessment</span></div>
-                <div class="quick-action-text">趋势研判</div>
+                <div class="quick-action-text">题材挖掘</div>
             </div>
             <div class="quick-action" onclick="openWatchlist()">
                 <div class="quick-action-icon star"><span class="material-symbols-rounded">star</span></div>
@@ -2203,7 +2203,14 @@
                     <div id="mainChart"></div>
                 </div>
                 <div class="chart-card chart-small">
-                    <div class="chart-title"><span class="material-symbols-rounded icon-sm">unfold_less</span> 带宽收缩信号</div>
+                    <div class="chart-title" style="display:flex;align-items:center;justify-content:space-between;">
+                        <span><span class="material-symbols-rounded icon-sm">unfold_less</span> 带宽收缩信号</span>
+                        <span class="chart-legend" style="display:flex;gap:10px;font-size:0.7rem;color:var(--text-muted);">
+                            <span style="display:flex;align-items:center;gap:3px;"><span style="display:inline-block;width:12px;height:3px;background:#e4393c;border-radius:1px;"></span>带宽%</span>
+                            <span style="display:flex;align-items:center;gap:3px;"><span style="display:inline-block;width:12px;height:2px;background:#f59e0b;border-radius:1px;"></span>MA5</span>
+                            <span style="display:flex;align-items:center;gap:3px;"><span style="display:inline-block;width:12px;height:2px;background:#3b82f6;border-radius:1px;"></span>MA10</span>
+                        </span>
+                    </div>
                     <div id="widthChart"></div>
                 </div>
                 <div class="chart-card chart-small">
