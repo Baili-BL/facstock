@@ -389,6 +389,22 @@ def prepare_kline_data(df):
             'pct_change': pct_change_data,
             'latest': latest_info,
             'dates': df['date'].astype(str).tolist(),
+            # 量能画像副图数据
+            'vp_obv': safe_list(df['vp_obv']) if 'vp_obv' in df.columns else [],
+            'vp_std_vol': safe_list(df['vp_std_vol']) if 'vp_std_vol' in df.columns else [],
+            'vp_max_vol': safe_list(df['vp_max_vol']) if 'vp_max_vol' in df.columns else [],
+            'vp_color': [int(x) if pd.notna(x) else 0 for x in df['vp_color']] if 'vp_color' in df.columns else [],
+            'vp_lxtp': [bool(x) if pd.notna(x) else False for x in df['vp_lxtp']] if 'vp_lxtp' in df.columns else [],
+            'vp_lxtp1': [bool(x) if pd.notna(x) else False for x in df['vp_lxtp1']] if 'vp_lxtp1' in df.columns else [],
+            'vp_super_vol': [bool(x) if pd.notna(x) else False for x in df['vp_super_vol']] if 'vp_super_vol' in df.columns else [],
+            'vp_vol_break_up': [bool(x) if pd.notna(x) else False for x in df['vp_vol_break_up']] if 'vp_vol_break_up' in df.columns else [],
+            'vp_vol_break_down': [bool(x) if pd.notna(x) else False for x in df['vp_vol_break_down']] if 'vp_vol_break_down' in df.columns else [],
+            'vp_bull_signal': [bool(x) if pd.notna(x) else False for x in df['vp_bull_signal']] if 'vp_bull_signal' in df.columns else [],
+            'vp_bear_signal': [bool(x) if pd.notna(x) else False for x in df['vp_bear_signal']] if 'vp_bear_signal' in df.columns else [],
+            'vp_main_buy_signal': [bool(x) if pd.notna(x) else False for x in df['vp_main_buy_signal']] if 'vp_main_buy_signal' in df.columns else [],
+            'vp_ma_golden': [bool(x) if pd.notna(x) else False for x in df['vp_ma_golden']] if 'vp_ma_golden' in df.columns else [],
+            'vp_cost_break': [bool(x) if pd.notna(x) else False for x in df['vp_cost_break']] if 'vp_cost_break' in df.columns else [],
+            'vp_dbhs': safe_list(df['vp_dbhs']) if 'vp_dbhs' in df.columns else [],
         }
     except Exception as e:
         print(f"[ERROR] prepare_kline_data 失败: {e}")
@@ -611,6 +627,7 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                 df = strategy.calculate_squeeze_signal(df)
                 df = strategy.calculate_volume_signal(df)
                 df = strategy.calculate_trend_indicators(df)
+                df = strategy.calculate_volume_profile(df)
                 df = strategy.calculate_composite_score(df)
                 
                 latest = df.iloc[-1]
@@ -892,9 +909,12 @@ def get_stock_detail(code: str):
     try:
         # 先检查缓存（当日有效）
         cached_data = db.get_kline_cache(code)
-        if cached_data:
+        if cached_data and 'vp_obv' in cached_data:
             logger.info(f"[CACHE HIT] 股票 {code} 使用缓存数据")
             return jsonify({'success': True, 'data': cached_data, 'cached': True})
+        
+        if cached_data and 'vp_obv' not in cached_data:
+            logger.info(f"[CACHE STALE] 股票 {code} 缓存缺少量能画像数据，重新获取")
         
         logger.info(f"[CACHE MISS] 股票 {code} 从新浪API获取数据")
         
@@ -916,6 +936,7 @@ def get_stock_detail(code: str):
         df = strategy.calculate_bollinger_bands(df)
         df = strategy.calculate_squeeze_signal(df)
         df = strategy.calculate_trend_indicators(df)  # 包含 CMF 计算
+        df = strategy.calculate_volume_profile(df)  # 量能画像副图
         
         # 使用公共函数准备K线数据
         data = prepare_kline_data(df)

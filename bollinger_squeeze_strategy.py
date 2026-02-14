@@ -347,6 +347,192 @@ class BollingerSqueezeStrategy:
         
         return df
     
+    def calculate_volume_profile(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算量能画像副图指标（基于通达信公式转写，已消除未来函数）
+        
+        包含：换手率(DBHS)、标准VOL、OBV能量潮、单笔量最大、
+              连续放量信号(LXTP)、主力买卖盘、牛熊趋势信号
+        
+        原始公式来源：通达信副图指标
+        未来函数处理：
+        - ISLASTBAR → 移除（仅用于标注，不影响信号）
+        - CURRBARSCOUNT → 改为在最后一行计算
+        - BARSCOUNT(C) → 改为 expanding window
+        - COUNT(...,0) / SUM(...,0) / HHV(...,0) → expanding window
+        """
+        df = df.copy()
+        
+        # ===== 基础数据准备 =====
+        close = df['close']
+        high = df['high']
+        low = df['low']
+        open_ = df['open']
+        volume = df['volume']
+        amount = df['amount'] if 'amount' in df.columns else close * volume
+        turnover = df['turnover'] if 'turnover' in df.columns else None
+        
+        # 流通股本估算: capital = volume / (turnover% / 100)
+        # turnover 是换手率百分比，如 5.0 表示 5%
+        if turnover is not None:
+            capital = (volume / (turnover / 100)).replace([np.inf, -np.inf], np.nan)
+            # 用前值填充NaN
+            capital = capital.ffill().bfill()
+        else:
+            capital = volume * 100  # 降级估算
+        
+        ltp = capital
+        
+        # ===== DBHS 换手率指标 =====
+        # IF(CAPITAL<2000000, V/CAPITAL*100, V/LTP*100)
+        # 由于 LTP:=CAPITAL，两个分支结果相同，简化为 V/CAPITAL*100
+        df['vp_dbhs'] = (volume / capital * 100).replace([np.inf, -np.inf], np.nan).fillna(0)
+        
+        # ===== 标准VOL =====
+        # IF(COUNT(V>LTP/1000,0)>0, LTP/1000, 0)
+        # 使用 expanding window 替代 COUNT(...,0)
+        vol_threshold = ltp / 1000
+        exceed_flag = (volume > vol_threshold).astype(int)
+        exceed_count = exceed_flag.expanding().sum()
+        df['vp_std_vol'] = np.where(exceed_count > 0, ltp / 1000, 0)
+        
+        # ===== 涨跌颜色标记（用于前端柱状图着色）=====
+        prev_close = close.shift(1)
+        # 1=涨(红), -1=跌(绿), 0=平(白)
+        df['vp_color'] = np.where(close > prev_close, 1, np.where(close < prev_close, -1, 0))
+        
+        # ===== 单笔量最大 (expanding max) =====
+        # HHV(VOL,0) → expanding().max()
+        df['vp_max_vol'] = volume.expanding().max()
+        
+        # ===== 单笔最大换手 =====
+        # HHV(DBHS,240) → rolling(240).max()
+        df['vp_max_dbhs'] = df['vp_dbhs'].rolling(window=min(240, len(df)), min_periods=1).max()
+        
+        # ===== OBV 能量潮 =====
+        # VA:=IF(C>REF(C,1),V/10,-V/10)
+        # OBV:SUM(IF(C=REF(C,1),0,VA),0)
+        va = np.where(close > prev_close, volume / 10,
+             np.where(close < prev_close, -volume / 10, 0))
+        df['vp_obv'] = pd.Series(va, index=df.index).expanding().sum()
+        
+        # ===== 牛熊趋势信号 =====
+        # 牛:=(EXPMA(C,500)-REF(EXPMA(C,500),1))/REF(EXPMA(C,500),1)*100
+        ema500 = close.ewm(span=500, adjust=False).mean()
+        ema500_prev = ema500.shift(1)
+        bull = ((ema500 - ema500_prev) / ema500_prev * 100).fillna(0)
+        
+        # EXPMA(牛,120) 和 EXPMA(牛,200)
+        bull_ema120 = bull.ewm(span=120, adjust=False).mean()
+        bull_ema200 = bull.ewm(span=200, adjust=False).mean()
+        
+        # 牛市信号: CROSS(EXPMA(牛,120)-0.0004, EXPMA(牛,200))
+        bull_line = bull_ema120 - 0.0004
+        df['vp_bull_signal'] = (bull_line > bull_ema200) & (bull_line.shift(1) <= bull_ema200.shift(1))
+        
+        # 熊市信号: CROSS(EXPMA(牛,200), EXPMA(牛,120)-0.0004)
+        df['vp_bear_signal'] = (bull_ema200 > bull_line) & (bull_ema200.shift(1) <= bull_line.shift(1))
+        
+        # ===== 突破历史最大量信号 =====
+        # V>REF(单笔量最大,1) 且涨/跌/平
+        prev_max_vol = df['vp_max_vol'].shift(1)
+        vol_break = volume > prev_max_vol
+        df['vp_vol_break_up'] = vol_break & (close > prev_close)    # 放量突破(红)
+        df['vp_vol_break_down'] = vol_break & (close < prev_close)  # 放量突破(绿)
+        df['vp_vol_break_flat'] = vol_break & (close == prev_close) # 放量突破(白)
+        
+        # ===== 超级放量信号（黄色）=====
+        # V>REF(单笔量最大,1)*1.5 AND C>REF(C,1) AND DBHS>0.15
+        df['vp_super_vol'] = (volume > prev_max_vol * 1.5) & \
+                             (close > prev_close) & \
+                             (df['vp_dbhs'] > 0.15)
+        
+        # ===== 连续放量信号 LXTP =====
+        # LXTP:=((V>REF(VOL,1) AND DBHS>=0.1 AND REF(VOL,1)>REF(单笔量最大,2))
+        #    OR (V>REF(单笔量最大,1) AND DBHS>=0.08 AND REF(VOL,2)>REF(单笔量最大,3)))
+        #    AND C>REF(CLOSE,1)
+        prev_vol1 = volume.shift(1)
+        prev_vol2 = volume.shift(2)
+        prev_max2 = df['vp_max_vol'].shift(2)
+        prev_max3 = df['vp_max_vol'].shift(3)
+        
+        cond_a = (volume > prev_vol1) & (df['vp_dbhs'] >= 0.1) & (prev_vol1 > prev_max2)
+        cond_b = (volume > prev_max_vol) & (df['vp_dbhs'] >= 0.08) & (prev_vol2 > prev_max3)
+        df['vp_lxtp'] = (cond_a | cond_b) & (close > prev_close)
+        
+        # LXTP1 (宽松版)
+        cond_a1 = (volume > prev_vol1 * 0.9) & (df['vp_dbhs'] >= 0.1) & (prev_vol1 > prev_max2)
+        cond_b1 = (volume > prev_max_vol * 0.9) & (df['vp_dbhs'] >= 0.1) & (prev_vol2 > prev_max3)
+        df['vp_lxtp1'] = (cond_a1 | cond_b1) & (close > prev_close)
+        
+        # ===== 主力买卖盘 =====
+        # A1:=(V/C)/2
+        a1 = (volume / close) / 2
+        
+        # 使用 expanding window 替代 BARSCOUNT(C)
+        # A2: 大单买入累计 (A1>100 且涨)
+        a2 = (np.where((a1 > 100) & (close > prev_close), a1, 0))
+        df['vp_a2'] = pd.Series(a2, index=df.index).expanding().sum()
+        
+        # A3: 大单卖出累计 (A1>100 且跌)
+        a3 = (np.where((a1 > 100) & (close < prev_close), a1, 0))
+        df['vp_a3'] = pd.Series(a3, index=df.index).expanding().sum()
+        
+        # A4: 小单买入累计 (A1<100 且涨)
+        a4 = (np.where((a1 < 100) & (close > prev_close), a1, 0))
+        df['vp_a4'] = pd.Series(a4, index=df.index).expanding().sum()
+        
+        # A5: 小单卖出累计 (A1<100 且跌)
+        a5 = (np.where((a1 < 100) & (close < prev_close), a1, 0))
+        df['vp_a5'] = pd.Series(a5, index=df.index).expanding().sum()
+        
+        # A6 = A2+A3+A4+A5 (总量)
+        a6 = df['vp_a2'] + df['vp_a3'] + df['vp_a4'] + df['vp_a5']
+        
+        # 主力买盘/卖盘
+        df['vp_main_buy'] = df['vp_a2']
+        df['vp_main_sell'] = df['vp_a3']
+        
+        # 主力买信号: CROSS(主力买盘, 主力卖盘) AND 量比>0.5
+        # 量比: SUM(V,0)*240/MA(VOL,5)/BARSCOUNT(C)
+        cum_vol = volume.expanding().sum()
+        ma_vol5 = volume.rolling(window=5, min_periods=1).mean()
+        bar_count = pd.Series(range(1, len(df) + 1), index=df.index, dtype=float)
+        vol_ratio = cum_vol * 240 / ma_vol5 / bar_count
+        vol_ratio = vol_ratio.replace([np.inf, -np.inf], np.nan).fillna(0)
+        
+        main_buy_cross = (df['vp_main_buy'] > df['vp_main_sell']) & \
+                         (df['vp_main_buy'].shift(1) <= df['vp_main_sell'].shift(1))
+        df['vp_main_buy_signal'] = main_buy_cross & (vol_ratio > 0.5)
+        
+        # ===== 均线交叉信号 =====
+        # MA30:=EMA(C,30); 强弱:=EMA(C,900)
+        # CROSS(MA30, 强弱) → 金叉信号
+        ma30 = close.ewm(span=30, adjust=False).mean()
+        strength = close.ewm(span=900, adjust=False).mean()
+        df['vp_ma_golden'] = (ma30 > strength) & (ma30.shift(1) <= strength.shift(1))
+        
+        # ===== Q值（全成本均价偏离度）=====
+        # 使用 expanding window 替代 BARSCOUNT(C)
+        cum_amount = amount.expanding().sum()
+        cum_vol_100 = (volume * 100).expanding().sum()
+        avg_cost = cum_amount / cum_vol_100
+        avg_cost = avg_cost.replace([np.inf, -np.inf], np.nan).ffill()
+        
+        q_ratio = close / avg_cost
+        q_flag = (q_ratio >= 0.95) & (q_ratio <= 1.05)
+        # Q2: 如果Q=0(不在区间内)用MA均价，否则用全成本均价
+        ma_cost = close.expanding().mean()
+        q2 = np.where(~q_flag, ma_cost, avg_cost)
+        q2 = pd.Series(q2, index=df.index).replace([np.inf, -np.inf], np.nan).ffill()
+        
+        # 突破全成本均价信号: CROSS(C/Q2, 1.03)
+        cost_ratio = close / q2
+        cost_ratio = cost_ratio.replace([np.inf, -np.inf], np.nan).fillna(1)
+        df['vp_cost_break'] = (cost_ratio > 1.03) & (cost_ratio.shift(1) <= 1.03)
+        
+        return df
+    
     def calculate_composite_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         计算综合评分（满分100分）
@@ -551,6 +737,9 @@ class BollingerSqueezeStrategy:
             
             # 计算趋势和动量指标
             df = self.calculate_trend_indicators(df)
+            
+            # 计算量能画像副图指标
+            df = self.calculate_volume_profile(df)
             
             # 计算综合评分
             df = self.calculate_composite_score(df)

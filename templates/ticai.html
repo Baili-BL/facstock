@@ -532,10 +532,11 @@
             right: 0;
             background: #fff;
             border-radius: 16px 16px 0 0;
-            max-height: 85vh;
+            max-height: 92vh;
             display: flex;
             flex-direction: column;
             animation: slideUp 0.3s ease;
+            overflow-y: auto;
         }
         
         @keyframes slideUp {
@@ -608,7 +609,7 @@
         
         .kline-container {
             flex: 1;
-            min-height: 320px;
+            min-height: 280px;
             background: #fff;
         }
         
@@ -852,6 +853,17 @@
                     <div>加载K线数据...</div>
                 </div>
             </div>
+            <div id="vpChart" style="min-height:180px;max-height:200px;border-top:1px solid #f0f0f0;background:#fff;">
+                <div style="padding:6px 12px 0;font-size:12px;color:#999;display:flex;align-items:center;justify-content:space-between;">
+                    <span>📊 量能画像</span>
+                    <span style="display:flex;gap:8px;font-size:10px;">
+                        <span style="color:#f59e0b;">━ OBV</span>
+                        <span style="color:#e040fb;">━ 标准VOL</span>
+                        <span style="color:#b0b0b0;">┈ 最大量</span>
+                    </span>
+                </div>
+                <div id="vpChartInner" style="height:155px;"></div>
+            </div>
             <div class="kline-info">
                 <div class="kline-stats">
                     <span class="kline-stat"><span class="kline-stat-label">开</span><span class="kline-stat-value" id="kOpen">--</span></span>
@@ -1022,8 +1034,10 @@
         
         // ========== K线图功能 ==========
         let klineChart = null;
+        let vpChart = null;
         let candleSeries = null;
         let volumeSeries = null;
+        let vpVolSeries = null;
         let ma5Series = null;
         let ma10Series = null;
         let ma20Series = null;
@@ -1044,15 +1058,17 @@
         function closeKline() {
             document.getElementById('klineModal').classList.remove('active');
             document.body.style.overflow = '';
-            if (klineChart) {
-                klineChart.remove();
-                klineChart = null;
-            }
+            if (klineChart) { klineChart.remove(); klineChart = null; }
+            if (vpChart) { vpChart.remove(); vpChart = null; }
         }
         
         function initChart() {
             const container = document.getElementById('klineChart');
             container.innerHTML = '';
+            
+            if (vpChart) { vpChart.remove(); vpChart = null; }
+            vpVolSeries = null;
+            document.getElementById('vpChartInner').innerHTML = '';
             
             klineChart = LightweightCharts.createChart(container, {
                 layout: {
@@ -1068,8 +1084,8 @@
                     vertLine: { color: '#999', width: 1, style: 2 },
                     horzLine: { color: '#999', width: 1, style: 2 },
                 },
-                rightPriceScale: { borderColor: '#e0e0e0' },
-                timeScale: { borderColor: '#e0e0e0', timeVisible: true },
+                rightPriceScale: { borderColor: '#e0e0e0', minimumWidth: 50 },
+                timeScale: { borderColor: '#e0e0e0', timeVisible: true, barSpacing: 6 },
             });
             
             candleSeries = klineChart.addCandlestickSeries({
@@ -1082,24 +1098,13 @@
             });
             
             ma5Series = klineChart.addLineSeries({
-                color: '#ff9800',
-                lineWidth: 1,
-                priceLineVisible: false,
-                lastValueVisible: false,
+                color: '#ff9800', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
             });
-            
             ma10Series = klineChart.addLineSeries({
-                color: '#2196f3',
-                lineWidth: 1,
-                priceLineVisible: false,
-                lastValueVisible: false,
+                color: '#2196f3', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
             });
-            
             ma20Series = klineChart.addLineSeries({
-                color: '#9c27b0',
-                lineWidth: 1,
-                priceLineVisible: false,
-                lastValueVisible: false,
+                color: '#9c27b0', lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
             });
             
             volumeSeries = klineChart.addHistogramSeries({
@@ -1116,8 +1121,66 @@
             });
             
             new ResizeObserver(entries => {
-                if (klineChart) klineChart.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
+                const w = entries[0].contentRect.width;
+                if (klineChart) klineChart.applyOptions({ width: w, height: entries[0].contentRect.height });
+                if (vpChart) vpChart.applyOptions({ width: w });
             }).observe(container);
+        }
+        
+        function initVpChart() {
+            const vpContainer = document.getElementById('vpChartInner');
+            const klineContainer = document.getElementById('klineChart');
+            const chartWidth = klineContainer.clientWidth || vpContainer.parentElement.clientWidth || 400;
+            
+            if (vpChart) { vpChart.remove(); vpChart = null; }
+            vpContainer.innerHTML = '';
+            
+            vpChart = LightweightCharts.createChart(vpContainer, {
+                width: chartWidth,
+                height: 150,
+                layout: {
+                    background: { type: 'solid', color: '#ffffff' },
+                    textColor: '#64748b',
+                },
+                grid: {
+                    vertLines: { color: '#f1f5f9' },
+                    horzLines: { color: '#f1f5f9' },
+                },
+                localization: {
+                    priceFormatter: function(price) {
+                        var abs = Math.abs(price);
+                        if (abs >= 1e8) return (price / 1e8).toFixed(1) + '亿';
+                        if (abs >= 1e4) return (price / 1e4).toFixed(0) + '万';
+                        return price.toFixed(0);
+                    },
+                },
+                rightPriceScale: { borderColor: '#e0e0e0', minimumWidth: 50 },
+                timeScale: { borderColor: '#e0e0e0', timeVisible: false, barSpacing: 6 },
+            });
+            
+            vpVolSeries = vpChart.addHistogramSeries({
+                priceLineVisible: false,
+                lastValueVisible: false,
+                priceScaleId: '',
+                priceFormat: {
+                    type: 'volume',
+                },
+            });
+            
+            // 隐藏OBV的独立价格轴
+            vpChart.priceScale('obv').applyOptions({ visible: false });
+            
+            // 时间轴联动
+            let isSyncing = false;
+            function syncFrom(source, target) {
+                if (isSyncing) return;
+                isSyncing = true;
+                const range = source.timeScale().getVisibleLogicalRange();
+                if (range) { try { target.timeScale().setVisibleLogicalRange(range); } catch(e) {} }
+                isSyncing = false;
+            }
+            klineChart.timeScale().subscribeVisibleLogicalRangeChange(() => { if (vpChart) syncFrom(klineChart, vpChart); });
+            vpChart.timeScale().subscribeVisibleLogicalRangeChange(() => { if (klineChart) syncFrom(vpChart, klineChart); });
         }
         
         function calculateMA(klines, period) {
@@ -1139,6 +1202,9 @@
                 if (!json.success) throw new Error(json.error);
                 
                 const klines = json.data.klines;
+                const vp = json.data.vp || {};
+                console.log('[VP] API返回数据, vp keys:', Object.keys(vp), 'obv长度:', vp.vp_obv ? vp.vp_obv.length : 0);
+                
                 candleSeries.setData(klines);
                 ma5Series.setData(calculateMA(klines, 5));
                 ma10Series.setData(calculateMA(klines, 10));
@@ -1149,6 +1215,100 @@
                     value: k.volume,
                     color: k.close >= k.open ? 'rgba(231,76,60,0.4)' : 'rgba(39,174,96,0.4)',
                 })));
+                
+                // 量能画像副图
+                if (vp.vp_obv && vp.vp_obv.length > 0) {
+                    console.log('[VP] 初始化量能画像, OBV数据点:', vp.vp_obv.length);
+                    initVpChart();
+                    const dates = klines.map(k => k.time);
+                    
+                    // 成交量柱状图（涨红跌绿，突破/超级放量高亮）
+                    const vpVolData = dates.map((date, i) => {
+                        const vol = klines[i] ? klines[i].volume : 0;
+                        const colorCode = vp.vp_color ? vp.vp_color[i] : 0;
+                        const isSuperVol = vp.vp_super_vol && vp.vp_super_vol[i];
+                        const isBreakUp = vp.vp_vol_break_up && vp.vp_vol_break_up[i];
+                        const isBreakDown = vp.vp_vol_break_down && vp.vp_vol_break_down[i];
+                        let color = '#999';
+                        if (isSuperVol) color = '#ffd700';
+                        else if (isBreakUp) color = '#e74c3c';
+                        else if (isBreakDown) color = '#27ae60';
+                        else if (colorCode > 0) color = '#e74c3c';
+                        else if (colorCode < 0) color = '#27ae60';
+                        return { time: date, value: vol, color: color };
+                    });
+                    vpVolSeries.setData(vpVolData);
+                    
+                    // OBV线
+                    const obvData = dates.map((date, i) => ({
+                        time: date, value: vp.vp_obv[i]
+                    })).filter(d => d.value !== null);
+                    
+                    // OBV线（使用独立的隐藏轴，不影响右侧宽度）
+                    vpChart._obvSeries = vpChart.addLineSeries({
+                        color: '#f59e0b', lineWidth: 2,
+                        priceLineVisible: false, lastValueVisible: false,
+                        priceScaleId: 'obv',
+                    });
+                    vpChart._obvSeries.setData(obvData);
+                    
+                    // 标准VOL线
+                    if (vp.vp_std_vol) {
+                        const stdData = dates.map((date, i) => ({
+                            time: date, value: vp.vp_std_vol[i]
+                        })).filter(d => d.value !== null && d.value > 0);
+                        if (stdData.length > 0) {
+                            vpChart._stdSeries = vpChart.addLineSeries({
+                                color: '#e040fb', lineWidth: 1,
+                                priceLineVisible: false, lastValueVisible: false,
+                            });
+                            vpChart._stdSeries.setData(stdData);
+                        }
+                    }
+                    
+                    // 最大量虚线
+                    if (vp.vp_max_vol) {
+                        const maxData = dates.map((date, i) => ({
+                            time: date, value: vp.vp_max_vol[i]
+                        })).filter(d => d.value !== null);
+                        vpChart._maxSeries = vpChart.addLineSeries({
+                            color: '#b0b0b0', lineWidth: 1, lineStyle: 1,
+                            priceLineVisible: false, lastValueVisible: false,
+                        });
+                        vpChart._maxSeries.setData(maxData);
+                    }
+                    
+                    // 信号标记
+                    const markers = [];
+                    dates.forEach((date, i) => {
+                        if (vp.vp_lxtp && vp.vp_lxtp[i]) {
+                            markers.push({ time: date, position: 'aboveBar', color: '#e74c3c', shape: 'arrowDown', text: '@' });
+                        } else if (vp.vp_lxtp1 && vp.vp_lxtp1[i]) {
+                            markers.push({ time: date, position: 'aboveBar', color: '#ffd700', shape: 'arrowDown', text: '@' });
+                        }
+                        if (vp.vp_main_buy_signal && vp.vp_main_buy_signal[i]) {
+                            markers.push({ time: date, position: 'belowBar', color: '#ffd700', shape: 'arrowUp', text: '主买' });
+                        }
+                        if (vp.vp_bull_signal && vp.vp_bull_signal[i]) {
+                            markers.push({ time: date, position: 'belowBar', color: '#e74c3c', shape: 'circle', text: '牛' });
+                        }
+                        if (vp.vp_bear_signal && vp.vp_bear_signal[i]) {
+                            markers.push({ time: date, position: 'aboveBar', color: '#27ae60', shape: 'circle', text: '熊' });
+                        }
+                        if (vp.vp_ma_golden && vp.vp_ma_golden[i]) {
+                            markers.push({ time: date, position: 'belowBar', color: '#ff6d00', shape: 'square', text: '金叉' });
+                        }
+                        if (vp.vp_cost_break && vp.vp_cost_break[i]) {
+                            markers.push({ time: date, position: 'belowBar', color: '#2196f3', shape: 'diamond', text: '破位' });
+                        }
+                    });
+                    if (markers.length > 0) {
+                        markers.sort((a, b) => a.time.localeCompare(b.time));
+                        vpVolSeries.setMarkers(markers);
+                    }
+                    
+                    vpChart.timeScale().fitContent();
+                }
                 
                 klineChart.timeScale().fitContent();
                 if (klines.length > 0) updateKlineInfo(klines[klines.length - 1]);

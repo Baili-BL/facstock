@@ -154,30 +154,62 @@ def get_all_data():
 
 @ticai_bp.route('/api/ticai/kline/<stock_code>')
 def get_stock_kline(stock_code):
-    """获取股票K线数据（复用布林带的数据源）"""
+    """获取股票K线数据（复用布林带的数据源）+ 量能画像"""
     days = request.args.get('days', 250, type=int)
 
     try:
         from utils.ths_crawler import get_stock_kline_sina
+        from bollinger_squeeze_strategy import BollingerSqueezeStrategy
+        import numpy as np
 
         df = get_stock_kline_sina(stock_code, days=days)
         if df is None or df.empty:
             return jsonify({"success": False, "error": "无K线数据"}), 404
 
+        # 计算量能画像指标
+        strategy = BollingerSqueezeStrategy()
+        try:
+            df_vp = strategy.calculate_volume_profile(df)
+        except Exception:
+            df_vp = df  # 降级：不影响K线展示
+
         result = []
-        for _, row in df.iterrows():
-            result.append({
+        for idx, row in df_vp.iterrows():
+            item = {
                 "time": str(row['date']),
                 "open": float(row['open']),
                 "high": float(row['high']),
                 "low": float(row['low']),
                 "close": float(row['close']),
                 "volume": float(row.get('volume', 0)),
-            })
+            }
+            result.append(item)
+
+        # 量能画像数据
+        import pandas as pd
+        def safe_list(series):
+            return [None if pd.isna(x) else float(x) for x in series]
+        def bool_list(series):
+            return [bool(x) if pd.notna(x) else False for x in series]
+
+        vp_data = {}
+        vp_cols = {
+            'vp_obv': safe_list, 'vp_std_vol': safe_list, 'vp_max_vol': safe_list,
+            'vp_dbhs': safe_list,
+            'vp_color': lambda s: [int(x) if pd.notna(x) else 0 for x in s],
+            'vp_lxtp': bool_list, 'vp_lxtp1': bool_list,
+            'vp_super_vol': bool_list, 'vp_vol_break_up': bool_list,
+            'vp_vol_break_down': bool_list, 'vp_bull_signal': bool_list,
+            'vp_bear_signal': bool_list, 'vp_main_buy_signal': bool_list,
+            'vp_ma_golden': bool_list, 'vp_cost_break': bool_list,
+        }
+        for col, fn in vp_cols.items():
+            if col in df_vp.columns:
+                vp_data[col] = fn(df_vp[col])
 
         return jsonify({
             "success": True,
-            "data": {"code": stock_code, "name": "", "klines": result},
+            "data": {"code": stock_code, "name": "", "klines": result, "vp": vp_data},
         })
 
     except Exception as e:

@@ -2217,6 +2217,17 @@
                     <div class="chart-title"><span class="material-symbols-rounded icon-sm">attach_money</span> CMF 资金流量指标</div>
                     <div id="cmfChart"></div>
                 </div>
+                <div class="chart-card chart-small">
+                    <div class="chart-title" style="display:flex;align-items:center;justify-content:space-between;">
+                        <span><span class="material-symbols-rounded icon-sm">equalizer</span> 量能画像</span>
+                        <span class="chart-legend" style="display:flex;gap:8px;font-size:0.65rem;color:var(--text-muted);">
+                            <span style="display:flex;align-items:center;gap:2px;"><span style="display:inline-block;width:10px;height:3px;background:#f59e0b;border-radius:1px;"></span>OBV</span>
+                            <span style="display:flex;align-items:center;gap:2px;"><span style="display:inline-block;width:10px;height:2px;background:#e040fb;border-radius:1px;"></span>标准VOL</span>
+                            <span style="display:flex;align-items:center;gap:2px;"><span style="display:inline-block;width:10px;height:2px;background:#fff;border:1px dotted #999;border-radius:1px;"></span>最大量</span>
+                        </span>
+                    </div>
+                    <div id="vpChart"></div>
+                </div>
                 <div class="chart-notes">
                     <div class="note-title"><span class="material-symbols-rounded icon-sm">menu_book</span> 信号解读</div>
                     <div class="note-item">
@@ -2248,6 +2259,23 @@
                         <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">warning</span>
                         <span>收缩后可能向上或向下突破，需结合趋势和资金流向判断</span>
                     </div>
+                    <div class="note-title" style="margin-top: 12px;"><span class="material-symbols-rounded icon-sm">equalizer</span> 量能画像信号</div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #ffd700;">fiber_manual_record</span>
+                        <span><strong>金色柱</strong>：超级放量（量>历史最大1.5倍+涨+换手>0.15%）</span>
+                    </div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #ef5350;">fiber_manual_record</span>
+                        <span><strong>红@</strong>：连续放量信号（严格），<strong style="color:#ffd700;">黄@</strong>：连续放量（宽松）</span>
+                    </div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #f59e0b;">fiber_manual_record</span>
+                        <span><strong>主买</strong>：主力买盘超过卖盘+量比>0.5，<strong>OBV</strong>上升=资金持续流入</span>
+                    </div>
+                    <div class="note-item">
+                        <span class="material-symbols-rounded icon-sm" style="color: #ef5350;">fiber_manual_record</span>
+                        <span><strong>牛</strong>：EMA500长期趋势转多，<strong style="color:#26a69a;">熊</strong>：趋势转空</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2259,6 +2287,7 @@
         let mainChart = null;
         let widthChart = null;
         let cmfChart = null;
+        let vpChart = null;
         let pollInterval = null;
         let volumeFilterEnabled = false;
         let currentScanId = null;
@@ -2697,6 +2726,7 @@
             document.getElementById('mainChart').innerHTML = loadingHtml;
             document.getElementById('widthChart').innerHTML = loadingHtml;
             document.getElementById('cmfChart').innerHTML = loadingHtml;
+            document.getElementById('vpChart').innerHTML = loadingHtml;
         }
 
         function hideChartLoading() {
@@ -2726,6 +2756,7 @@
             if (mainChart) { mainChart.remove(); mainChart = null; }
             if (widthChart) { widthChart.remove(); widthChart = null; }
             if (cmfChart) { cmfChart.remove(); cmfChart = null; }
+            if (vpChart) { vpChart.remove(); vpChart = null; }
 
             // 更新价格信息面板
             if (data.latest) {
@@ -2763,6 +2794,7 @@
                 rightPriceScale: { 
                     borderColor: '#e2e8f0',
                     scaleMargins: { top: 0.1, bottom: 0.2 },
+                    minimumWidth: 80,
                 },
                 timeScale: { 
                     borderColor: '#e2e8f0', 
@@ -2873,13 +2905,14 @@
                     vertLines: { color: '#f1f5f9' },
                     horzLines: { color: '#f1f5f9' },
                 },
-                rightPriceScale: { borderColor: '#e2e8f0' },
+                rightPriceScale: { borderColor: '#e2e8f0', minimumWidth: 80 },
                 timeScale: { 
                     borderColor: '#e2e8f0', 
                     timeVisible: false,
                     fixLeftEdge: true,
                     fixRightEdge: true,
                     rightOffset: 0,
+                    barSpacing: 8,
                 },
             });
 
@@ -2934,13 +2967,14 @@
                     vertLines: { color: '#f1f5f9' },
                     horzLines: { color: '#f1f5f9' },
                 },
-                rightPriceScale: { borderColor: '#e2e8f0' },
+                rightPriceScale: { borderColor: '#e2e8f0', minimumWidth: 80 },
                 timeScale: { 
                     borderColor: '#e2e8f0', 
                     timeVisible: false,
                     fixLeftEdge: true,
                     fixRightEdge: true,
                     rightOffset: 0,
+                    barSpacing: 8,
                 },
             });
 
@@ -2962,6 +2996,172 @@
 
             // 零线
             cmfChart.timeScale().fitContent();
+
+            // ===== 量能画像副图 =====
+            if (vpChart) { vpChart.remove(); vpChart = null; }
+            const vpContainer = document.getElementById('vpChart');
+            if (vpContainer && data.vp_obv && data.vp_obv.length > 0) {
+                vpContainer.innerHTML = '';
+                vpChart = LightweightCharts.createChart(vpContainer, {
+                    width: vpContainer.clientWidth,
+                    height: 180,
+                    layout: {
+                        background: { type: 'solid', color: '#ffffff' },
+                        textColor: '#64748b',
+                    },
+                    grid: {
+                        vertLines: { color: '#f1f5f9' },
+                        horzLines: { color: '#f1f5f9' },
+                    },
+                    localization: {
+                        priceFormatter: function(price) {
+                            var abs = Math.abs(price);
+                            if (abs >= 1e8) return (price / 1e8).toFixed(1) + '亿';
+                            if (abs >= 1e4) return (price / 1e4).toFixed(0) + '万';
+                            return price.toFixed(0);
+                        },
+                    },
+                    rightPriceScale: { borderColor: '#e2e8f0', minimumWidth: 80 },
+                    timeScale: { 
+                        borderColor: '#e2e8f0', 
+                        timeVisible: false,
+                        fixLeftEdge: true,
+                        fixRightEdge: true,
+                        rightOffset: 0,
+                        barSpacing: 8,
+                    },
+                });
+
+                // 成交量柱状图（涨红跌绿，突破历史最大量加粗高亮）
+                const vpVolData = data.dates.map((date, i) => {
+                    const vol = data.volumes[i] ? data.volumes[i].value : 0;
+                    const colorCode = data.vp_color ? data.vp_color[i] : 0;
+                    const isBreakUp = data.vp_vol_break_up && data.vp_vol_break_up[i];
+                    const isBreakDown = data.vp_vol_break_down && data.vp_vol_break_down[i];
+                    const isSuperVol = data.vp_super_vol && data.vp_super_vol[i];
+                    let color = '#999999'; // 平
+                    if (isSuperVol) color = '#ffd700'; // 超级放量=金色
+                    else if (isBreakUp) color = '#ef5350'; // 突破+涨=红
+                    else if (isBreakDown) color = '#26a69a'; // 突破+跌=绿
+                    else if (colorCode > 0) color = '#ef5350';
+                    else if (colorCode < 0) color = '#26a69a';
+                    else color = '#999999';
+                    return { time: date, value: vol, color: color };
+                });
+
+                const vpVolSeries = vpChart.addHistogramSeries({
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    priceFormat: { type: 'volume' },
+                });
+                vpVolSeries.setData(vpVolData);
+
+                // OBV 能量潮线（黄色粗线，独立隐藏轴）
+                const obvData = data.dates.map((date, i) => ({
+                    time: date,
+                    value: data.vp_obv[i]
+                })).filter(d => d.value !== null);
+
+                const obvSeries = vpChart.addLineSeries({
+                    color: '#f59e0b',
+                    lineWidth: 2,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    priceScaleId: 'obv',
+                });
+                obvSeries.setData(obvData);
+                vpChart.priceScale('obv').applyOptions({ visible: false });
+
+                // 标准VOL线（品红色，叠加在成交量轴上）
+                if (data.vp_std_vol && data.vp_std_vol.length > 0) {
+                    const stdVolData = data.dates.map((date, i) => ({
+                        time: date,
+                        value: data.vp_std_vol[i]
+                    })).filter(d => d.value !== null && d.value > 0);
+
+                    if (stdVolData.length > 0) {
+                        const stdVolSeries = vpChart.addLineSeries({
+                            color: '#e040fb',
+                            lineWidth: 1,
+                            priceLineVisible: false,
+                            lastValueVisible: false,
+                            priceFormat: { type: 'volume' },
+                        });
+                        stdVolSeries.setData(stdVolData);
+                    }
+                }
+
+                // 单笔量最大线（灰色虚线，叠加在成交量轴上）
+                if (data.vp_max_vol && data.vp_max_vol.length > 0) {
+                    const maxVolData = data.dates.map((date, i) => ({
+                        time: date,
+                        value: data.vp_max_vol[i]
+                    })).filter(d => d.value !== null);
+
+                    const maxVolSeries = vpChart.addLineSeries({
+                        color: '#b0b0b0',
+                        lineWidth: 1,
+                        lineStyle: 1,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                        priceFormat: { type: 'volume' },
+                    });
+                    maxVolSeries.setData(maxVolData);
+                }
+
+                // 信号标记（连续放量@、主力买、牛熊信号等）
+                const markers = [];
+                data.dates.forEach((date, i) => {
+                    if (data.vp_lxtp && data.vp_lxtp[i]) {
+                        markers.push({ time: date, position: 'aboveBar', color: '#ef5350', shape: 'arrowDown', text: '@' });
+                    } else if (data.vp_lxtp1 && data.vp_lxtp1[i]) {
+                        markers.push({ time: date, position: 'aboveBar', color: '#ffd700', shape: 'arrowDown', text: '@' });
+                    }
+                    if (data.vp_main_buy_signal && data.vp_main_buy_signal[i]) {
+                        markers.push({ time: date, position: 'belowBar', color: '#ffd700', shape: 'arrowUp', text: '主买' });
+                    }
+                    if (data.vp_bull_signal && data.vp_bull_signal[i]) {
+                        markers.push({ time: date, position: 'belowBar', color: '#ef5350', shape: 'circle', text: '牛' });
+                    }
+                    if (data.vp_bear_signal && data.vp_bear_signal[i]) {
+                        markers.push({ time: date, position: 'aboveBar', color: '#26a69a', shape: 'circle', text: '熊' });
+                    }
+                    if (data.vp_ma_golden && data.vp_ma_golden[i]) {
+                        markers.push({ time: date, position: 'belowBar', color: '#ff6d00', shape: 'square', text: '金叉' });
+                    }
+                    if (data.vp_cost_break && data.vp_cost_break[i]) {
+                        markers.push({ time: date, position: 'belowBar', color: '#2196f3', shape: 'diamond', text: '破位' });
+                    }
+                });
+
+                if (markers.length > 0) {
+                    // 按时间排序
+                    markers.sort((a, b) => a.time.localeCompare(b.time));
+                    vpVolSeries.setMarkers(markers);
+                }
+
+                vpChart.timeScale().fitContent();
+            }
+
+            // ===== 时间轴联动同步（所有副图）=====
+            let isSyncing = false;
+            const allCharts = [mainChart, widthChart, cmfChart, vpChart].filter(Boolean);
+            function syncFrom(source) {
+                if (isSyncing) return;
+                isSyncing = true;
+                const range = source.timeScale().getVisibleLogicalRange();
+                if (range) {
+                    allCharts.forEach(c => {
+                        if (c !== source) {
+                            try { c.timeScale().setVisibleLogicalRange(range); } catch(e) {}
+                        }
+                    });
+                }
+                isSyncing = false;
+            }
+            allCharts.forEach(c => {
+                c.timeScale().subscribeVisibleLogicalRangeChange(() => syncFrom(c));
+            });
         }
 
         function closeModal() {
@@ -2970,6 +3170,7 @@
             if (mainChart) { mainChart.remove(); mainChart = null; }
             if (widthChart) { widthChart.remove(); widthChart = null; }
             if (cmfChart) { cmfChart.remove(); cmfChart = null; }
+            if (vpChart) { vpChart.remove(); vpChart = null; }
         }
 
         // Tab 切换
