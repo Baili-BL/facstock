@@ -132,25 +132,71 @@ def fetch_eastmoney_news(limit: int = 30) -> List[Dict]:
     return news_list
 
 
+def fetch_xueqiu_news(limit: int = 30) -> List[Dict]:
+    """雪球新闻"""
+    news_list = []
+    try:
+        url = 'https://xueqiu.com/query/v1/news.json'
+        params = {'q': 'A股', 'type': '', 'hq_type': 'stock', 'count': str(limit), 'page': '1'}
+        resp = requests.get(url, headers={**HEADERS, 'Referer': 'https://xueqiu.com/'}, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('list', [])[:limit]:
+                created = item.get('created_at', 0)
+                news_list.append({
+                    "title": item.get('title', '') or item.get('text', '')[:80],
+                    "content": item.get('text', '')[:200] if item.get('text') else '',
+                    "time": str(int(created / 1000)) if created else '',
+                    "source": "雪球",
+                    "url": f"https://xueqiu.com/{item.get('id', '')}",
+                })
+    except Exception as e:
+        print(f"雪球获取失败: {e}")
+    return news_list
+
+
+def fetch_cls_news_cn(limit: int = 30) -> List[Dict]:
+    """财联社快讯"""
+    news_list = []
+    try:
+        url = 'https://www.cls.cn/api/sw?app=CLS&os=web&sv=7.8.5'
+        params = {'type': '102', 'page': '1', 'size': str(limit), 'last_time': ''}
+        resp = requests.get(url, headers={**HEADERS, 'Referer': 'https://www.cls.cn/'}, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in (data.get('data', {}).get('roll_data', []) if isinstance(data.get('data'), dict) else [])[:limit]:
+                news_list.append({
+                    "title": item.get('title', '') or item.get('content', '')[:80],
+                    "content": item.get('content', '')[:200] if item.get('content') else '',
+                    "time": str(item.get('ctime', '') or ''),
+                    "source": "财联社",
+                })
+    except Exception as e:
+        print(f"财联社获取失败: {e}")
+    return news_list
+
+
 def fetch_all_news(limit_per_source: int = 30) -> List[Dict]:
     """
-    并发获取多源新闻
+    并发获取多源新闻（5个平台）
     """
     cache_key = f"all_news_{limit_per_source}"
     cached = _get_cached(cache_key)
     if cached:
         return cached
-    
+
     all_news = []
-    
-    # 并发获取
-    with ThreadPoolExecutor(max_workers=3) as executor:
+
+    # 并发获取5个平台
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(fetch_sina_news, limit_per_source): "新浪",
             executor.submit(fetch_ths_news, limit_per_source): "同花顺",
             executor.submit(fetch_eastmoney_news, limit_per_source): "东财",
+            executor.submit(fetch_cls_news_cn, limit_per_source): "财联社",
+            executor.submit(fetch_xueqiu_news, limit_per_source): "雪球",
         }
-        
+
         for future in as_completed(futures, timeout=15):
             source = futures[future]
             try:
@@ -159,20 +205,20 @@ def fetch_all_news(limit_per_source: int = 30) -> List[Dict]:
                 print(f"  {source}: {len(news)}条")
             except Exception as e:
                 print(f"  {source}获取失败: {e}")
-    
-    # 去重（按标题）
+
+    # 去重（按标题前30字）
     seen_titles = set()
     unique_news = []
     for news in all_news:
-        title = news.get('title', '')[:20]  # 取前20字作为去重key
+        title = news.get('title', '')[:30]
         if title and title not in seen_titles:
             seen_titles.add(title)
             unique_news.append(news)
-    
+
     if unique_news:
         _set_cache(cache_key, unique_news)
         print(f"📰 新闻聚合完成: 共{len(unique_news)}条 (去重后)")
-    
+
     return unique_news
 
 

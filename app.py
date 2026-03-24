@@ -8,7 +8,7 @@ import sys
 # 禁用输出缓冲，确保 print 立即显示
 sys.stdout.reconfigure(line_buffering=True)
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, jsonify, request
 from bollinger_squeeze_strategy import BollingerSqueezeStrategy
 from utils.retry import retry_request
 import pandas as pd
@@ -30,9 +30,13 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# 注册题材挖掘蓝图
+# 注册蓝图
 from ticai.routes import ticai_bp
+from market_routes import market_bp
+from strategy_routes import strategy_bp
 app.register_blueprint(ticai_bp)
+app.register_blueprint(market_bp)
+app.register_blueprint(strategy_bp)
 
 # 全局变量存储当前扫描状态（用于实时进度查询）
 scan_lock = threading.Lock()
@@ -46,11 +50,7 @@ scan_status = {
 }
 
 
-@app.route('/')
-def index():
-    """主页"""
-    return render_template('index.html')
-
+# ============ 策略 API（保持不变）============
 
 @app.route('/api/hot-sectors')
 def get_hot_sectors():
@@ -651,25 +651,86 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                         'grade': latest['grade'],
                         'bb_width_pct': round(float(latest['bb_width_pct']), 2),
                         'ma_bullish': bool(latest.get('ma_bullish', False)),
+                        'ma_full_bullish': bool(latest.get('ma_full_bullish', False)),
                         'macd_golden': bool(latest.get('macd_golden', False)),
+                        'macd_hist_positive': bool(latest.get('macd_hist_positive', False)),
                         'cmf_bullish': bool(latest.get('cmf_bullish', False)),
+                        'cmf_strong_bullish': bool(latest.get('cmf_strong_bullish', False)),
+                        'cmf_rising': bool(latest.get('cmf_rising', False)),
+                        'rsv': float(latest.get('rsv', 50)),
+                        'rsv_recovering': bool(latest.get('rsv_recovering', False)),
+                        'rsv_golden': bool(latest.get('rsv_golden', False)),
                         'is_volume_up': bool(latest.get('is_volume_up', False)),
                         'is_volume_price_up': bool(latest.get('is_volume_price_up', False)),
                         'low_volatility': bool(latest.get('low_volatility', False)),
+                        'volume_ratio': round(float(latest['volume_ratio']), 2)
+                        if pd.notna(latest.get('volume_ratio')) else 0.0,
                     }
                     
                     # 生成标签
+                    # 生成完整标签
                     tags = []
-                    if result['grade'] in ['S', 'A']:
-                        tags.append(f"{result['grade']}级")
+                    grade = latest.get('grade', 'C')
+                    if grade == 'S':
+                        tags.append("S级")
+                    elif grade == 'A':
+                        tags.append("A级")
+
                     if result['is_leader']:
                         tags.append(f"中军#{result['leader_rank']}")
-                    if result.get('cmf_bullish'):
+
+                    # CMF 资金流标签
+                    if latest.get('cmf_strong_bullish'):
+                        tags.append("强势流入")
+                    elif latest.get('cmf_bullish') and latest.get('cmf_rising'):
                         tags.append("资金流入")
-                    if result.get('is_volume_price_up'):
+                    elif latest.get('cmf_bullish'):
+                        tags.append("资金净流入")
+
+                    # RSV 标签
+                    if latest.get('rsv_recovering'):
+                        tags.append("超卖回升")
+                    elif latest.get('rsv_golden'):
+                        rsv_val = latest.get('rsv', 50)
+                        tags.append("RSV强势" if rsv_val >= 65 else "RSV健康")
+
+                    # 趋势标签
+                    if latest.get('ma_full_bullish'):
+                        tags.append("多头排列")
+                    elif latest.get('ma_bullish'):
+                        tags.append("短多")
+
+                    # MACD标签
+                    if latest.get('macd_golden') and latest.get('macd_hist_positive'):
+                        tags.append("MACD强势")
+                    elif latest.get('macd_golden'):
+                        tags.append("MACD金叉")
+
+                    # 量能标签
+                    if latest.get('is_volume_price_up'):
                         tags.append("量价齐升")
+                    elif latest.get('is_volume_up'):
+                        tags.append("放量")
+
+                    # 波动率标签
+                    if latest.get('low_volatility'):
+                        tags.append("低波蓄势")
+
+                    # 人气标签
+                    turnover_val = latest.get('turnover', 0)
+                    if 3 <= turnover_val <= 10:
+                        tags.append("人气旺")
+                    elif turnover_val > 10:
+                        tags.append("超人气")
+                    elif 1 <= turnover_val < 3:
+                        tags.append("有关注")
+
+                    # 先锋标签
+                    if latest.get('pct_change', 0) >= 5:
+                        tags.append("先锋")
+
                     result['tags'] = tags
-                    
+
                     analyzed_results.append(result)
                 
                 # 更新进度
@@ -1210,6 +1271,34 @@ def clear_ai_reports():
         return jsonify({'success': True, 'message': f'已删除 {count} 条报告'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+import os
+from flask import send_from_directory, abort
+
+DIST_DIR = os.path.join(os.path.dirname(__file__), 'dist')
+
+
+@app.route('/frontend')
+@app.route('/frontend/')
+def serve_frontend():
+    """服务 Vue 前端构建产物（npm run build 后生效）"""
+    if not os.path.isdir(DIST_DIR):
+        return ('<h2>请先构建前端</h2>'
+                '<p>在 <code>frontend/</code> 目录下运行：</p>'
+                '<pre>npm install\nnpm run build</pre>'
+                '<p>构建完成后，访问 <a href="/frontend">/frontend</a> 即可。</p>'
+                '<hr><p>开发模式下可同时运行 Vite：<code>cd frontend && npm run dev</code></p>',
+                200, {'Content-Type': 'text/html; charset=utf-8'})
+    return send_from_directory(DIST_DIR, 'index.html')
+
+
+@app.route('/frontend/<path:filename>')
+def serve_frontend_assets(filename):
+    """服务 Vue 前端静态资源"""
+    if not os.path.isdir(DIST_DIR):
+        abort(404)
+    return send_from_directory(DIST_DIR, filename)
 
 
 if __name__ == '__main__':

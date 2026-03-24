@@ -761,7 +761,7 @@ class BollingerSqueezeStrategy:
                     'squeeze_days': int(latest['squeeze_streak']),
                     'squeeze_ratio': round(latest['width_ma_short'] / latest['width_ma_long'] * 100, 1),
                     'pct_change': round(latest.get('pct_change', 0), 2) if 'pct_change' in latest else 0,
-                    'turnover': round(latest.get('turnover', 0), 2) if 'turnover' in latest else 0,
+                    'turnover': round(float(latest['turnover']), 2) if pd.notna(latest.get('turnover')) else 0,
                     # 量能指标
                     'volume_ratio': round(latest['volume_ratio'], 2) if not pd.isna(latest['volume_ratio']) else 0,
                     'is_volume_up': bool(latest['is_volume_up']),

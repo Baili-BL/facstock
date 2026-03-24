@@ -3,7 +3,7 @@
 """
 import time
 from datetime import date, datetime
-from flask import Blueprint, jsonify, render_template, make_response, request
+from flask import Blueprint, jsonify, request
 from ticai.theme_fetcher import fetch_hot_themes, fetch_all_themes_with_stocks
 from ticai.analyzer import analyze_and_format_stocks
 from ticai.emotion_cycle import calculate_theme_emotion, get_stage_color, get_stage_advice
@@ -46,10 +46,11 @@ def get_market_index_change() -> float:
 
 @ticai_bp.route('/ticai')
 def ticai_page():
-    """题材挖掘页面"""
-    response = make_response(render_template('ticai.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """题材挖掘页面 - Vue 组件直接调用 API，不再使用 iframe"""
+    return jsonify({
+        'message': '题材挖掘页面由 Vue 组件渲染，请访问 /frontend/ticai',
+        'vue_route': '/ticai'
+    })
 
 
 @ticai_bp.route('/api/ticai/themes')
@@ -63,8 +64,9 @@ def get_themes():
 
 
 @ticai_bp.route('/api/ticai/all')
+@ticai_bp.route('/api/ticai/all/')
 def get_all_data():
-    """获取所有热门题材及其推荐股票"""
+    """获取所有热门题材及其推荐股票（双路由避免尾部斜杠 302）"""
     try:
         print("\n" + "=" * 60)
         print("📊 开始获取热门题材数据...")
@@ -220,10 +222,9 @@ def get_stock_kline(stock_code):
 
 @ticai_bp.route('/ticai/history')
 def history_page():
-    """历史报表页面"""
-    response = make_response(render_template('ticai_history.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """历史报表页面 - 重定向到 Vue 前端"""
+    from flask import redirect
+    return redirect('/frontend/ticai/history')
 
 
 @ticai_bp.route('/api/ticai/reports')
@@ -270,10 +271,9 @@ def get_report(report_date):
 
 @ticai_bp.route('/ticai/performance')
 def performance_page():
-    """收益统计页面"""
-    response = make_response(render_template('ticai_performance.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """收益统计页面 - 重定向到 Vue 前端"""
+    from flask import redirect
+    return redirect('/frontend/ticai/performance')
 
 
 @ticai_bp.route('/api/ticai/performance/summary')
