@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="FacSstock">
+  <defs>
+    <linearGradient id="fs-bg" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#003ec7"/>
+      <stop offset="1" stop-color="#0052ff"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角控制在约 0.5rem 视觉比例内（32 画布 ≈ 7px） -->
+  <rect width="32" height="32" rx="7" fill="url(#fs-bg)"/>
+  <!-- Architectural ledger：三根等宽柱，示意行情/账本密度 -->
+  <rect x="6" y="19" width="5" height="8" rx="1.25" fill="#ffffff"/>
+  <rect x="13.5" y="11" width="5" height="16" rx="1.25" fill="#ffffff"/>
+  <rect x="21" y="15" width="5" height="12" rx="1.25" fill="#ffffff" opacity="0.92"/>
+</svg>

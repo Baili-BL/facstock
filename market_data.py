@@ -10,13 +10,18 @@
 - 涨跌停池数据
 """
 
-import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _get_ak():
+    """Lazy import of akshare to avoid py_mini_racer crash on import."""
+    import akshare as _ak
+    return _ak
 
 # 缓存相关
 _cache = {}
@@ -55,16 +60,15 @@ def get_market_overview() -> List[Dict]:
     使用 stock_zh_index_spot_sina 获取实时指数数据（新浪，数据源稳定）
     """
     cached = _get_cached('market_overview')
-    if isinstance(cached, list):
+    if isinstance(cached, list) and len(cached) > 0:
         return cached
 
     result = []
     try:
-        df = ak.stock_zh_index_spot_sina()
+        df = _get_ak().stock_zh_index_spot_sina()
         if df is None or df.empty:
             return []
 
-        # 需要的主要指数代码（新浪格式：sh/sz前缀）
         needed = {
             'sh000001': '上证指数',
             'sz399001': '深证成指',
@@ -73,6 +77,7 @@ def get_market_overview() -> List[Dict]:
             'sh000300': '沪深300',
             'sh000016': '上证50',
             'sh000905': '中证500',
+            'sh000852': '中证1000',
         }
 
         for code, name in needed.items():
@@ -93,6 +98,22 @@ def get_market_overview() -> List[Dict]:
                 'open': _safe_float(r.get('今开')),
                 'prev_close': _safe_float(r.get('昨收')),
             })
+
+        # 获取上涨/下跌家数（从东方财富市场概况）
+        try:
+            df_em = _get_ak().stock_zh_a_spot_em()
+            if df_em is not None and not df_em.empty:
+                total = len(df_em)
+                up = int((df_em['涨跌幅'] > 0).sum())
+                down = int((df_em['涨跌幅'] < 0).sum())
+                flat = total - up - down
+                sh = next((x for x in result if x['name'] == '上证指数'), None)
+                if sh:
+                    sh['up_count'] = up
+                    sh['down_count'] = down
+                    sh['flat_count'] = flat
+        except Exception:
+            pass
 
     except Exception as e:
         logger.warning(f"获取大盘指数失败: {e}")
@@ -117,13 +138,21 @@ def get_money_flow() -> Dict:
     }
 
     try:
-        df = ak.stock_hsgt_fund_flow_summary_em()
+        df = _get_ak().stock_hsgt_fund_flow_summary_em()
         if df is not None and not df.empty:
+            hgt_net = 0.0
+            sgt_net = 0.0
             north_total = 0.0
             for _, row in df.iterrows():
-                if row.get('资金方向') == '北向' and row.get('板块') in ('沪股通', '深股通'):
-                    net_inflow = _safe_float(row.get('成交净买额'))
+                net_inflow = _safe_float(row.get('成交净买额'))
+                if row.get('板块') == '沪股通':
+                    hgt_net += net_inflow
                     north_total += net_inflow
+                elif row.get('板块') == '深股通':
+                    sgt_net += net_inflow
+                    north_total += net_inflow
+            result['hgt_net_inflow'] = round(hgt_net, 2)
+            result['sgt_net_inflow'] = round(sgt_net, 2)
             result['north_money'] = {
                 'north_net_inflow': round(north_total, 2),
                 'north_net_buy': round(north_total, 2),
@@ -155,7 +184,7 @@ def get_limit_up_data() -> Dict:
     }
 
     try:
-        up_df = ak.stock_zt_pool_em(date=today)
+        up_df = _get_ak().stock_zt_pool_em(date=today)
         if up_df is not None and not up_df.empty:
             result['limit_up_count'] = len(up_df)
             for _, row in up_df.head(10).iterrows():
@@ -169,7 +198,7 @@ def get_limit_up_data() -> Dict:
         logger.warning(f"涨停池获取失败: {e}")
 
     try:
-        down_df = ak.stock_zt_pool_dtgc_em(date=today)
+        down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
         if down_df is not None and not down_df.empty:
             # 大跌股中过滤出跌停（涨跌幅 <= -9.9）
             limit_down = down_df[down_df['涨跌幅'] <= -9.9]
@@ -193,7 +222,7 @@ def get_turnover_rate() -> List:
     result = []
     today = datetime.now().strftime('%Y%m%d')
     try:
-        df = ak.stock_zt_pool_strong_em(date=today)
+        df = _get_ak().stock_zt_pool_strong_em(date=today)
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 code = str(row.get('代码', ''))
@@ -219,6 +248,79 @@ def get_turnover_rate() -> List:
     return result
 
 
+def get_market_snapshot() -> Dict:
+    """
+    A 股全市场快照：涨跌家数、总成交额、涨幅/跌幅/成交额/涨速榜（含行业）。
+    与大盘页「涨跌分布」「股票排行」等同花顺模块对应，单独缓存避免拖慢指数接口。
+    """
+    cached = _get_cached('market_snapshot')
+    if isinstance(cached, dict):
+        return cached
+
+    out: Dict = {
+        'up_count': 0,
+        'down_count': 0,
+        'flat_count': 0,
+        'total_amount': 0.0,
+        'top_gainers': [],
+        'top_losers': [],
+        'top_by_amount': [],
+        'fast_gainers': [],
+        'time': datetime.now().strftime('%H:%M'),
+    }
+    try:
+        df = _get_ak().stock_zh_a_spot_em()
+        if df is None or df.empty:
+            _set_cached('market_snapshot', out)
+            return out
+
+        ch_col = '涨跌幅' if '涨跌幅' in df.columns else None
+        amt_col = '成交额' if '成交额' in df.columns else None
+        spd_col = '涨速' if '涨速' in df.columns else ch_col
+        ind_col = '所属行业' if '所属行业' in df.columns else (
+            '行业' if '行业' in df.columns else None
+        )
+        code_col = '代码' if '代码' in df.columns else None
+        name_col = '名称' if '名称' in df.columns else None
+        price_col = '最新价' if '最新价' in df.columns else None
+
+        if ch_col:
+            s = df[ch_col].astype(float)
+            out['up_count'] = int((s > 0).sum())
+            out['down_count'] = int((s < 0).sum())
+            out['flat_count'] = int((s == 0).sum())
+
+        if amt_col:
+            out['total_amount'] = float(df[amt_col].astype(float).sum())
+
+        def _pick(row) -> Dict:
+            return {
+                'code': str(row.get(code_col, '')) if code_col else '',
+                'name': str(row.get(name_col, '')) if name_col else '',
+                'price': _safe_float(row.get(price_col)) if price_col else 0.0,
+                'change': _safe_float(row.get(ch_col)) if ch_col else 0.0,
+                'industry': str(row.get(ind_col, '') or '') if ind_col else '',
+                'speed': _safe_float(row.get(spd_col)) if spd_col else 0.0,
+            }
+
+        if ch_col:
+            for _, row in df.nlargest(20, ch_col).iterrows():
+                out['top_gainers'].append(_pick(row))
+            for _, row in df.nsmallest(15, ch_col).iterrows():
+                out['top_losers'].append(_pick(row))
+        if amt_col:
+            for _, row in df.nlargest(15, amt_col).iterrows():
+                out['top_by_amount'].append(_pick(row))
+        if spd_col and spd_col in df.columns and spd_col != ch_col:
+            for _, row in df.nlargest(15, spd_col).iterrows():
+                out['fast_gainers'].append(_pick(row))
+    except Exception as e:
+        logger.warning(f"市场快照获取失败: {e}")
+
+    _set_cached('market_snapshot', out)
+    return out
+
+
 def get_hot_sectors() -> List:
     """
     获取热点板块（同花顺数据源，已内置降级到东方财富）
@@ -242,6 +344,7 @@ def get_hot_sectors() -> List:
                 'change': _safe_float(row['涨跌幅']),
                 'leader': row.get('领涨股', ''),
                 'leader_change': _safe_float(row.get('领涨股-涨跌幅', 0)),
+                'heat_display': '--',
             })
 
         _set_cached('hot_sectors', result)
@@ -250,6 +353,279 @@ def get_hot_sectors() -> List:
     except Exception as e:
         logger.error(f"获取热点板块失败: {e}")
         return []
+
+
+def get_hot_concept_sectors() -> List[Dict]:
+    """
+    东方财富概念板块排行（与行业板块结构对齐，便于前端同表展示）
+    """
+    cached = _get_cached('hot_concept_sectors')
+    if isinstance(cached, list):
+        return cached
+
+    result: List[Dict] = []
+    try:
+        df = _get_ak().stock_board_concept_name_em()
+        if df is None or df.empty:
+            _set_cached('hot_concept_sectors', result)
+            return result
+
+        name_c = '板块名称' if '板块名称' in df.columns else '名称'
+        code_c = '板块代码' if '板块代码' in df.columns else '代码'
+        if '涨跌幅' in df.columns:
+            df = df.sort_values(by='涨跌幅', ascending=False)
+
+        for _, row in df.head(40).iterrows():
+            heat_raw = 0.0
+            for hk in ('成交额', '总市值', '换手率', '成交量'):
+                if hk in df.columns:
+                    heat_raw = _safe_float(row.get(hk))
+                    break
+            if heat_raw >= 1e8:
+                heat_display = f"{heat_raw / 1e8:.2f}亿"
+            elif heat_raw >= 1e4:
+                heat_display = f"{heat_raw / 1e4:.2f}万"
+            elif heat_raw > 0:
+                heat_display = f"{heat_raw:.2f}"
+            else:
+                heat_display = '--'
+
+            result.append({
+                'name': str(row.get(name_c, '') or ''),
+                'code': str(row.get(code_c, '') or ''),
+                'change': _safe_float(row.get('涨跌幅')),
+                'leader': str(row.get('领涨股票', '') or row.get('领涨股', '') or ''),
+                'leader_change': _safe_float(row.get('领涨股票-涨跌幅', row.get('领涨股-涨跌幅', 0))),
+                'heat_display': heat_display,
+            })
+    except Exception as e:
+        logger.warning(f"概念板块获取失败: {e}")
+
+    _set_cached('hot_concept_sectors', result)
+    return result
+
+
+def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
+    """
+    板块主力净流入（单位：亿），东方财富 stock_sector_fund_flow_rank。
+    sector_kind: industry | concept | region → 行业资金流 / 概念资金流 / 地域资金流
+    返回 6 条：净流入前三 + 净流出前三（柱状图用）。
+    """
+    sector_type_map = {
+        'industry': '行业资金流',
+        'concept': '概念资金流',
+        'region': '地域资金流',
+    }
+    sk = (sector_kind or 'industry').lower()
+    st = sector_type_map.get(sk, '行业资金流')
+    cache_key = f'sector_main_fund_{sk}'
+    cached = _get_cached(cache_key)
+    if isinstance(cached, list):
+        return cached
+
+    result: List[Dict] = []
+    try:
+        df = _get_ak().stock_sector_fund_flow_rank(indicator='今日', sector_type=st)
+        if df is None or df.empty:
+            _set_cached(cache_key, result)
+            return result
+
+        col = '今日主力净流入-净额'
+        nm = '名称'
+        ch = '今日涨跌幅'
+        if col not in df.columns:
+            logger.warning('板块资金流缺少列: %s', col)
+            _set_cached(cache_key, result)
+            return result
+
+        df = df.copy()
+        df['_net'] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna(subset=['_net']).sort_values('_net', ascending=False).reset_index(drop=True)
+        n = len(df)
+        if n == 0:
+            _set_cached(cache_key, result)
+            return result
+
+        def _row(r) -> Dict:
+            net_yuan = float(r['_net'])
+            return {
+                'name': str(r.get(nm, '') or ''),
+                'net_yi': round(net_yuan / 1e8, 2),
+                'change': _safe_float(r.get(ch, 0)),
+            }
+
+        if n <= 6:
+            for _, r in df.iterrows():
+                result.append(_row(r))
+        else:
+            for _, r in df.head(3).iterrows():
+                result.append(_row(r))
+            for _, r in df.tail(3).sort_values('_net', ascending=False).iterrows():
+                result.append(_row(r))
+    except Exception as e:
+        logger.warning(f'板块主力净流入获取失败: {e}')
+
+    _set_cached(cache_key, result)
+    return result
+
+
+def compute_macro_sentiment() -> Dict:
+    """
+    综合市场量化指标 + 新闻情感，计算宏观情绪评分（0-100）。
+    公式：
+      SENTIMENT_SCORE = 50
+        + (上涨% - 0.5) × 40
+        + (涨停数 - 跌停数) / 10
+        + (北向净流入 > 0 ? +8 : -8)
+        + (新闻情感分 - 50) / 5
+    上限 92，下限 38。
+    RISK_LEVEL: ≥62→MEDIUM, 48-61→MEDIUM-HIGH, <48→ELEVATED
+    """
+    try:
+        snapshot = get_market_snapshot()
+        flow = get_money_flow()
+        limit = get_limit_up_data()
+        overview = get_market_overview()
+
+        # ── 1. 涨跌家数 ────────────────────────────────────────────────
+        up   = int(snapshot.get('up_count', 0)   or 0)
+        down = int(snapshot.get('down_count', 0) or 0)
+        flat = int(snapshot.get('flat_count', 0)  or 0)
+        total = max(1, up + down + flat)
+        up_pct   = up   / total
+        down_pct = down / total
+
+        # ── 2. 涨跌停 ────────────────────────────────────────────────
+        limit_up   = int(limit.get('limit_up_count', 0)   or 0)
+        limit_down = int(limit.get('limit_down_count', 0) or 0)
+        limit_diff = limit_up - limit_down
+
+        # ── 3. 北向资金 ──────────────────────────────────────────────
+        north_net = float(
+            flow.get('north_money', {})
+               .get('north_net_inflow', 0)
+        )
+        north_bonus = 8 if north_net >= 0 else -8
+
+        # ── 4. 新闻情感 ───────────────────────────────────────────────
+        try:
+            from ticai.news_fetcher import get_market_news_summary
+            news_summary = get_market_news_summary()
+            news_score = float(news_summary.get('sentiment_score', 50))
+        except Exception:
+            news_score = 50.0
+        news_bonus = (news_score - 50) / 5
+
+        # ── 5. 综合评分 ──────────────────────────────────────────────
+        raw = 50 \
+            + (up_pct - 0.5) * 40 \
+            + limit_diff / 10 \
+            + north_bonus \
+            + news_bonus
+        raw = max(38, min(92, raw))
+        score = round(raw)
+
+        # ── 6. 风险等级 ──────────────────────────────────────────────
+        if score >= 62:
+            risk_level = 'MEDIUM'
+        elif score >= 48:
+            risk_level = 'MEDIUM-HIGH'
+        else:
+            risk_level = 'ELEVATED'
+
+        # ── 7. 市场广度描述 ──────────────────────────────────────────
+        breadth_desc = (
+            '市场普涨，赚钱效应较强'
+            if up_pct > 0.6
+            else '市场普跌，赚钱效应较弱'
+            if down_pct > 0.6
+            else '多空分化，结构性行情'
+        )
+
+        # ── 8. 资金面简述 ────────────────────────────────────────────
+        if north_net >= 5e8:
+            money_desc = '北向资金大幅净流入，外资积极'
+        elif north_net >= 0:
+            money_desc = '北向资金小幅净流入'
+        elif north_net >= -5e8:
+            money_desc = '北向资金小幅净流出'
+        else:
+            money_desc = '北向资金大幅净流出，外资偏谨慎'
+
+        # ── 9. 生成摘要段落 ──────────────────────────────────────────
+        tone_words = {
+            'MEDIUM':       '中性偏多',
+            'MEDIUM-HIGH':  '偏谨慎',
+            'ELEVATED':     '谨慎防御',
+        }
+        tone = tone_words[risk_level]
+
+        if up_pct > 0.55 and limit_up > 50:
+            market_desc = '市场情绪高涨，涨停家数较多，短线做多氛围浓'
+        elif down_pct > 0.55:
+            market_desc = '市场情绪偏弱，赚钱效应不足，注意控制仓位'
+        else:
+            market_desc = breadth_desc + '，' + money_desc
+
+        summary_text = (
+            f'今日{tone}。'
+            f'上涨 {up} 家 / 下跌 {down} 家（涨停 {limit_up} / 跌停 {limit_down}）。'
+            f'{market_desc}。'
+            f'建议关注高股息蓝筹与业绩确定性品种。'
+        )
+
+        # ── 10. 上证指数涨跌（用于对比参考） ─────────────────────────
+        sh = next((x for x in overview if x.get('name') == '上证指数'), {})
+        sh_change = sh.get('change', 0)
+        sh_desc = (
+            f'上证指数涨 {_fmt(sh_change)}%，'
+            if sh_change > 0.05
+            else f'上证指数跌 {abs(_fmt(sh_change))}%，'
+            if sh_change < -0.05
+            else '上证指数基本持平，'
+        ) if sh else ''
+
+        return {
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'sentiment_score': score,
+            'risk_level': risk_level,
+            'summary_text': sh_desc + summary_text,
+            'breadth': {
+                'up': up, 'down': down, 'flat': flat,
+                'up_pct': round(up_pct * 100, 1),
+                'down_pct': round(down_pct * 100, 1),
+            },
+            'limit': {
+                'up': limit_up,
+                'down': limit_down,
+                'diff': limit_diff,
+            },
+            'north_money': {
+                'net': round(north_net, 2),
+                'bonus': north_bonus,
+            },
+            'news_score': round(news_score, 1),
+            'raw_score': round(raw, 2),
+        }
+    except Exception as e:
+        logger.error(f'compute_macro_sentiment failed: {e}')
+        return {
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'sentiment_score': 50,
+            'risk_level': 'MEDIUM',
+            'summary_text': '数据加载中，请稍后刷新',
+            'breadth': {'up': 0, 'down': 0, 'flat': 0, 'up_pct': 0, 'down_pct': 0},
+            'limit': {'up': 0, 'down': 0, 'diff': 0},
+            'north_money': {'net': 0, 'bonus': 0},
+            'news_score': 50,
+            'raw_score': 50,
+        }
+
+
+def _fmt(v) -> str:
+    if v is None:
+        return '--'
+    return f'{v:.2f}'
 
 
 def get_ai_summary() -> Dict:

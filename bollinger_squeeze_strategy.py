@@ -24,11 +24,10 @@ import logging
 # 导入重试工具
 from utils.retry import retry_request
 
-try:
-    import akshare as ak
-except ImportError:
-    print("请先安装 akshare: pip install akshare")
-    exit(1)
+# Lazy import of akshare to avoid py_mini_racer crash on import
+def _get_ak():
+    import akshare as _ak
+    return _ak
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -698,7 +697,7 @@ class BollingerSqueezeStrategy:
         try:
             # 获取股票历史数据 (最近60个交易日)，带重试机制
             def fetch_data():
-                return ak.stock_zh_a_hist(
+                return _get_ak().stock_zh_a_hist(
                     symbol=stock_code,
                     period="daily",
                     start_date=(datetime.now() - timedelta(days=120)).strftime("%Y%m%d"),
@@ -1182,7 +1181,7 @@ def scan_all_stocks(strategy: BollingerSqueezeStrategy, limit: int = None) -> Li
     
     try:
         # 获取A股列表
-        stock_list = ak.stock_zh_a_spot_em()
+        stock_list = _get_ak().stock_zh_a_spot_em()
         if stock_list is None or stock_list.empty:
             print("❌ 无法获取股票列表")
             return []

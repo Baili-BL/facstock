@@ -11,14 +11,31 @@ from ticai.theme_quality import evaluate_theme_quality
 from ticai.news_fetcher import fetch_cls_news, evaluate_theme_news_factor, get_market_news_summary
 from ticai.database import (
     init_ticai_tables, save_report, get_report_by_date, get_recent_reports,
-    get_performance_summary, get_stock_history,
+    get_performance_summary, get_stock_history, get_cached_news,
 )
 from ticai.performance_tracker import update_all_performance, get_today_performance_report
+# cache.py 在项目根目录
+try:
+    from cache import get, set, invalidate
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from cache import get, set, invalidate
 
 try:
     import akshare as ak
 except ImportError:
     ak = None
+
+# Lazy import inside functions where used
+
+
+def _get_ak():
+    global ak
+    if ak is None:
+        import akshare as _ak
+        ak = _ak
+    return ak
 
 ticai_bp = Blueprint('ticai', __name__)
 
@@ -31,10 +48,8 @@ except Exception as e:
 
 def get_market_index_change() -> float:
     """获取大盘（上证指数）涨跌幅"""
-    if ak is None:
-        return 0
     try:
-        df = ak.stock_zh_index_spot_em()
+        df = _get_ak().stock_zh_index_spot_em()
         if df is not None and not df.empty:
             sh_index = df[df["名称"] == "上证指数"]
             if not sh_index.empty:
@@ -55,9 +70,13 @@ def ticai_page():
 
 @ticai_bp.route('/api/ticai/themes')
 def get_themes():
-    """获取热门题材列表"""
+    """获取热门题材列表（Redis 缓存 60s）"""
+    hit = get('ticai/themes')
+    if hit is not None:
+        return jsonify({"success": True, "data": hit})
     try:
         themes = fetch_hot_themes(10)
+        set('ticai/themes', themes, ttl=60)
         return jsonify({"success": True, "data": themes})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -66,7 +85,11 @@ def get_themes():
 @ticai_bp.route('/api/ticai/all')
 @ticai_bp.route('/api/ticai/all/')
 def get_all_data():
-    """获取所有热门题材及其推荐股票（双路由避免尾部斜杠 302）"""
+    """获取所有热门题材及其推荐股票（Redis 缓存 60s，双路由避免尾部斜杠 302）"""
+    hit = get('ticai/all')
+    if hit is not None:
+        return jsonify({"success": True, "data": hit.get('data', {}), "market_change": hit.get('market_change', 0)})
+
     try:
         print("\n" + "=" * 60)
         print("📊 开始获取热门题材数据...")
@@ -143,6 +166,8 @@ def get_all_data():
         except Exception as save_err:
             print(f"⚠️ 保存报表失败: {save_err}")
 
+        payload = {"data": sorted_result, "market_change": market_change}
+        set('ticai/all', payload, ttl=60)
         return jsonify({
             "success": True,
             "data": sorted_result,
@@ -314,5 +339,41 @@ def stock_history(stock_code):
         limit = request.args.get('limit', 10, type=int)
         history = get_stock_history(stock_code, limit)
         return jsonify({"success": True, "data": history})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== 新闻历史 ====================
+
+@ticai_bp.route('/api/news/history')
+def get_news_history():
+    """
+    查询历史新闻（来自数据库缓存，Redis 缓存 180s）
+    days: 查最近几天，默认1天
+    """
+    try:
+        days = request.args.get('days', 1, type=int)
+        cache_key = f'news/history/{days}'
+        hit = get(cache_key)
+        if hit is not None:
+            return jsonify({"success": True, "data": hit, "count": len(hit)})
+        news = get_cached_news(days=days)
+        set(cache_key, news, ttl=180)
+        return jsonify({"success": True, "data": news, "count": len(news)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@ticai_bp.route('/api/news/refresh', methods=['POST'])
+def refresh_news():
+    """
+    强制刷新新闻（绕过缓存直接抓取并存库），完成后清除所有相关新闻缓存
+    """
+    try:
+        from ticai.news_fetcher import fetch_all_news
+        news = fetch_all_news(limit_per_source=30)
+        invalidate('news/')
+        invalidate('ticai/')
+        return jsonify({"success": True, "count": len(news)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

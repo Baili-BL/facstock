@@ -5,6 +5,7 @@ import App from './App.vue'
 import Home from './views/Home.vue'
 import Sectors from './views/Sectors.vue'
 import Watchlist from './views/Watchlist.vue'
+import WatchlistSettings from './views/WatchlistSettings.vue'
 import News from './views/News.vue'
 import Strategy from './views/Strategy.vue'
 import Bollinger from './views/Bollinger.vue'
@@ -17,6 +18,7 @@ const routes = [
   { path: '/', component: Home },
   { path: '/sectors', component: Sectors },
   { path: '/watchlist', component: Watchlist },
+  { path: '/watchlist/settings', component: WatchlistSettings },
   { path: '/news', component: News },
   { path: '/strategy', component: Strategy },
   { path: '/strategy/bollinger', component: Bollinger },

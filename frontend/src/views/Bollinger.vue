@@ -814,8 +814,24 @@ onUnmounted(stopPolling)
 <style scoped>
 .bollinger-page {
   min-height: 100vh;
+  /* App.vue 已改用 TV token；本页仍大量引用旧名，在此统一映射 */
+  --apple-bg: var(--bg);
+  --apple-card: var(--surface);
+  --apple-text2: var(--text-2);
+  --apple-text3: var(--text-3);
+  --apple-blue: var(--brand);
+  --apple-blue-light: var(--brand-alpha);
+  --apple-red: var(--down);
+  --apple-green: var(--up);
+  --apple-orange: #ff9800;
+  --apple-indigo: var(--brand);
+  --apple-gray: var(--text-3);
+  --apple-gray2: var(--text-4);
+  --apple-gray3: #8e8e93;
+  --apple-gray4: var(--divider-hover);
+  --apple-gray5: var(--divider);
+  --apple-gray6: var(--surface-2);
   background: var(--apple-bg);
-  --apple-indigo: #5856D6;
 }
 
 .navbar {
@@ -865,24 +881,70 @@ onUnmounted(stopPolling)
 .param-name { font-size: 15px; font-weight: 500; }
 .param-value { font-size: 15px; font-weight: 600; color: var(--apple-blue); }
 .param-slider {
-  -webkit-appearance: none; width: 100%; height: 4px;
-  border-radius: 2px; background: var(--apple-gray5); outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  outline: none;
+}
+.param-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--apple-gray5);
 }
 .param-slider::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 28px; height: 28px; border-radius: 50%;
-  background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-  cursor: pointer; border: 0.5px solid var(--apple-gray4);
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--apple-blue);
+  border: 2px solid var(--apple-card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
+.param-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--apple-gray5);
+  border: none;
+}
+.param-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--apple-blue);
+  border: 2px solid var(--apple-card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
 }
 .param-desc { font-size: 12px; color: var(--apple-text3); margin-top: 6px; }
 
 /* 按钮 */
 .scan-btn {
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; background: var(--apple-blue); color: #fff; border: none;
-  border-radius: 14px; padding: 16px; font-size: 17px; font-weight: 600;
-  letter-spacing: -0.41px; cursor: pointer; transition: all 0.2s; margin-bottom: 12px;
+  width: 100%;
+  background: var(--apple-blue);
+  color: #fff;
+  border: none;
+  border-radius: 14px;
+  padding: 16px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.41px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(41, 98, 255, 0.35);
 }
-.scan-btn:disabled { background: var(--apple-gray3); cursor: not-allowed; }
+.scan-btn:disabled {
+  background: var(--apple-gray3);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.85;
+}
 .scan-btn:active:not(:disabled) { transform: scale(0.98); }
 .scan-btn .icon { fill: #fff; }
 .spinning { animation: spin 0.8s linear infinite; }

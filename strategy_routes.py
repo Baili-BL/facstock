@@ -6,11 +6,14 @@
 
 from flask import Blueprint, jsonify, request
 import database as db
+import json
+import requests
 import threading
 import time
 import random
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from cache import get, set, invalidate
 import logging
 
 logger = logging.getLogger(__name__)
@@ -243,18 +246,23 @@ def ai_strategy_page():
 
 @strategy_bp.route('/api/hot-sectors')
 def get_hot_sectors():
-    """获取热点板块列表"""
+    """获取热点板块列表（Redis 缓存 30s）"""
+    cache_key = 'scan/hot-sectors'
+    hit = get(cache_key)
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
     try:
         from utils.ths_crawler import get_ths_industry_list
-        
+
         limit = request.args.get('limit', 20, type=int)
         limit = max(1, min(50, limit))
-        
+
         df = get_ths_industry_list()
-        
+
         if df is None or len(df) == 0:
             return jsonify({'success': False, 'error': '无法获取数据'})
-        
+
         sectors = []
         for _, row in df.head(limit).iterrows():
             sectors.append({
@@ -263,9 +271,10 @@ def get_hot_sectors():
                 'leader': row.get('领涨股', ''),
                 'leader_change': round(float(row.get('领涨股-涨跌幅', 0)), 2)
             })
-        
+
+        set(cache_key, sectors, ttl=30)
         return jsonify({'success': True, 'data': sectors})
-        
+
     except Exception as e:
         logger.error(f"获取热点板块失败: {e}")
         return jsonify({'success': False, 'error': str(e)})
@@ -297,7 +306,8 @@ def start_scan():
         'period': period
     }
     scan_id = db.create_scan_record(params)
-    
+    invalidate('scan/history')
+
     with scan_lock:
         scan_status = {
             'is_scanning': True,
@@ -691,10 +701,16 @@ def get_scan_results():
 
 @strategy_bp.route('/api/scan/history')
 def get_scan_history():
-    """获取历史扫描记录列表"""
+    """获取历史扫描记录列表（Redis 缓存 60s，扫描开始/删除时失效）"""
+    cache_key = 'scan/history'
+    hit = get(cache_key)
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
     limit = request.args.get('limit', 20, type=int)
     limit = max(1, min(100, limit))
     records = db.get_scan_list(limit=limit)
+    set(cache_key, records, ttl=60)
     return jsonify({
         'success': True,
         'data': records
@@ -730,8 +746,9 @@ def delete_scan(scan_id: int):
         }), 400
     
     success = db.delete_scan(scan_id)
-    
+
     if success:
+        invalidate('scan/history')
         return jsonify({
             'success': True,
             'message': '删除成功'
@@ -813,6 +830,118 @@ def get_watchlist():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@strategy_bp.route('/api/watchlist/enriched')
+def get_watchlist_enriched():
+    """
+    获取自选列表（含实时行情 + 迷你K线）
+    并行查询行情数据，返回 close/pct_change/amount/vol 等字段
+    Redis 缓存 15s（外部 API 调用较重）
+    """
+    # 缓存 key 包含股票代码列表，添加/删除自选时自动失效
+    cache_key = 'watchlist/enriched'
+    hit = get(cache_key)
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
+    try:
+        stocks = db.get_watchlist()
+        if not stocks:
+            return jsonify({'success': True, 'data': []})
+
+        codes = []
+        for s in stocks:
+            code = s.get('stock_code') or s.get('code') or ''
+            codes.append(code)
+
+        # 东方财富批量行情接口
+        secids = []
+        for c in codes:
+            m = "1" if c.startswith(("6", "9")) else "0"
+            secids.append(f"{m}.{c}")
+        price_map = {}
+        try:
+            resp = requests.get(
+                "http://push2.eastmoney.com/api/qt/ulist/get",
+                params={
+                    "fltt": "2",
+                    "secids": ",".join(secids),
+                    "fields": "f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f62",
+                },
+                timeout=8,
+            )
+            raw = resp.text
+            try:
+                items = json.loads(raw).get('data', {}).get('diff', [])
+            except Exception:
+                items = []
+            for item in items:
+                code = str(item.get('f12', ''))
+                price_map[code] = {
+                    'close':      item.get('f2'),
+                    'pct_change': item.get('f3'),
+                    'change':     item.get('f4'),
+                    'volume':     item.get('f5'),
+                    'amount':     item.get('f6'),
+                    'high':       item.get('f15'),
+                    'low':        item.get('f16'),
+                    'open':       item.get('f17'),
+                    'prev_close': item.get('f18'),
+                    'turnover':   item.get('f8'),
+                    'qty_ratio':  item.get('f10'),
+                    'mkt_cap':    item.get('f62'),
+                }
+        except Exception as e:
+            logger.warning(f"批量行情获取失败: {e}")
+
+        # 迷你K线（最近10日收盘价，用于缩略图）
+        mini_kline_map = {}
+        try:
+            from utils.ths_crawler import get_stock_kline_sina
+            import pandas as pd
+            for c in codes:
+                try:
+                    df = get_stock_kline_sina(c, days=15)
+                    if df is not None and len(df) > 0:
+                        closes = df['close'].astype(str).tolist()[-10:]
+                        dates = pd.to_datetime(df['date']).astype(str).tolist()[-10:]
+                        mini_kline_map[c] = {'dates': dates, 'closes': closes}
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"迷你K线获取失败: {e}")
+
+        result = []
+        for s in stocks:
+            code = s.get('stock_code') or s.get('code') or ''
+            p = price_map.get(code, {})
+            mk = mini_kline_map.get(code, {})
+            result.append({
+                **s,
+                'code':        code,
+                'name':        s.get('stock_name') or s.get('name') or '',
+                'sector':      s.get('sector_name') or s.get('sector') or '',
+                'close':       p.get('close'),
+                'pct_change':  p.get('pct_change'),
+                'change_amt':   p.get('change'),
+                'volume':       p.get('volume'),
+                'amount':       p.get('amount'),
+                'high':         p.get('high'),
+                'low':          p.get('low'),
+                'open':         p.get('open'),
+                'prev_close':   p.get('prev_close'),
+                'turnover':     p.get('turnover'),
+                'qty_ratio':    p.get('qty_ratio'),
+                'mkt_cap':      p.get('mkt_cap'),
+                'mini_kline':   mk,
+            })
+
+        set(cache_key, result, ttl=15)
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        logger.error(f"自选股 enriched 加载失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @strategy_bp.route('/api/watchlist/add', methods=['POST'])
 def add_to_watchlist():
     """添加股票到自选"""
@@ -829,6 +958,7 @@ def add_to_watchlist():
         )
         
         if success:
+            invalidate('watchlist/')
             return jsonify({'success': True, 'message': '已添加到自选'})
         else:
             return jsonify({'success': False, 'error': '添加失败'})
@@ -847,6 +977,7 @@ def remove_from_watchlist():
         success = db.remove_from_watchlist(data['code'])
         
         if success:
+            invalidate('watchlist/')
             return jsonify({'success': True, 'message': '已从自选移除'})
         else:
             return jsonify({'success': False, 'error': '移除失败'})

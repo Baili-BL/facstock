@@ -1,267 +1,507 @@
 <template>
-  <div>
-    <nav class="navbar">
-      <span class="nav-title">策略中心</span>
-    </nav>
+  <div class="st-page">
+    <div class="st-inner">
+      <!-- 页头：对齐 stitch 选股策略列表 -->
+      <header class="st-hero">
+        <div class="st-hero__text">
+          <h1 class="st-hero__title">选股策略列表</h1>
+          <p class="st-hero__sub">
+            基于 AI 与量化筛选的 FacSstock 策略入口；卡片数据来自扫描与报告，非收益承诺。
+          </p>
+        </div>
+        <button type="button" class="st-sort" @click="sortReversed = !sortReversed">
+          智能排序
+        </button>
+      </header>
 
-    <div class="container">
-      <!-- 顶部 Banner -->
-      <div class="hub-header">
-        <div class="hub-header-title">
-          <svg class="icon" style="width:26px;height:26px;fill:#fff"><use href="#icon-strategy"/></svg>
-          FacSstock 策略中心
-        </div>
-        <div class="hub-header-sub">量化选股 · 题材挖掘 · AI 智能分析</div>
-        <div class="hub-header-stats">
-          <div class="hub-stat">
-            <div class="hub-stat-num">{{ stats.scans }}</div>
-            <div class="hub-stat-label">扫描次数</div>
-          </div>
-          <div class="hub-stat">
-            <div class="hub-stat-num">{{ stats.stocks }}</div>
-            <div class="hub-stat-label">覆盖股票</div>
-          </div>
-          <div class="hub-stat">
-            <div class="hub-stat-num">{{ stats.sectors }}</div>
-            <div class="hub-stat-label">监测板块</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 热点板块速览 -->
-      <div class="quick-scan">
-        <div class="qs-header">
-          <div class="qs-title">
-            <svg class="icon icon-lg"><use href="#icon-fire"/></svg>
-            今日热点板块
-          </div>
-          <span style="font-size:12px;color:var(--apple-text3);display:flex;align-items:center">
-            <span class="live-dot"></span>实时
-          </span>
-        </div>
-
-        <div v-if="sectorsLoading" class="loading">
-          <div class="spinner"></div>
-        </div>
-        <div v-else-if="sectors.length === 0" class="empty">暂无热点数据</div>
-        <div v-else class="qs-sectors">
-          <div v-for="s in sectors" :key="s.name" class="qs-sector">
-            <div class="qs-sector-name">
-              <svg class="icon"><use href="#icon-fire"/></svg>
-              {{ s.name }}
+      <div class="st-grid">
+        <router-link
+          v-for="item in orderedCards"
+          :key="item.id"
+          :to="item.to"
+          class="st-card"
+        >
+          <div class="st-card__main">
+            <div class="st-card__row">
+              <div class="st-card__left">
+                <div class="st-card__tags">
+                  <span class="st-tag-cat">{{ item.cat }}</span>
+                  <span class="st-tag-pill">{{ item.pill }}</span>
+                </div>
+                <h2 class="st-card__name">{{ item.title }}</h2>
+                <p class="st-card__desc">{{ item.desc }}</p>
+              </div>
+              <div class="st-card__kpi">
+                <div class="st-card__kpi-val tabular">{{ item.headline }}</div>
+                <div class="st-card__kpi-lbl">{{ item.headlineLbl }}</div>
+              </div>
             </div>
-            <div class="qs-sector-right">
-              <span class="qs-sector-count">{{ s.stock_count || 0 }}只</span>
-              <span class="qs-sector-change" :class="s.change >= 0 ? 'up' : 'down'">
-                {{ s.change >= 0 ? '+' : '' }}{{ (s.change || 0).toFixed(2) }}%
-              </span>
+            <div class="st-card__metrics">
+              <div class="st-metric">
+                <div class="st-metric__lbl">{{ item.m1Lbl }}</div>
+                <div class="st-metric__val tabular">{{ item.m1Val }}</div>
+              </div>
+              <div class="st-metric">
+                <div class="st-metric__lbl">{{ item.m2Lbl }}</div>
+                <div class="st-metric__val tabular">{{ item.m2Val }}</div>
+              </div>
             </div>
           </div>
-        </div>
+          <div class="st-card__spark" aria-hidden="true">
+            <svg
+              class="st-spark-svg"
+              viewBox="0 0 400 56"
+              preserveAspectRatio="none"
+            >
+              <!-- 单段平滑曲线：无 T 链式、无 non-scaling-stroke，横向拉伸时仍为一条连续线 -->
+              <path
+                :d="item.sparkPath"
+                fill="none"
+                :stroke="item.sparkStroke"
+                stroke-width="2.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+        </router-link>
       </div>
 
-      <!-- 三大策略入口 -->
-      <div class="featured-label">
-        <svg class="icon icon-sm"><use href="#icon-strategy"/></svg>
-        选股策略
-      </div>
-
-      <router-link to="/strategy/bollinger" class="strategy-card">
-        <div class="card-icon-wrap" style="background: linear-gradient(135deg, #5856D6, #007AFF)">
-          <svg class="icon"><use href="#icon-strategy"/></svg>
+      <!-- 更多策略：开发中 -->
+      <section class="st-more" aria-labelledby="st-more-heading">
+        <h3 id="st-more-heading" class="st-more__title">更多策略路演</h3>
+        <div class="st-more__panel">
+          <p class="st-more__lead">
+            更多量化策略、组合回测与实盘路演能力<strong>正在开发中</strong>，当前版本仅开放上述三类入口。
+          </p>
+          <p class="st-more__muted">
+            排期与上新将通过应用更新通知，敬请期待。
+          </p>
         </div>
-        <div class="card-info">
-          <div class="card-name">布林收缩策略</div>
-          <div class="card-desc">基于布林带收口检测，提前发现蓄势突破的股票</div>
-          <div class="card-tags">
-            <span class="card-tag">量价分析</span>
-            <span class="card-tag">趋势跟踪</span>
-            <span class="card-tag">资金流向</span>
-          </div>
-        </div>
-        <div class="card-arrow">
-          <svg class="icon" style="fill:var(--apple-gray3)"><use href="#icon-chevron"/></svg>
-        </div>
-      </router-link>
-
-      <router-link to="/ticai" class="strategy-card">
-        <div class="card-icon-wrap" style="background: linear-gradient(135deg, #FF9500, #FF3B30)">
-          <svg class="icon"><use href="#icon-fire"/></svg>
-        </div>
-        <div class="card-info">
-          <div class="card-name">题材挖掘</div>
-          <div class="card-desc">AI 驱动的热点题材分析，追踪板块轮动与龙头股</div>
-          <div class="card-tags">
-            <span class="card-tag">AI分析</span>
-            <span class="card-tag">题材轮动</span>
-            <span class="card-tag">龙头追踪</span>
-          </div>
-        </div>
-        <div class="card-arrow">
-          <svg class="icon" style="fill:var(--apple-gray3)"><use href="#icon-chevron"/></svg>
-        </div>
-      </router-link>
-
-      <router-link to="/strategy/ai" class="strategy-card">
-        <div class="card-icon-wrap" style="background: linear-gradient(135deg, #AF52DE, #FF2D55)">
-          <svg class="icon"><use href="#icon-ai"/></svg>
-        </div>
-        <div class="card-info">
-          <div class="card-name">AI 智能策略</div>
-          <div class="card-desc">腾讯混元大模型深度解读市场，寻找优质标的</div>
-          <div class="card-tags">
-            <span class="card-tag">LLM</span>
-            <span class="card-tag">智能选股</span>
-            <span class="card-tag">市场解读</span>
-          </div>
-        </div>
-        <div class="card-arrow">
-          <svg class="icon" style="fill:var(--apple-gray3)"><use href="#icon-chevron"/></svg>
-        </div>
-      </router-link>
-
+      </section>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { hotSectors } from '@/api/market.js'
+import { ref, computed, onMounted } from 'vue'
+import { scan, report } from '@/api/strategy.js'
 
-const sectors = ref([])
-const sectorsLoading = ref(true)
-const stats = ref({ scans: '--', stocks: '--', sectors: '--' })
+/** 单段三次贝塞尔，整条路径一笔连续 */
+const SPARK_BOLLINGER_D = 'M0 46 C140 36 280 14 400 4'
+const SPARK_TICAI_D = 'M0 40 C110 44 250 22 400 6'
+const SPARK_AI_D = 'M0 44 C130 20 270 30 400 12'
 
-async function loadHotSectors() {
+const sortReversed = ref(false)
+const stats = ref({ scans: '—', stocks: '—', sectors: '—' })
+const latestScan = ref(null)
+const reportCount = ref('—')
+
+const baseCards = computed(() => {
+  const scans = stats.value.scans
+  const stocks = stats.value.stocks
+  const sectors = stats.value.sectors
+  const lastHit = latestScan.value?.stock_count
+  const lastTime = latestScan.value ? formatScanTime(latestScan.value.scan_time) : '—'
+
+  return [
+    {
+      id: 'bollinger',
+      to: '/strategy/bollinger',
+      cat: '量化突破',
+      pill: '趋势 / 结构行情',
+      title: '布林收缩策略',
+      desc: '基于布林带收口检测，提前发现蓄势突破标的；结合扫描结果动态更新命中列表。',
+      headline: lastHit != null ? String(lastHit) : '—',
+      headlineLbl: '最近一次命中（只）',
+      m1Lbl: '扫描次数',
+      m1Val: scans,
+      m2Lbl: '累计覆盖股票',
+      m2Val: stocks,
+      sparkPath: SPARK_BOLLINGER_D,
+      sparkStroke: 'var(--st-secondary)',
+    },
+    {
+      id: 'ticai',
+      to: '/ticai',
+      cat: 'AI 题材',
+      pill: '热点轮动',
+      title: '题材挖掘',
+      desc: 'AI 驱动的热点题材与板块轮动分析，追踪龙头与情绪周期，入口进入题材中心。',
+      headline: sectors !== '—' ? String(sectors) : '—',
+      headlineLbl: '历史监测板块（个）',
+      m1Lbl: '扫描次数',
+      m1Val: scans,
+      m2Lbl: '累计覆盖股票',
+      m2Val: stocks,
+      sparkPath: SPARK_TICAI_D,
+      sparkStroke: 'var(--st-secondary)',
+    },
+    {
+      id: 'ai',
+      to: '/strategy/ai',
+      cat: '大模型',
+      pill: '全市场',
+      title: 'AI 智能策略',
+      desc: '腾讯混元等大模型解读扫描结果与市场语境，生成可读报告；非投资建议。',
+      headline: reportCount.value !== '—' ? String(reportCount.value) : '—',
+      headlineLbl: '分析报告（条）',
+      m1Lbl: '扫描次数',
+      m1Val: scans,
+      m2Lbl: '最近扫描',
+      m2Val: lastTime,
+      sparkPath: SPARK_AI_D,
+      sparkStroke: 'var(--st-secondary)',
+    },
+  ]
+})
+
+const orderedCards = computed(() => {
+  const list = baseCards.value
+  return sortReversed.value ? [...list].reverse() : list
+})
+
+async function loadHistory() {
   try {
-    const data = await hotSectors()
-    sectors.value = (data || []).slice(0, 5)
+    const data = await scan.history()
+    if (data && data.length > 0) {
+      const total = data.length
+      const stocks = data.reduce((s, d) => s + (d.stock_count || 0), 0)
+      const sectorSet = new Set()
+      data.forEach(d => (d.hot_sectors || []).forEach(s => sectorSet.add(s.name || s)))
+      stats.value = { scans: String(total), stocks: String(stocks), sectors: String(sectorSet.size) }
+      latestScan.value = data[0]
+    }
   } catch {
-    sectors.value = []
-  } finally {
-    sectorsLoading.value = false
+    /* keep defaults */
   }
 }
 
-async function loadStats() {
+async function loadReportCount() {
   try {
-    const res = await fetch('/api/scan/history?limit=100')
-    const json = await res.json()
-    if (json.success && json.data && json.data.length > 0) {
-      const total = json.data.length
-      const stocks = json.data.reduce((s, d) => s + (d.stock_count || 0), 0)
-      const sectorSet = new Set()
-      json.data.forEach(d => (d.hot_sectors || []).forEach(s => sectorSet.add(s.name || s)))
-      stats.value = { scans: total, stocks, sectors: sectorSet.size }
-    }
-  } catch {}
+    const reports = await report.list()
+    reportCount.value = Array.isArray(reports) ? String(reports.length) : '—'
+  } catch {
+    reportCount.value = '—'
+  }
+}
+
+function formatScanTime(timeStr) {
+  if (!timeStr) return '—'
+  try {
+    const d = new Date(timeStr)
+    const now = new Date()
+    const diffMs = now - d
+    const diffMin = Math.floor(diffMs / 60000)
+    if (diffMin < 1) return '刚刚'
+    if (diffMin < 60) return `${diffMin} 分钟前`
+    const diffHr = Math.floor(diffMin / 60)
+    if (diffHr < 24) return `${diffHr} 小时前`
+    const diffDay = Math.floor(diffHr / 24)
+    if (diffDay < 7) return `${diffDay} 天前`
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${mo}-${day}`
+  } catch {
+    return '—'
+  }
 }
 
 onMounted(() => {
-  loadHotSectors()
-  loadStats()
+  loadHistory()
+  loadReportCount()
 })
 </script>
 
 <style scoped>
-.navbar {
-  position: sticky; top: 0; z-index: 100;
-  background: rgba(255,255,255,0.78);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  padding: 10px 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
-  display: flex; align-items: center; justify-content: center;
-}
-.nav-title { font-size: 17px; font-weight: 600; letter-spacing: -0.41px; }
+/* Architectural Ledger — 与 DESIGN.md / stitch code 对齐 */
+.st-page {
+  --st-primary: #003ec7;
+  --st-primary-mid: #0052ff;
+  --st-secondary: #006d41;
+  --st-tertiary: #a00024;
+  /* 策略标签 & 卡片金边 */
+  --st-gold: #9a7209;
+  --st-gold-mid: #b8860b;
+  --st-gold-light: #c9a227;
+  --st-gold-bg: rgba(201, 162, 39, 0.14);
+  --st-gold-border: rgba(180, 134, 11, 0.55);
+  --st-gold-glow: rgba(201, 162, 39, 0.18);
+  --st-surface: #f8f9fa;
+  --st-low: #f3f4f5;
+  --st-high: #e7e8e9;
+  --st-white: #ffffff;
+  --st-text: #191c1d;
+  --st-muted: #434656;
+  --st-outline: #737688;
+  --st-ghost: rgba(195, 197, 217, 0.15);
+  --st-ambient: 0 4px 24px rgba(25, 28, 29, 0.06);
 
-.container { padding: 16px; }
-
-.hub-header {
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-  border-radius: 20px; padding: 28px 22px;
-  margin-bottom: 20px; color: #fff; text-align: center;
-}
-.hub-header-title {
-  font-size: 24px; font-weight: 700; letter-spacing: -0.5px;
-  margin-bottom: 6px; display: flex; align-items: center; justify-content: center; gap: 8px;
-}
-.hub-header-sub { font-size: 14px; color: rgba(255,255,255,0.65); font-weight: 400; }
-.hub-header-stats { display: flex; justify-content: center; gap: 32px; margin-top: 18px; }
-.hub-stat { text-align: center; }
-.hub-stat-num { font-size: 22px; font-weight: 700; }
-.hub-stat-label { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 2px; }
-
-.featured-label {
-  font-size: 13px; font-weight: 600; color: var(--apple-text3);
-  letter-spacing: 0.5px; margin-bottom: 14px;
-  display: flex; align-items: center; gap: 6px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--st-surface);
+  color: var(--st-text);
+  padding-top: calc(12px + env(safe-area-inset-top, 0));
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0) + 72px);
+  font-family: 'Inter', var(--font, system-ui, sans-serif);
 }
 
-.strategy-card {
-  background: var(--apple-card);
-  border-radius: 18px; padding: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.05);
-  display: flex; align-items: center;
-  text-decoration: none; color: inherit;
-  transition: transform 0.15s, box-shadow 0.15s;
+.st-inner {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 0 20px 20px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 页头 */
+.st-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.st-hero__title {
+  margin: 0;
+  font-family: 'Manrope', var(--font, system-ui, sans-serif);
+  font-size: 2.125rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  color: var(--st-text);
+}
+
+.st-hero__sub {
+  margin: 8px 0 0;
+  font-size: 1.125rem;
+  font-weight: 500;
+  line-height: 1.55;
+  color: var(--st-muted);
+  max-width: 22rem;
+}
+
+.st-sort {
+  flex-shrink: 0;
+  align-self: flex-end;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--st-text);
+  background: var(--st-high);
+  border: none;
+  border-radius: 4px;
   cursor: pointer;
+  transition: background 0.15s;
 }
-.strategy-card:active { transform: scale(0.98); }
+.st-sort:active {
+  background: #d9dadb;
+}
 
-.card-icon-wrap {
-  width: 56px; height: 56px; border-radius: 16px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; margin-right: 14px;
+/* 卡片列表 */
+.st-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
-.card-icon-wrap .icon { width: 28px; height: 28px; fill: #fff; }
-.card-info { flex: 1; min-width: 0; }
-.card-name { font-size: 17px; font-weight: 600; margin-bottom: 3px; }
-.card-desc { font-size: 13px; color: var(--apple-text3); line-height: 1.4; }
-.card-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-.card-tag {
-  font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 6px;
-  background: var(--apple-gray6); color: var(--apple-text2);
-}
-.card-arrow { color: var(--apple-gray3); flex-shrink: 0; margin-left: 10px; }
 
-.quick-scan {
-  background: var(--apple-card);
-  border-radius: 18px; padding: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+.st-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+  padding: 24px 22px 18px;
+  background: var(--st-white);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 0 0 1px var(--st-ghost),
+    inset 0 0 0 2px var(--st-gold-border),
+    inset 0 -3px 0 0 var(--st-gold-glow),
+    var(--st-ambient);
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.15s, box-shadow 0.15s;
 }
-.qs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.qs-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.qs-title .icon { fill: var(--apple-orange); }
-.live-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--apple-green);
-  display: inline-block; margin-right: 4px;
-  animation: pulse 2s infinite;
+.st-card:active {
+  background: var(--st-low);
 }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
-.qs-sectors { display: flex; flex-direction: column; gap: 8px; }
-.qs-sector {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px; background: var(--apple-gray6); border-radius: 10px;
+.st-card__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
-.qs-sector-name { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
-.qs-sector-name .icon { width: 14px; height: 14px; fill: var(--apple-orange); }
-.qs-sector-right { display: flex; align-items: center; gap: 8px; }
-.qs-sector-change { font-size: 14px; font-weight: 600; }
-.qs-sector-count { font-size: 12px; color: var(--apple-text3); }
-.up { color: var(--apple-red) !important; }
-.down { color: var(--apple-green) !important; }
 
-.loading { text-align: center; padding: 30px; color: var(--apple-gray); }
-.spinner {
-  width: 24px; height: 24px; border: 2px solid var(--apple-gray5);
-  border-top-color: var(--apple-blue); border-radius: 50%;
-  animation: spin 0.7s linear infinite; margin: 0 auto 10px;
+.st-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
-.empty { text-align: center; padding: 30px; color: var(--apple-gray); font-size: 14px; }
+
+.st-card__left {
+  min-width: 0;
+  flex: 1;
+}
+
+.st-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.st-tag-cat {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--st-gold-mid);
+}
+
+.st-tag-pill {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: var(--st-gold-bg);
+  color: var(--st-gold);
+  box-shadow: inset 0 0 0 1px var(--st-gold-border);
+}
+
+.st-card__name {
+  margin: 0 0 7px;
+  font-family: 'Manrope', var(--font, system-ui, sans-serif);
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--st-text);
+  transition: color 0.15s;
+}
+.st-card:hover .st-card__name,
+.st-card:active .st-card__name {
+  color: var(--st-primary);
+}
+
+.st-card__desc {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 500;
+  line-height: 1.55;
+  color: var(--st-muted);
+  max-width: 100%;
+}
+
+.st-card__kpi {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.st-card__kpi-val {
+  font-family: 'Manrope', var(--font, system-ui, sans-serif);
+  font-size: 1.9375rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--st-primary);
+}
+
+.st-card__kpi-lbl {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--st-outline);
+  line-height: 1.35;
+  max-width: 7rem;
+  margin-left: auto;
+  text-align: right;
+}
+
+.st-card__metrics {
+  display: flex;
+  gap: 24px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--st-low);
+}
+
+.st-metric__lbl {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--st-outline);
+}
+
+.st-metric__val {
+  margin-top: 4px;
+  font-size: 1.125rem;
+  font-weight: 800;
+  color: var(--st-text);
+}
+
+.st-card__spark {
+  margin-top: 16px;
+  height: 48px;
+  width: 100%;
+  overflow: visible;
+}
+
+.st-spark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* 更多策略 */
+.st-more {
+  margin-top: 36px;
+}
+
+.st-more__title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--st-text);
+}
+
+.st-more__panel {
+  padding: 18px 20px;
+  background: var(--st-white);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--st-ghost), var(--st-ambient);
+}
+
+.st-more__lead {
+  margin: 0 0 8px;
+  font-size: 1.0625rem;
+  font-weight: 500;
+  line-height: 1.55;
+  color: var(--st-muted);
+}
+
+.st-more__lead strong {
+  font-weight: 800;
+  color: var(--st-primary);
+}
+
+.st-more__muted {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--st-outline);
+}
 </style>
-

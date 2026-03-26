@@ -8,7 +8,7 @@ MySQL 数据库模块 - 扫描结果存储
 import pymysql
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
@@ -152,6 +152,24 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
                 analysis LONGTEXT NOT NULL,
                 INDEX idx_report_time (report_time DESC),
                 FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 股票基本信息表（支持模糊搜索）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stocks (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(10) NOT NULL UNIQUE,
+                name VARCHAR(50) NOT NULL,
+                pinyin VARCHAR(100),
+                pinyin_abbr VARCHAR(20),
+                market_type ENUM('sh', 'sz', 'bj') DEFAULT 'sz',
+                sector VARCHAR(100),
+                updatetime DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_name (name),
+                INDEX idx_pinyin (pinyin),
+                INDEX idx_pinyin_abbr (pinyin_abbr),
+                INDEX idx_code (code)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
         
@@ -771,6 +789,303 @@ def delete_all_ai_reports() -> int:
         cursor.execute('DELETE FROM ai_reports')
         return cursor.rowcount
 
+
+# ==================== 股票搜索相关函数 ====================
+
+def search_stocks(keyword: str, limit: int = 20) -> List[Dict]:
+    """
+    模糊搜索股票（支持代码、名称、拼音首字母）
+    
+    Args:
+        keyword: 搜索关键词（支持股票代码、名称、拼音、拼音首字母）
+        limit: 返回数量限制，默认20
+        
+    Returns:
+        [{code, name, pinyin, pinyin_abbr, market_type, sector}, ...]
+    """
+    if not keyword or len(keyword.strip()) == 0:
+        return []
+    
+    keyword = keyword.strip()
+    
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 优先精确匹配代码，再模糊匹配
+        like_pattern = f'%{keyword}%'
+        cursor.execute('''
+            SELECT code, name, pinyin, pinyin_abbr, market_type, sector
+            FROM stocks
+            WHERE code = %s
+               OR name LIKE %s
+               OR pinyin LIKE %s
+               OR pinyin_abbr LIKE %s
+            ORDER BY
+                CASE WHEN code = %s THEN 0
+                     WHEN code LIKE %s THEN 1
+                     WHEN pinyin_abbr = %s THEN 2
+                     WHEN pinyin_abbr LIKE %s THEN 3
+                     WHEN name LIKE %s THEN 4
+                     ELSE 5 END,
+                code ASC
+            LIMIT %s
+        ''', (keyword, like_pattern, like_pattern, like_pattern,
+              keyword, f'{keyword}%', keyword.lower(), f'{keyword.lower()}%',
+              f'{keyword}%', limit))
+        
+        return list(cursor.fetchall())
+
+
+def get_all_stocks_count() -> int:
+    """获取股票总数"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) as cnt FROM stocks')
+        return cursor.fetchone()['cnt']
+
+
+def get_all_stocks_for_sync() -> List[Dict]:
+    """获取所有股票数据（用于同步）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT code, name, pinyin, pinyin_abbr, market_type, sector, updatetime
+            FROM stocks ORDER BY code
+        ''')
+        return list(cursor.fetchall())
+
+
+def upsert_stock(code: str, name: str, pinyin: str = None,
+                 pinyin_abbr: str = None, market_type: str = None,
+                 sector: str = None) -> bool:
+    """新增或更新股票信息"""
+    import pypinyin
+    try:
+        if pinyin is None:
+            pinyin = ''.join(
+                i[0] for i in pypinyin.pinyin(name, style=pypinyin.Style.NORMAL)
+            )
+        if pinyin_abbr is None:
+            pinyin_abbr = ''.join(
+                i[0][0] if i[0] else '' 
+                for i in pypinyin.pinyin(name, style=pypinyin.Style.TONE3)
+            ).lower()
+    except Exception:
+        pinyin = ''
+        pinyin_abbr = ''
+    
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO stocks (code, name, pinyin, pinyin_abbr, market_type, sector, updatetime)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                pinyin = VALUES(pinyin),
+                pinyin_abbr = VALUES(pinyin_abbr),
+                market_type = COALESCE(VALUES(market_type), market_type),
+                sector = VALUES(sector),
+                updatetime = VALUES(updatetime)
+        ''', (code, name, pinyin, pinyin_abbr, market_type, sector,
+              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        return True
+
+
+def upsert_stocks_batch(stocks_data: List[Dict]) -> int:
+    """
+    批量新增或更新股票信息
+    
+    Args:
+        stocks_data: [{code, name, pinyin, pinyin_abbr, market_type, sector}, ...]
+        
+    Returns:
+        成功处理的条数
+    """
+    import pypinyin
+    saved = 0
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    def ensure_pinyin(item):
+        name = item.get('name', '')
+        if not item.get('pinyin'):
+            item['pinyin'] = ''.join(
+                i[0] for i in pypinyin.pinyin(name, style=pypinyin.Style.NORMAL)
+            )
+        if not item.get('pinyin_abbr'):
+            item['pinyin_abbr'] = ''.join(
+                i[0][0] if i[0] else ''
+                for i in pypinyin.pinyin(name, style=pypinyin.Style.TONE3)
+            ).lower()
+        return item
+    
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for item in stocks_data:
+            try:
+                item = ensure_pinyin(item)
+                cursor.execute('''
+                    INSERT INTO stocks (code, name, pinyin, pinyin_abbr, market_type, sector, updatetime)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        name = VALUES(name),
+                        pinyin = VALUES(pinyin),
+                        pinyin_abbr = VALUES(pinyin_abbr),
+                        market_type = COALESCE(VALUES(market_type), market_type),
+                        sector = VALUES(sector),
+                        updatetime = VALUES(updatetime)
+                ''', (item['code'], item['name'], item.get('pinyin', ''),
+                      item.get('pinyin_abbr', ''), item.get('market_type'),
+                      item.get('sector'), now_str))
+                saved += 1
+            except Exception:
+                continue
+        conn.commit()
+    return saved
+
+
+# ==================== 新闻缓存 ====================
+
+def init_news_cache_table():
+    """初始化新闻缓存表"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS news_cache (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                news_date DATE NOT NULL,
+                source VARCHAR(50) NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                content TEXT,
+                time_str VARCHAR(50) DEFAULT '',
+                url VARCHAR(1000) DEFAULT '',
+                news_hash VARCHAR(64) NOT NULL,
+                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_hash_date (news_hash, news_date),
+                INDEX idx_news_date (news_date),
+                INDEX idx_source (source)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+
+def _compute_news_hash(title: str, content: str = "") -> str:
+    """计算新闻摘要hash用于去重"""
+    import hashlib
+    text = f"{title[:80]}|{content[:200]}".encode("utf-8")
+    return hashlib.sha256(text).hexdigest()[:32]
+
+
+def _parse_news_date(time_str: str) -> Optional[date]:
+    """
+    从新闻的 time 字段解析出实际日期。
+    支持 Unix 时间戳（字符串）和 'YYYY-MM-DD HH:MM:SS' 两种格式。
+    """
+    t = str(time_str).strip()
+    if not t:
+        return None
+    try:
+        if t.isdigit():
+            # Unix 时间戳（秒）
+            return datetime.fromtimestamp(int(t)).date()
+        else:
+            # 'YYYY-MM-DD HH:MM:SS' 格式
+            return datetime.strptime(t[:19], '%Y-%m-%d %H:%M:%S').date()
+    except Exception:
+        return None
+
+
+def save_news_items(news_list: List[Dict]) -> int:
+    """
+    批量保存新闻到缓存（按新闻本身的 time 字段解析日期，实现去重）
+    返回实际新增条数
+    """
+    saved = 0
+    # 按日期分组，同一天合并一次连接
+    by_date: Dict[date, List[Dict]] = {}
+    for item in news_list:
+        news_date = _parse_news_date(item.get("time") or "")
+        if news_date is None:
+            news_date = date.today()
+        by_date.setdefault(news_date, []).append(item)
+
+    for news_date, items in by_date.items():
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            for item in items:
+                title = (item.get("title") or "")[:500]
+                content = (item.get("content") or "")[:2000]
+                source = (item.get("source") or "")[:50]
+                time_str = (item.get("time") or "")[:50]
+                url = (item.get("url") or "")[:1000]
+                news_hash = _compute_news_hash(title, content)
+
+                try:
+                    cursor.execute('''
+                        INSERT IGNORE INTO news_cache
+                        (news_date, source, title, content, time_str, url, news_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ''', (news_date, source, title, content, time_str, url, news_hash))
+                    if cursor.rowcount > 0:
+                        saved += 1
+                except Exception:
+                    continue
+    return saved
+
+
+def get_cached_news(days: int = 1) -> List[Dict]:
+    """
+    获取最近N天的缓存新闻（按 time_str 排序）
+    days=1 表示查今天、days=2 表示今天+昨天，以此类推
+    """
+    if days <= 0:
+        days = 1
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        # news_date 存的是新闻本身的日期（从 time 解析），不是入库日期
+        cursor.execute('''
+            SELECT source, title, content, time_str, url, news_date
+            FROM news_cache
+            WHERE news_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            ORDER BY
+                CASE WHEN time_str REGEXP '^[0-9]+$' THEN CAST(time_str AS UNSIGNED) ELSE 0 END DESC,
+                news_date DESC
+        ''', (days - 1,))
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "title": row["title"],
+                "content": row["content"] or "",
+                "time": row["time_str"] or "",
+                "source": row["source"],
+                "url": row["url"] or "",
+            })
+        return result
+
+
+def delete_expired_news_cache(keep_days: int = 30) -> int:
+    """删除过期新闻缓存（默认保留30天）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM news_cache WHERE news_date < DATE_SUB(CURDATE(), INTERVAL %s DAY)',
+            (keep_days,)
+        )
+        return cursor.rowcount
+
+
+# 初始化新闻缓存表
+try:
+    init_news_cache_table()
+except Exception as e:
+    print(f"[WARN] 新闻缓存表初始化失败: {e}")
+
+# 启动时清理过期缓存（保留30天）
+try:
+    deleted = delete_expired_news_cache(keep_days=30)
+    if deleted > 0:
+        print(f"🧹 清理过期新闻缓存: 删除了{deleted}条")
+except Exception as e:
+    print(f"[WARN] 清理过期新闻缓存失败: {e}")
 
 # 初始化数据库
 init_db()
