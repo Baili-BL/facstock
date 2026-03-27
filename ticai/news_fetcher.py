@@ -1,8 +1,11 @@
 # 财经新闻抓取模块
 # 支持多数据源：新浪财经、同花顺、东方财富
 
+import json as _json
 import time
+import re
 import requests
+from datetime import datetime, date, time as dt_time
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,7 +22,8 @@ HEADERS = {
 # 缓存
 _news_cache = {}
 _cache_time = {}
-NEWS_CACHE_TTL = 180  # 3分钟缓存
+NEWS_CACHE_TTL = 180  # 3分钟缓存（内存缓存，用于单次会话内快速返回）
+DB_CACHE_TTL = 30 * 60  # 30分钟（数据库缓存TTL）
 
 # 重大利好关键词
 POSITIVE_KEYWORDS = [
@@ -64,6 +68,219 @@ def _set_cache(key, value):
 
 # ============ 多源新闻获取 ============
 
+def fetch_jinshi_news(limit: int = 30) -> List[Dict]:
+    """
+    金十数据「市场快讯」（与官网首页 tab 一致，channel=-8200）。
+    注意：须使用 /get_flash_list（非 /v1/…），并带 x-app-id，否则易 502 或空数据。
+    """
+    news_list: List[Dict] = []
+    seen_keys: set = set()
+    cap = min(50, max(1, limit))
+
+    def _extract_flash_items(resp: dict) -> List[dict]:
+        """兼容官网 get_flash_list 与旧版 v1 包一层 data 的结构。"""
+        if not isinstance(resp, dict):
+            return []
+        if resp.get("status") == 200:
+            raw = resp.get("data")
+            if isinstance(raw, list):
+                return raw
+            if isinstance(raw, dict) and isinstance(raw.get("data"), list):
+                return raw["data"]
+        raw = resp.get("data")
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict) and isinstance(raw.get("data"), list):
+            return raw["data"]
+        return []
+
+    try:
+        from curl_cffi import requests as cr
+
+        s = cr.Session()
+        s.headers.update(
+            {
+                "User-Agent": HEADERS["User-Agent"],
+                "Referer": "https://www.jin10.com/",
+                "Origin": "https://www.jin10.com",
+                "Accept": "application/json, text/plain, */*",
+                "x-app-id": "bVBF4FyRTn5NJF5n",
+                "x-version": "1.0.0",
+            }
+        )
+        params = {"channel": "-8200", "limit": str(cap), "max_time": ""}
+        r = s.get(
+            "https://flash-api.jin10.com/get_flash_list",
+            params=params,
+            impersonate="chrome110",
+            timeout=12,
+        )
+        items: List[dict] = []
+        if r.status_code == 200:
+            try:
+                items = _extract_flash_items(r.json())
+            except Exception:
+                items = []
+        if not items:
+            r2 = s.get(
+                "https://flash-api.jin10.com/v1/get_flash_list",
+                params=params,
+                impersonate="chrome110",
+                timeout=12,
+            )
+            if r2.status_code == 200:
+                try:
+                    items = _extract_flash_items(r2.json())
+                except Exception:
+                    items = []
+
+        for item in items:
+            if len(news_list) >= limit:
+                break
+            inner = item.get("data") if isinstance(item.get("data"), dict) else {}
+            title_txt = str(inner.get("title", "") or "").strip()
+            content_txt = str(inner.get("content", "") or "").strip()
+            if not title_txt and content_txt:
+                title_txt = content_txt[:100]
+            if not title_txt:
+                continue
+            key = title_txt[:40].strip()
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            ts = ""
+            tstr = item.get("time", "")
+            if isinstance(tstr, str) and len(tstr) >= 19:
+                try:
+                    ts = str(
+                        int(datetime.strptime(tstr[:19], "%Y-%m-%d %H:%M:%S").timestamp())
+                    )
+                except Exception:
+                    ts = ""
+            link = str(inner.get("link") or inner.get("source_link") or "").strip()
+            fid = item.get("id", "")
+            if not link and fid:
+                link = f"https://flash.jin10.com/detail/{fid}"
+
+            news_list.append(
+                {
+                    "title": title_txt[:200],
+                    "content": content_txt[:1200] or title_txt[:200],
+                    "time": ts,
+                    "source": "金十数据",
+                    "url": link,
+                }
+            )
+    except Exception as e:
+        print(f"金十数据获取失败: {e}")
+    return news_list
+
+
+def fetch_akshare_news(limit: int = 30) -> List[Dict]:
+    """
+    akshare 快讯聚合（3个来源均通过 curl_cffi 避免风控拦截）：
+    1. 东方财富全球快讯（ak.stock_info_global_em）
+    2. 富途牛牛快讯（ak.stock_info_global_futu）
+    3. 新浪7x24快讯（ak.stock_info_global_sina）
+    """
+    news_list: List[Dict] = []
+    if ak is None:
+        return news_list
+
+    seen_keys: set = set()
+
+    def add_unique(item: Dict) -> bool:
+        key = (item.get("title") or "")[:40].strip()
+        if not key or key in seen_keys:
+            return False
+        seen_keys.add(key)
+        news_list.append(item)
+        return True
+
+    # ── 东方财富全球快讯 ───────────────────────────────────────────────
+    try:
+        df_em = ak.stock_info_global_em()
+        if df_em is not None and not df_em.empty:
+            for _, row in df_em.iterrows():
+                pub_time = row.get("发布时间", "")
+                if hasattr(pub_time, "strftime"):
+                    ts = str(int(pub_time.timestamp()))
+                elif isinstance(pub_time, str) and pub_time:
+                    try:
+                        ts = str(int(datetime.strptime(pub_time[:19], "%Y-%m-%d %H:%M:%S").timestamp()))
+                    except Exception:
+                        ts = ""
+                else:
+                    ts = ""
+                add_unique({
+                    "title": str(row.get("标题", "") or ""),
+                    "content": str(row.get("摘要", "") or ""),
+                    "time": ts,
+                    "source": "东财",
+                    "url": str(row.get("链接", "") or ""),
+                })
+    except Exception as e:
+        print(f"akshare stock_info_global_em 获取失败: {e}")
+
+    # ── 富途牛牛快讯 ────────────────────────────────────────────────
+    try:
+        df_futu = ak.stock_info_global_futu()
+        if df_futu is not None and not df_futu.empty:
+            for _, row in df_futu.iterrows():
+                pub_time = row.get("发布时间", "")
+                if hasattr(pub_time, "strftime"):
+                    ts = str(int(pub_time.timestamp()))
+                elif isinstance(pub_time, str) and pub_time:
+                    try:
+                        ts = str(int(datetime.strptime(pub_time[:19], "%Y-%m-%d %H:%M:%S").timestamp()))
+                    except Exception:
+                        ts = ""
+                else:
+                    ts = ""
+                title = str(row.get("标题", "") or "")
+                content = str(row.get("内容", "") or "")
+                if not title:
+                    title = content[:80]
+                add_unique({
+                    "title": title,
+                    "content": content,
+                    "time": ts,
+                    "source": "东财",
+                    "url": str(row.get("链接", "") or ""),
+                })
+    except Exception as e:
+        print(f"akshare stock_info_global_futu 获取失败: {e}")
+
+    # ── 新浪7x24快讯 ────────────────────────────────────────────────
+    try:
+        df_sina = ak.stock_info_global_sina()
+        if df_sina is not None and not df_sina.empty:
+            for _, row in df_sina.iterrows():
+                pub_time = row.get("时间", "")
+                if hasattr(pub_time, "strftime"):
+                    ts = str(int(pub_time.timestamp()))
+                elif isinstance(pub_time, str) and pub_time:
+                    try:
+                        ts = str(int(datetime.strptime(pub_time[:19], "%Y-%m-%d %H:%M:%S").timestamp()))
+                    except Exception:
+                        ts = ""
+                else:
+                    ts = ""
+                content = str(row.get("内容", "") or "")
+                add_unique({
+                    "title": content[:80],
+                    "content": content,
+                    "time": ts,
+                    "source": "东财",
+                    "url": "",
+                })
+    except Exception as e:
+        print(f"akshare stock_info_global_sina 获取失败: {e}")
+
+    return news_list
+
+
 def fetch_sina_news(limit: int = 30) -> List[Dict]:
     """新浪财经"""
     news_list = []
@@ -106,73 +323,281 @@ def fetch_ths_news(limit: int = 30) -> List[Dict]:
     return news_list
 
 
+def _row_stock_news_em_to_item(row) -> Dict:
+    """akshare stock_news_em 单行 → 统一字典，来源固定东财。"""
+    pub_time = row.get("发布时间", "")
+    if isinstance(pub_time, (datetime, dt_time)):
+        ts = int(pub_time.timestamp()) if hasattr(pub_time, "timestamp") else 0
+        time_str = str(ts)
+    elif hasattr(pub_time, "timestamp"):
+        time_str = str(int(pub_time.timestamp()))
+    elif isinstance(pub_time, str) and pub_time:
+        try:
+            time_str = str(int(datetime.strptime(pub_time[:19], "%Y-%m-%d %H:%M:%S").timestamp()))
+        except Exception:
+            time_str = ""
+    else:
+        time_str = ""
+    return {
+        "title": str(row.get("新闻标题", "") or ""),
+        "content": str(row.get("新闻内容", "") or ""),
+        "time": time_str,
+        "source": "东财",
+        "url": str(row.get("新闻链接", "") or ""),
+    }
+
+
 def fetch_eastmoney_news(limit: int = 30) -> List[Dict]:
-    """东方财富快讯"""
+    """
+    东方财富个股资讯：多代码轮询 ak.stock_news_em（内部 curl_cffi，易通过风控）。
+    单代码仅约 10 条/次，需多只标的凑够 limit；与前端「东财」Tab 一致。
+    """
+    news_list: List[Dict] = []
+    if ak is None:
+        return news_list
+    symbols = ["603777", "000001", "600519", "300750", "601318", "688981", "300059"]
+    seen_title: set = set()
+    for sym in symbols:
+        if len(news_list) >= limit:
+            break
+        try:
+            df = ak.stock_news_em(symbol=sym)
+            if df is None or df.empty:
+                continue
+            for _, row in df.iterrows():
+                if len(news_list) >= limit:
+                    break
+                item = _row_stock_news_em_to_item(row)
+                key = (item.get("title") or "")[:40].strip()
+                if not key or key in seen_title:
+                    continue
+                seen_title.add(key)
+                news_list.append(item)
+        except Exception as e:
+            print(f"东财 stock_news_em({sym}) 失败: {e}")
+    return news_list
+
+
+def fetch_xueqiu_news(limit: int = 30) -> List[Dict]:
+    """
+    雪球精选资讯：curl_cffi 维持会话通过风控，
+    使用 public_timeline_by_category.json（category=106），避免 news.json 的 400016 错误。
+    """
+    news_list: List[Dict] = []
+    seen_keys: set = set()
+    try:
+        from curl_cffi import requests as cr
+        s = cr.Session()
+        s.headers["User-Agent"] = HEADERS["User-Agent"]
+        s.headers["Referer"] = "https://xueqiu.com/"
+        r = s.get(
+            "https://xueqiu.com/v4/statuses/public_timeline_by_category.json",
+            params={"since_id": -1, "max_id": -1, "count": min(limit, 20), "category": 106},
+            impersonate="chrome110",
+            timeout=10,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            for raw_item in (d.get("list") or [])[:limit]:
+                try:
+                    inner = _json.loads(raw_item.get("data", "{}"))
+                except Exception:
+                    inner = {}
+                title = inner.get("title", "") or ""
+                description = inner.get("description", "") or ""
+                post_id = inner.get("id", "")
+                created = inner.get("created_at", 0)
+                ts = str(int(created / 1000)) if isinstance(created, (int, float)) else ""
+                key = title[:40].strip()
+                if not key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                news_list.append({
+                    "title": title,
+                    "content": description,
+                    "time": ts,
+                    "source": "雪球",
+                    "url": f"https://xueqiu.com/{post_id}" if post_id else "",
+                })
+    except Exception as e:
+        print(f"雪球直采获取失败: {e}")
+    return news_list
+
+
+def fetch_cls_news_cn(limit: int = 30) -> List[Dict]:
+    """财联社快讯（nodeapi/telegraphList，每次取3页共60条）"""
     news_list = []
     try:
-        # 股票快讯
-        url = 'https://np-anotice-stock.eastmoney.com/api/security/ann'
-        params = {'sr': '-1', 'page_size': str(limit), 'page_index': '1', 'ann_type': 'A', 'client_source': 'web', 'f_node': '0'}
-        resp = requests.get(url, headers={**HEADERS, 'Referer': 'https://data.eastmoney.com/'}, params=params, timeout=10)
-        if resp.status_code == 200:
+        # page 参数必须递增才能翻页；每页 20 条
+        for page in range(1, 4):
+            url = (
+                'https://www.cls.cn/nodeapi/telegraphList'
+                '?app=CLS&os=web&sv=7.8.5&width=750'
+                f'&type=102&page={page}&size=20'
+            )
+            resp = requests.get(url, headers={**HEADERS, 'Referer': 'https://www.cls.cn/'}, timeout=10)
+            if resp.status_code != 200:
+                break
             data = resp.json()
-            items = data.get('data', {}).get('list', []) if data.get('data') else []
-            for item in items[:limit]:
-                title = item.get('NOTICETITLE', '')
-                # 过滤掉纯公告类
-                if title and not any(x in title for x in ['招股', '审计', '章程', '议案']):
-                    news_list.append({
-                        "title": title,
-                        "content": title,
-                        "time": item.get('NOTICETIME', ''),
-                        "source": "东财"
-                    })
+            roll = data.get('data', {}).get('roll_data', []) if isinstance(data.get('data'), dict) else []
+            if not roll:
+                break
+            for item in roll:
+                ctime = item.get('ctime', 0)
+                content_raw = str(item.get('content', '') or '')
+                title_raw = str(item.get('title', '') or '').strip()
+                # 去掉【标题】财联社X月X日电， 前缀
+                content_clean = re.sub(r'^【[^】]+】财联社\d+月\d+日电[，,、]?', '', content_raw)
+                title_clean = re.sub(r'^【[^】]+】', '', title_raw).strip()
+                # title 为空时用 content 代替
+                if not title_clean and content_clean:
+                    title_clean = content_clean[:80]
+                if not title_clean:
+                    continue
+                # cls.cn 的 author 字段大多为空，统一用「财联社」作为来源标识
+                news_list.append({
+                    "title": title_clean[:150],
+                    "content": content_clean[:300],
+                    "time": str(int(ctime)) if ctime else '',
+                    "source": "财联社",
+                })
+            if len(news_list) >= limit:
+                break
     except Exception as e:
-        print(f"东方财富获取失败: {e}")
+        print(f"财联社 fetch_cls_news_cn 获取失败: {e}")
+    return news_list
+
+
+def fetch_cls_akshare_news(limit: int = 30) -> List[Dict]:
+    """akshare 财联社快讯（ak.stock_info_global_cls，来源标注为财联社）"""
+    news_list = []
+    if ak is None:
+        return news_list
+    try:
+        df = ak.stock_info_global_cls(symbol="全部")
+        if df is not None and not df.empty:
+            for _, row in df.head(limit).iterrows():
+                # 列名：标题 / 内容 / 发布日期 / 发布时间
+                # 发布时间 是 datetime.time 对象，发布日期 是 date 对象
+                pub_date = row.get('发布日期', None)
+                pub_time = row.get('发布时间', None)
+                if pub_date is not None and pub_time is not None:
+                    try:
+                        dt = datetime.combine(pub_date, pub_time)
+                        ts = str(int(dt.timestamp()))
+                    except Exception:
+                        ts = ''
+                elif isinstance(pub_time, str) and pub_time:
+                    try:
+                        ts = str(int(datetime.strptime(pub_time, '%H:%M:%S').timestamp()))
+                    except Exception:
+                        ts = ''
+                else:
+                    ts = ''
+                title_val = str(row.get('标题', '') or '')
+                content_val = str(row.get('内容', '') or '')
+                news_list.append({
+                    "title": title_val,
+                    "content": content_val,
+                    "time": ts,
+                    "source": "财联社",
+                })
+    except Exception as e:
+        print(f"akshare stock_info_global_cls 获取失败: {e}")
     return news_list
 
 
 def fetch_all_news(limit_per_source: int = 30) -> List[Dict]:
     """
-    并发获取多源新闻
+    并发获取多源新闻（8个平台）
+    策略：
+    1. 优先从数据库缓存读取（TTL=30min），命中则直接返回
+    2. 否则并发抓取各平台，去重后回存数据库，再返回
     """
-    cache_key = f"all_news_{limit_per_source}"
-    cached = _get_cached(cache_key)
-    if cached:
-        return cached
-    
+    # ── 1. 查数据库缓存（TTL内有效） ──────────────────────────────────
+    try:
+        import database
+        cached = database.get_cached_news(days=1)
+        if cached:
+            # 按时间排序
+            def parse_time(item):
+                t = str(item.get('time') or '')
+                if t.isdigit():
+                    return int(t)
+                try:
+                    return int(datetime.strptime(t, '%Y-%m-%d %H:%M:%S').timestamp())
+                except Exception:
+                    return 0
+            cached.sort(key=parse_time, reverse=True)
+            _set_cache(f"all_news_{limit_per_source}", cached)
+            print(f"📰 新闻聚合完成: 共{len(cached)}条 (来自数据库缓存)")
+            return cached
+    except Exception as e:
+        print(f"[WARN] 数据库缓存读取失败: {e}")
+
+    # ── 2. 无缓存，并发抓取 ───────────────────────────────────────────
     all_news = []
-    
-    # 并发获取
-    with ThreadPoolExecutor(max_workers=3) as executor:
+
+    # 并发获取8个平台（含两路财联社 + 金十数据）
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
+            executor.submit(fetch_akshare_news, limit_per_source): "akshare",
             executor.submit(fetch_sina_news, limit_per_source): "新浪",
             executor.submit(fetch_ths_news, limit_per_source): "同花顺",
             executor.submit(fetch_eastmoney_news, limit_per_source): "东财",
+            executor.submit(fetch_cls_news_cn, limit_per_source): "财联社(cls直采)",
+            executor.submit(fetch_cls_akshare_news, limit_per_source): "财联社(akshare)",
+            executor.submit(fetch_xueqiu_news, limit_per_source): "雪球",
+            executor.submit(fetch_jinshi_news, limit_per_source): "金十数据",
         }
-        
-        for future in as_completed(futures, timeout=15):
+
+        # 不设 as_completed 总超时：慢源（akshare/外网）常 >20s，否则会抛
+        # TimeoutError「N (of M) futures unfinished」导致整接口失败。
+        for future in as_completed(futures):
             source = futures[future]
             try:
                 news = future.result()
-                all_news.extend(news)
-                print(f"  {source}: {len(news)}条")
+                if news:
+                    all_news.extend(news)
+                    print(f"  {source}: {len(news)}条")
+                else:
+                    print(f"  {source}: 无数据")
             except Exception as e:
                 print(f"  {source}获取失败: {e}")
-    
-    # 去重（按标题）
+
+    # ── 3. 去重 & 排序 ─────────────────────────────────────────────────
     seen_titles = set()
     unique_news = []
-    for news in all_news:
-        title = news.get('title', '')[:20]  # 取前20字作为去重key
+    for news_item in all_news:
+        title = news_item.get('title', '')[:40].strip()
         if title and title not in seen_titles:
             seen_titles.add(title)
-            unique_news.append(news)
-    
+            unique_news.append(news_item)
+
+    # 按时间倒序（兼容 Unix 时间戳字符串 和 'YYYY-MM-DD HH:MM:SS' 字符串）
+    def parse_time(item):
+        t = str(item.get('time') or '')
+        if t.isdigit():
+            return int(t)
+        try:
+            from datetime import datetime
+            return int(datetime.strptime(t, '%Y-%m-%d %H:%M:%S').timestamp())
+        except Exception:
+            return 0
+
+    unique_news.sort(key=parse_time, reverse=True)
+
     if unique_news:
-        _set_cache(cache_key, unique_news)
-        print(f"📰 新闻聚合完成: 共{len(unique_news)}条 (去重后)")
-    
+        _set_cache(f"all_news_{limit_per_source}", unique_news)
+        # ── 4. 回存数据库（去重写入） ─────────────────────────────────
+        try:
+            import database
+            saved = database.save_news_items(unique_news)
+            print(f"📰 新闻聚合完成: 共{len(unique_news)}条 (去重后), 新增入库{saved}条")
+        except Exception as e:
+            print(f"[WARN] 新闻入库失败: {e}")
+            print(f"📰 新闻聚合完成: 共{len(unique_news)}条 (去重后)")
+
     return unique_news
 
 

@@ -3,7 +3,7 @@
 """
 import time
 from datetime import date, datetime
-from flask import Blueprint, jsonify, render_template, make_response, request
+from flask import Blueprint, jsonify, request
 from ticai.theme_fetcher import fetch_hot_themes, fetch_all_themes_with_stocks
 from ticai.analyzer import analyze_and_format_stocks
 from ticai.emotion_cycle import calculate_theme_emotion, get_stage_color, get_stage_advice
@@ -11,14 +11,31 @@ from ticai.theme_quality import evaluate_theme_quality
 from ticai.news_fetcher import fetch_cls_news, evaluate_theme_news_factor, get_market_news_summary
 from ticai.database import (
     init_ticai_tables, save_report, get_report_by_date, get_recent_reports,
-    get_performance_summary, get_stock_history,
+    get_performance_summary, get_stock_history, get_cached_news,
 )
 from ticai.performance_tracker import update_all_performance, get_today_performance_report
+# cache.py 在项目根目录
+try:
+    from cache import get, set, invalidate
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from cache import get, set, invalidate
 
 try:
     import akshare as ak
 except ImportError:
     ak = None
+
+# Lazy import inside functions where used
+
+
+def _get_ak():
+    global ak
+    if ak is None:
+        import akshare as _ak
+        ak = _ak
+    return ak
 
 ticai_bp = Blueprint('ticai', __name__)
 
@@ -31,10 +48,8 @@ except Exception as e:
 
 def get_market_index_change() -> float:
     """获取大盘（上证指数）涨跌幅"""
-    if ak is None:
-        return 0
     try:
-        df = ak.stock_zh_index_spot_em()
+        df = _get_ak().stock_zh_index_spot_em()
         if df is not None and not df.empty:
             sh_index = df[df["名称"] == "上证指数"]
             if not sh_index.empty:
@@ -46,25 +61,35 @@ def get_market_index_change() -> float:
 
 @ticai_bp.route('/ticai')
 def ticai_page():
-    """题材挖掘页面"""
-    response = make_response(render_template('ticai.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """题材挖掘页面 - Vue 组件直接调用 API，不再使用 iframe"""
+    return jsonify({
+        'message': '题材挖掘页面由 Vue 组件渲染，请访问 /frontend/ticai',
+        'vue_route': '/ticai'
+    })
 
 
 @ticai_bp.route('/api/ticai/themes')
 def get_themes():
-    """获取热门题材列表"""
+    """获取热门题材列表（Redis 缓存 60s）"""
+    hit = get('ticai/themes')
+    if hit is not None:
+        return jsonify({"success": True, "data": hit})
     try:
         themes = fetch_hot_themes(10)
+        set('ticai/themes', themes, ttl=60)
         return jsonify({"success": True, "data": themes})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 
 @ticai_bp.route('/api/ticai/all')
+@ticai_bp.route('/api/ticai/all/')
 def get_all_data():
-    """获取所有热门题材及其推荐股票"""
+    """获取所有热门题材及其推荐股票（Redis 缓存 60s，双路由避免尾部斜杠 302）"""
+    hit = get('ticai/all')
+    if hit is not None:
+        return jsonify({"success": True, "data": hit.get('data', {}), "market_change": hit.get('market_change', 0)})
+
     try:
         print("\n" + "=" * 60)
         print("📊 开始获取热门题材数据...")
@@ -141,6 +166,8 @@ def get_all_data():
         except Exception as save_err:
             print(f"⚠️ 保存报表失败: {save_err}")
 
+        payload = {"data": sorted_result, "market_change": market_change}
+        set('ticai/all', payload, ttl=60)
         return jsonify({
             "success": True,
             "data": sorted_result,
@@ -154,30 +181,62 @@ def get_all_data():
 
 @ticai_bp.route('/api/ticai/kline/<stock_code>')
 def get_stock_kline(stock_code):
-    """获取股票K线数据（复用布林带的数据源）"""
+    """获取股票K线数据（复用布林带的数据源）+ 量能画像"""
     days = request.args.get('days', 250, type=int)
 
     try:
         from utils.ths_crawler import get_stock_kline_sina
+        from bollinger_squeeze_strategy import BollingerSqueezeStrategy
+        import numpy as np
 
         df = get_stock_kline_sina(stock_code, days=days)
         if df is None or df.empty:
             return jsonify({"success": False, "error": "无K线数据"}), 404
 
+        # 计算量能画像指标
+        strategy = BollingerSqueezeStrategy()
+        try:
+            df_vp = strategy.calculate_volume_profile(df)
+        except Exception:
+            df_vp = df  # 降级：不影响K线展示
+
         result = []
-        for _, row in df.iterrows():
-            result.append({
+        for idx, row in df_vp.iterrows():
+            item = {
                 "time": str(row['date']),
                 "open": float(row['open']),
                 "high": float(row['high']),
                 "low": float(row['low']),
                 "close": float(row['close']),
                 "volume": float(row.get('volume', 0)),
-            })
+            }
+            result.append(item)
+
+        # 量能画像数据
+        import pandas as pd
+        def safe_list(series):
+            return [None if pd.isna(x) else float(x) for x in series]
+        def bool_list(series):
+            return [bool(x) if pd.notna(x) else False for x in series]
+
+        vp_data = {}
+        vp_cols = {
+            'vp_obv': safe_list, 'vp_std_vol': safe_list, 'vp_max_vol': safe_list,
+            'vp_dbhs': safe_list,
+            'vp_color': lambda s: [int(x) if pd.notna(x) else 0 for x in s],
+            'vp_lxtp': bool_list, 'vp_lxtp1': bool_list,
+            'vp_super_vol': bool_list, 'vp_vol_break_up': bool_list,
+            'vp_vol_break_down': bool_list, 'vp_bull_signal': bool_list,
+            'vp_bear_signal': bool_list, 'vp_main_buy_signal': bool_list,
+            'vp_ma_golden': bool_list, 'vp_cost_break': bool_list,
+        }
+        for col, fn in vp_cols.items():
+            if col in df_vp.columns:
+                vp_data[col] = fn(df_vp[col])
 
         return jsonify({
             "success": True,
-            "data": {"code": stock_code, "name": "", "klines": result},
+            "data": {"code": stock_code, "name": "", "klines": result, "vp": vp_data},
         })
 
     except Exception as e:
@@ -188,10 +247,9 @@ def get_stock_kline(stock_code):
 
 @ticai_bp.route('/ticai/history')
 def history_page():
-    """历史报表页面"""
-    response = make_response(render_template('ticai_history.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """历史报表页面 - 重定向到 Vue 前端"""
+    from flask import redirect
+    return redirect('/frontend/ticai/history')
 
 
 @ticai_bp.route('/api/ticai/reports')
@@ -238,10 +296,9 @@ def get_report(report_date):
 
 @ticai_bp.route('/ticai/performance')
 def performance_page():
-    """收益统计页面"""
-    response = make_response(render_template('ticai_performance.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    """收益统计页面 - 重定向到 Vue 前端"""
+    from flask import redirect
+    return redirect('/frontend/ticai/performance')
 
 
 @ticai_bp.route('/api/ticai/performance/summary')
@@ -282,5 +339,41 @@ def stock_history(stock_code):
         limit = request.args.get('limit', 10, type=int)
         history = get_stock_history(stock_code, limit)
         return jsonify({"success": True, "data": history})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== 新闻历史 ====================
+
+@ticai_bp.route('/api/news/history')
+def get_news_history():
+    """
+    查询历史新闻（来自数据库缓存，Redis 缓存 180s）
+    days: 查最近几天，默认1天
+    """
+    try:
+        days = request.args.get('days', 1, type=int)
+        cache_key = f'news/history/{days}'
+        hit = get(cache_key)
+        if hit is not None:
+            return jsonify({"success": True, "data": hit, "count": len(hit)})
+        news = get_cached_news(days=days)
+        set(cache_key, news, ttl=180)
+        return jsonify({"success": True, "data": news, "count": len(news)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@ticai_bp.route('/api/news/refresh', methods=['POST'])
+def refresh_news():
+    """
+    强制刷新新闻（绕过缓存直接抓取并存库），完成后清除所有相关新闻缓存
+    """
+    try:
+        from ticai.news_fetcher import fetch_all_news
+        news = fetch_all_news(limit_per_source=30)
+        invalidate('news/')
+        invalidate('ticai/')
+        return jsonify({"success": True, "count": len(news)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

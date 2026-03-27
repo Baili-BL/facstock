@@ -9,7 +9,7 @@ todos:
     content: 修改 app.py，集成数据库操作，添加历史/删除 API
     status: completed
   - id: update-frontend
-    content: 更新 index.html，添加历史记录列表和删除按钮
+    content: 创建 templates/strategy.html 策略中心页面，包含扫描配置、历史记录列表和删除功能
     status: completed
 ---
 
@@ -17,7 +17,7 @@ todos:
 
 ## 1. 数据库设计
 
-创建新文件 `database.py`，包含数据库初始化和操作逻辑。
+创建新文件 `database.py`，使用 MySQL 数据库存储扫描结果。
 
 ### 表结构
 
@@ -101,10 +101,9 @@ sequenceDiagram
 
 ## 5. 文件变更清单
 
-- **新增**: `database.py` - 数据库模块
-- **修改**: `app.py` - 集成数据库操作，新增 API
-- **修改**: `templates/index.html` - 添加历史记录展示和删除功能
-- **新增**: `data/stock.db` - SQLite 数据库文件（自动创建）
+- **新增**: `database.py` - MySQL 数据库模块（包含所有 CRUD 操作）
+- **新增**: `templates/strategy.html` - 策略中心页面（扫描配置、历史记录、删除功能）
+- **新增**: MySQL 数据库 `stock_scanner` 表（自动创建）
 
 ## 6. 实现细节
 

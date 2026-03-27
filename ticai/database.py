@@ -325,3 +325,71 @@ def get_performance_summary(days: int = 30, only_buyable: bool = True) -> Dict:
         summary["worst_stocks"] = stock_t1[-5:][::-1] if len(stock_t1) >= 5 else stock_t1[::-1]
 
         return summary
+
+
+# ==================== 新闻缓存 ====================
+
+def init_news_table():
+    """初始化新闻缓存表"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cached_news (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(500) NOT NULL,
+                content TEXT,
+                time VARCHAR(50),
+                source VARCHAR(50),
+                url VARCHAR(1000),
+                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_title (title(200)),
+                INDEX idx_cached_at (cached_at),
+                INDEX idx_source (source)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+
+def save_news_items(news_list: List[Dict]) -> int:
+    """保存新闻到数据库缓存（去重插入）"""
+    if not news_list:
+        return 0
+    saved = 0
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for item in news_list:
+            try:
+                cursor.execute('''
+                    INSERT IGNORE INTO cached_news (title, content, time, source, url)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (
+                    item.get('title', ''),
+                    item.get('content', ''),
+                    item.get('time', ''),
+                    item.get('source', ''),
+                    item.get('url', ''),
+                ))
+                saved += cursor.rowcount
+            except Exception:
+                pass
+    return saved
+
+
+def get_cached_news(days: int = 1) -> List[Dict]:
+    """从数据库缓存读取最近 N 天的新闻"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT title, content, time, source, url, cached_at
+            FROM cached_news
+            WHERE cached_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            ORDER BY time DESC
+            LIMIT 500
+        ''', (days,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+# 确保新闻表已初始化
+try:
+    init_news_table()
+except Exception as e:
+    print(f"[WARN] 新闻表初始化失败: {e}")
