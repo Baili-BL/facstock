@@ -10,9 +10,15 @@
 - 涨跌停池数据
 """
 
+import contextlib
+import concurrent.futures
+import os
+import time
 import pandas as pd
+import requests
+import threading
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,65 @@ def _get_ak():
     """Lazy import of akshare to avoid py_mini_racer crash on import."""
     import akshare as _ak
     return _ak
+
+
+@contextlib.contextmanager
+def _no_http_proxy_env():
+    """临时清除环境变量中的代理（含 SOCKS），减轻无效本地代理对东方财富请求的影响。"""
+    keys = (
+        'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+        'ALL_PROXY', 'all_proxy', 'SOCKS_PROXY', 'socks_proxy',
+        'SOCKS5_PROXY', 'socks5_proxy',
+    )
+    saved = {k: os.environ.pop(k) for k in keys if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+@contextlib.contextmanager
+def _requests_session_no_proxy_env():
+    """
+    临时让 requests 的 Session 默认 trust_env=False，绕过系统/环境代理。
+    requests.api.request 使用的是 sessions.Session()（非 requests.Session 名），必须改 sessions 模块里的类。
+    """
+    import requests.sessions as _rsess
+
+    _orig = _rsess.Session
+
+    def _Session_trust_env_off(*args, **kwargs):
+        s = _orig(*args, **kwargs)
+        s.trust_env = False
+        return s
+
+    _rsess.Session = _Session_trust_env_off  # type: ignore[assignment]
+    requests.Session = _Session_trust_env_off  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        _rsess.Session = _orig  # type: ignore[assignment]
+        requests.Session = _orig  # type: ignore[assignment]
+
+
+def _is_proxy_related_error(exc: BaseException) -> bool:
+    e: Optional[BaseException] = exc
+    while e is not None:
+        if isinstance(e, requests.exceptions.ProxyError):
+            return True
+        if 'proxy' in type(e).__name__.lower():
+            return True
+        e = e.__cause__ or e.__context__
+    msg = str(exc).lower()
+    return 'proxy' in msg or 'unable to connect to proxy' in msg
+
+
+@contextlib.contextmanager
+def _ak_eastmoney_direct():
+    """东方财富 akshare 请求：绕过无效系统代理（与板块资金流一致）。"""
+    with _no_http_proxy_env(), _requests_session_no_proxy_env():
+        yield
+
 
 # 缓存相关
 _cache = {}
@@ -101,7 +166,8 @@ def get_market_overview() -> List[Dict]:
 
         # 获取上涨/下跌家数（从东方财富市场概况）
         try:
-            df_em = _get_ak().stock_zh_a_spot_em()
+            with _ak_eastmoney_direct():
+                df_em = _get_ak().stock_zh_a_spot_em()
             if df_em is not None and not df_em.empty:
                 total = len(df_em)
                 up = int((df_em['涨跌幅'] > 0).sum())
@@ -138,7 +204,8 @@ def get_money_flow() -> Dict:
     }
 
     try:
-        df = _get_ak().stock_hsgt_fund_flow_summary_em()
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_hsgt_fund_flow_summary_em()
         if df is not None and not df.empty:
             hgt_net = 0.0
             sgt_net = 0.0
@@ -184,7 +251,8 @@ def get_limit_up_data() -> Dict:
     }
 
     try:
-        up_df = _get_ak().stock_zt_pool_em(date=today)
+        with _ak_eastmoney_direct():
+            up_df = _get_ak().stock_zt_pool_em(date=today)
         if up_df is not None and not up_df.empty:
             result['limit_up_count'] = len(up_df)
             for _, row in up_df.head(10).iterrows():
@@ -198,7 +266,8 @@ def get_limit_up_data() -> Dict:
         logger.warning(f"涨停池获取失败: {e}")
 
     try:
-        down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
+        with _ak_eastmoney_direct():
+            down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
         if down_df is not None and not down_df.empty:
             # 大跌股中过滤出跌停（涨跌幅 <= -9.9）
             limit_down = down_df[down_df['涨跌幅'] <= -9.9]
@@ -222,7 +291,8 @@ def get_turnover_rate() -> List:
     result = []
     today = datetime.now().strftime('%Y%m%d')
     try:
-        df = _get_ak().stock_zt_pool_strong_em(date=today)
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_zt_pool_strong_em(date=today)
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 code = str(row.get('代码', ''))
@@ -251,10 +321,23 @@ def get_turnover_rate() -> List:
 def get_market_snapshot() -> Dict:
     """
     A 股全市场快照：涨跌家数、总成交额、涨幅/跌幅/成交额/涨速榜（含行业）。
-    与大盘页「涨跌分布」「股票排行」等同花顺模块对应，单独缓存避免拖慢指数接口。
+
+    数据获取策略（优先级）：
+      1. 新浪接口（涨幅/跌幅/成交额排行，~3秒内完成）→ 优先同步获取，立即返回并缓存
+      2. 新浪排行无行业：读 stocks 表 → 未命中则 akshare 个股接口并发补行业并写库；同时后台预热东财全现货
+      3. 东方财富 EM（全量，含涨跌家数/成交额/行业）→ 后台异步写入缓存，下次请求生效
+
+    这样首次请求约 3 秒内返回新浪排行；行业字段在数秒～十余秒内由 akshare 补全（视未命中数量）。
+    若 EM 在后台成功获取，则下次请求时涨跌家数/成交额/行业数据也一并返回。
     """
     cached = _get_cached('market_snapshot')
     if isinstance(cached, dict):
+        if snapshot_rankings_need_industry_enrich(cached):
+            try:
+                enrich_snapshot_industries(cached)
+            except Exception as e:
+                logger.warning('缓存快照行业补全失败: %s', e)
+            _set_cached('market_snapshot', cached)
         return cached
 
     out: Dict = {
@@ -267,58 +350,413 @@ def get_market_snapshot() -> Dict:
         'top_by_amount': [],
         'fast_gainers': [],
         'time': datetime.now().strftime('%H:%M'),
+        '_source': 'sina',
     }
-    try:
-        df = _get_ak().stock_zh_a_spot_em()
-        if df is None or df.empty:
-            _set_cached('market_snapshot', out)
-            return out
 
-        ch_col = '涨跌幅' if '涨跌幅' in df.columns else None
-        amt_col = '成交额' if '成交额' in df.columns else None
-        spd_col = '涨速' if '涨速' in df.columns else ch_col
-        ind_col = '所属行业' if '所属行业' in df.columns else (
-            '行业' if '行业' in df.columns else None
-        )
-        code_col = '代码' if '代码' in df.columns else None
-        name_col = '名称' if '名称' in df.columns else None
-        price_col = '最新价' if '最新价' in df.columns else None
+    # ── 方案一：新浪排行（同步，~3秒内完成） ─────────────────────────────
+    _fetch_sina_rankings(out)
+    if out['top_gainers']:
+        try:
+            enrich_snapshot_industries(out)
+        except Exception as e:
+            logger.warning('排行行业补全失败（不影响主流程）: %s', e)
+        _set_cached('market_snapshot', out)
 
-        if ch_col:
-            s = df[ch_col].astype(float)
-            out['up_count'] = int((s > 0).sum())
-            out['down_count'] = int((s < 0).sum())
-            out['flat_count'] = int((s == 0).sum())
+    # ── 立即返回新浪数据 ──────────────────────────────────────────────
+    if out['top_gainers']:
+        return out
 
-        if amt_col:
-            out['total_amount'] = float(df[amt_col].astype(float).sum())
-
-        def _pick(row) -> Dict:
-            return {
-                'code': str(row.get(code_col, '')) if code_col else '',
-                'name': str(row.get(name_col, '')) if name_col else '',
-                'price': _safe_float(row.get(price_col)) if price_col else 0.0,
-                'change': _safe_float(row.get(ch_col)) if ch_col else 0.0,
-                'industry': str(row.get(ind_col, '') or '') if ind_col else '',
-                'speed': _safe_float(row.get(spd_col)) if spd_col else 0.0,
-            }
-
-        if ch_col:
-            for _, row in df.nlargest(20, ch_col).iterrows():
-                out['top_gainers'].append(_pick(row))
-            for _, row in df.nsmallest(15, ch_col).iterrows():
-                out['top_losers'].append(_pick(row))
-        if amt_col:
-            for _, row in df.nlargest(15, amt_col).iterrows():
-                out['top_by_amount'].append(_pick(row))
-        if spd_col and spd_col in df.columns and spd_col != ch_col:
-            for _, row in df.nlargest(15, spd_col).iterrows():
-                out['fast_gainers'].append(_pick(row))
-    except Exception as e:
-        logger.warning(f"市场快照获取失败: {e}")
-
-    _set_cached('market_snapshot', out)
+    # ── 方案二：东方财富 EM（后台异步，下次请求时生效）────────────
+    # EM 需要 ~11 秒，直接在后台获取，不阻塞返回
+    _fetch_em_snapshot()
     return out
+
+
+def _fetch_em_snapshot():
+    """东方财富全量快照（后台异步，写入 Redis 缓存，下次生效）"""
+    out: Dict = {
+        'up_count': 0,
+        'down_count': 0,
+        'flat_count': 0,
+        'total_amount': 0.0,
+        'top_gainers': [],
+        'top_losers': [],
+        'top_by_amount': [],
+        'fast_gainers': [],
+        'time': datetime.now().strftime('%H:%M'),
+        '_source': 'em',
+    }
+
+    def _do_fetch():
+        try:
+            with _ak_eastmoney_direct():
+                df = _get_ak().stock_zh_a_spot_em()
+            if df is None or df.empty:
+                return
+
+            ch_col = next((c for c in ('涨跌幅',) if c in df.columns), None)
+            amt_col = next((c for c in ('成交额',) if c in df.columns), None)
+            spd_col = next((c for c in ('涨速',) if c in df.columns), ch_col)
+            ind_col = next((c for c in ('所属行业', '行业') if c in df.columns), None)
+            if not ind_col:
+                for c in df.columns:
+                    if '行业' in str(c):
+                        ind_col = c
+                        break
+            code_col = next((c for c in ('代码',) if c in df.columns), None)
+            name_col = next((c for c in ('名称',) if c in df.columns), None)
+            price_col = next((c for c in ('最新价',) if c in df.columns), None)
+
+            if ch_col:
+                s = pd.to_numeric(df[ch_col], errors='coerce').fillna(0)
+                out['up_count'] = int((s > 0).sum())
+                out['down_count'] = int((s < 0).sum())
+                out['flat_count'] = int((s == 0).sum())
+
+            if amt_col:
+                out['total_amount'] = float(pd.to_numeric(df[amt_col], errors='coerce').sum())
+
+            def _pick(row):
+                return {
+                    'code': str(row.get(code_col, '')) if code_col else '',
+                    'name': str(row.get(name_col, '')) if name_col else '',
+                    'price': _safe_float(row.get(price_col)) if price_col else 0.0,
+                    'change': _safe_float(row.get(ch_col)) if ch_col else 0.0,
+                    'industry': str(row.get(ind_col, '') or '') if ind_col else '',
+                    'speed': _safe_float(row.get(spd_col)) if spd_col else 0.0,
+                }
+
+            if ch_col:
+                for _, row in df.nlargest(20, ch_col).iterrows():
+                    out['top_gainers'].append(_pick(row))
+                for _, row in df.nsmallest(15, ch_col).iterrows():
+                    out['top_losers'].append(_pick(row))
+            if amt_col:
+                for _, row in df.nlargest(15, amt_col).iterrows():
+                    out['top_by_amount'].append(_pick(row))
+            if spd_col and spd_col != ch_col:
+                for _, row in df.nlargest(15, spd_col).iterrows():
+                    out['fast_gainers'].append(_pick(row))
+
+            # 东财排行若未带出行业列，会覆盖掉新浪已补全的 industry；此处统一再补一层
+            if snapshot_rankings_need_industry_enrich(out):
+                try:
+                    enrich_snapshot_industries(out)
+                except Exception as e:
+                    logger.warning('EM 快照行业补全失败: %s', e)
+
+            # 写内存缓存（EM 涨跌家数/成交额等与新浪合并展示）
+            _set_cached('market_snapshot', out)
+        except Exception as e:
+            logger.warning(f"东方财富快照后台获取失败: {e}")
+
+    t = threading.Thread(target=_do_fetch, daemon=True)
+    t.start()
+    # 不 join：后台异步，不阻塞主流程
+
+
+def _fetch_sina_rankings(out: Dict):
+    """新浪排行榜（涨幅/跌幅/成交额，无涨跌家数）"""
+    SINA_HEADERS = {
+        'Referer': 'http://finance.sina.com.cn',
+        'User-Agent': 'Mozilla/5.0',
+    }
+    SINA_BASE = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData'
+
+    def _fetch_ranking(sort: str, asc: int, limit: int = 20) -> List[Dict]:
+        try:
+            resp = requests.get(
+                SINA_BASE,
+                params={'page': 1, 'num': limit, 'sort': sort, 'asc': asc, 'node': 'hs_a'},
+                headers=SINA_HEADERS,
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            if not isinstance(data, list):
+                return []
+            return data
+        except Exception as e:
+            logger.warning(f"新浪排行获取失败 ({sort}): {e}")
+            return []
+
+    # 涨幅前20
+    gainers = _fetch_ranking('changepercent', 0, 20)
+    for s in gainers:
+        code = str(s.get('code', '')).strip()
+        out['top_gainers'].append({
+            'code': code,
+            'name': str(s.get('name', '')).strip(),
+            'price': _safe_float(s.get('trade')),
+            'change': _safe_float(s.get('changepercent')),
+            'industry': '',
+            'speed': 0.0,
+        })
+
+    # 跌幅前20
+    losers = _fetch_ranking('changepercent', 1, 20)
+    for s in losers:
+        code = str(s.get('code', '')).strip()
+        out['top_losers'].append({
+            'code': code,
+            'name': str(s.get('name', '')).strip(),
+            'price': _safe_float(s.get('trade')),
+            'change': _safe_float(s.get('changepercent')),
+            'industry': '',
+            'speed': 0.0,
+        })
+
+    # 成交额前20
+    amounts = _fetch_ranking('amount', 0, 20)
+    total = 0.0
+    for s in amounts:
+        code = str(s.get('code', '')).strip()
+        amt = _safe_float(s.get('amount'))
+        total += amt
+        out['top_by_amount'].append({
+            'code': code,
+            'name': str(s.get('name', '')).strip(),
+            'price': _safe_float(s.get('trade')),
+            'change': _safe_float(s.get('changepercent')),
+            'industry': '',
+            'speed': 0.0,
+        })
+    # 新浪只能获取Top20，用 Top20 合计估算全市场成交额（乘数约12）
+    if total > 0 and not out['total_amount']:
+        out['total_amount'] = total * 12
+
+
+# ── 股票代码 → 行业（东方财富「所属行业」），入库 stocks.sector 供排行展示与检索 ──
+_spot_em_cache = {'df': None, 'ts': 0.0}
+
+
+def _normalize_stock_code(code: str) -> str:
+    """统一为不含市场前缀的代码（与 stocks.code、akshare 一致）。"""
+    c = str(code or '').strip().lower()
+    if not c:
+        return ''
+    for p in ('sh', 'sz', 'bj'):
+        if c.startswith(p) and len(c) > len(p):
+            c = c[len(p):]
+            break
+    return c
+
+
+def _infer_market_type(code6: str) -> str:
+    c = (code6 or '').strip()
+    if not c:
+        return 'sz'
+    if c.startswith(('43', '83', '87', '88', '92')):
+        return 'bj'
+    if c.startswith('6'):
+        return 'sh'
+    return 'sz'
+
+
+def _fetch_spot_em_dataframe() -> Optional[pd.DataFrame]:
+    """全 A 现货（含所属行业），写入内存缓存（调用较慢，宜放后台线程）。"""
+    try:
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_zh_a_spot_em()
+    except Exception as e:
+        logger.warning('stock_zh_a_spot_em 获取失败: %s', e)
+        return None
+    if df is None or df.empty:
+        return None
+    _spot_em_cache['df'] = df
+    _spot_em_cache['ts'] = time.time()
+    return df
+
+
+def _spot_em_cache_warm() -> bool:
+    df = _spot_em_cache['df']
+    if df is None:
+        return False
+    return time.time() - float(_spot_em_cache['ts']) < 120
+
+
+def _warm_spot_em_cache_async():
+    """后台拉全市场现货，供约 2 分钟内后续请求快速映射行业。"""
+    def _run():
+        try:
+            _fetch_spot_em_dataframe()
+        except Exception as e:
+            logger.debug('后台预热 A 股现货失败: %s', e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _industry_map_from_spot_df(df: pd.DataFrame, want: set) -> Dict[str, Tuple[str, str]]:
+    """want: 6 位代码集合 → {code: (name, industry)}"""
+    code_c = next((c for c in ('代码',) if c in df.columns), None)
+    ind_c = next((c for c in ('所属行业', '行业') if c in df.columns), None)
+    name_c = next((c for c in ('名称',) if c in df.columns), None)
+    if not code_c or not ind_c:
+        return {}
+    out: Dict[str, Tuple[str, str]] = {}
+    for _, row in df.iterrows():
+        cc = str(row.get(code_c, '') or '').strip()
+        if cc not in want:
+            continue
+        ind = str(row.get(ind_c, '') or '').strip()
+        if not ind:
+            continue
+        nm = str(row.get(name_c, '') or '').strip() if name_c else ''
+        out[cc] = (nm, ind)
+    return out
+
+
+def _industry_from_individual_em(code6: str) -> Tuple[str, str]:
+    """单票兜底：stock_individual_info_em → (行业, 简称)。"""
+    try:
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_individual_info_em(symbol=code6)
+    except Exception as e:
+        logger.debug('stock_individual_info_em(%s) 失败: %s', code6, e)
+        return '', ''
+    if df is None or df.empty:
+        return '', ''
+    industry = ''
+    name = ''
+    for _, row in df.iterrows():
+        item = str(row.get('item', '') or '').strip()
+        val = str(row.get('value', '') or '').strip()
+        if item == '行业':
+            industry = val
+        elif item in ('股票简称', '名称'):
+            name = val
+    return industry, name
+
+
+def _parallel_individual_industries(codes: List[str]) -> Dict[str, Tuple[str, str]]:
+    """多线程拉取 stock_individual_info_em，codes 建议 ≤40。"""
+    out: Dict[str, Tuple[str, str]] = {}
+    if not codes:
+        return out
+
+    def _one(c: str) -> Tuple[str, str, str]:
+        ind, nm = _industry_from_individual_em(c)
+        return c, ind, nm
+
+    cap = codes[:40]
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            rows = list(ex.map(_one, cap))
+        for c, ind, nm in rows:
+            if ind:
+                out[c] = (ind, nm)
+    except Exception as e:
+        logger.warning('并发拉取个股行业失败，改为串行: %s', e)
+        for c in cap:
+            ind, nm = _industry_from_individual_em(c)
+            if ind:
+                out[c] = (ind, nm)
+            time.sleep(0.08)
+    return out
+
+
+def snapshot_rankings_need_industry_enrich(out: Dict) -> bool:
+    """排行列表里是否存在「有代码但 industry 为空」的行（需补全）。"""
+    keys = ('top_gainers', 'top_losers', 'top_by_amount', 'fast_gainers')
+    for k in keys:
+        for row in out.get(k) or []:
+            code = str(row.get('code', '') or '').strip()
+            if not code:
+                continue
+            ind = str(row.get('industry', '') or '').strip()
+            if not ind:
+                return True
+    return False
+
+
+def enrich_snapshot_industries(out: Dict) -> None:
+    """
+    为新浪排行各列表补充 industry 字段，并写入 stocks 表。
+    顺序：读库 →（若现货缓存已预热）用全表映射 → 否则并发个股接口，并后台预热全表现货。
+    """
+    try:
+        import database as db
+    except Exception:
+        db = None
+
+    keys = ('top_gainers', 'top_losers', 'top_by_amount', 'fast_gainers')
+    code_to_name: Dict[str, str] = {}
+    for k in keys:
+        for row in out.get(k) or []:
+            c = _normalize_stock_code(row.get('code', ''))
+            if len(c) < 4:
+                continue
+            nm = str(row.get('name', '') or '').strip()
+            if nm:
+                code_to_name[c] = nm
+            elif c not in code_to_name:
+                code_to_name[c] = ''
+    codes = list(code_to_name.keys())
+    if not codes:
+        return
+
+    merged: Dict[str, str] = {}
+    if db is not None:
+        try:
+            merged = db.get_stock_sectors_by_codes(codes)
+        except Exception as e:
+            logger.debug('读取 stocks 行业缓存失败: %s', e)
+
+    missing = [c for c in codes if not merged.get(c)]
+    if missing:
+        want = set(missing)
+        if _spot_em_cache_warm():
+            df = _spot_em_cache['df']
+            if df is not None:
+                got = _industry_map_from_spot_df(df, want)
+                batch = []
+                for c in missing:
+                    if c not in got:
+                        continue
+                    nm, ind = got[c]
+                    if not ind:
+                        continue
+                    merged[c] = ind
+                    batch.append({
+                        'code': c,
+                        'name': nm or code_to_name.get(c) or c,
+                        'market_type': _infer_market_type(c),
+                        'sector': ind,
+                    })
+                if batch and db is not None:
+                    try:
+                        db.upsert_stocks_batch(batch)
+                    except Exception as e:
+                        logger.debug('写入 stocks 行业失败: %s', e)
+
+        still = [c for c in missing if not merged.get(c)]
+        if still:
+            _warm_spot_em_cache_async()
+            got2 = _parallel_individual_industries(still)
+            batch2 = []
+            for c, (ind, nm) in got2.items():
+                merged[c] = ind
+                batch2.append({
+                    'code': c,
+                    'name': nm or code_to_name.get(c) or c,
+                    'market_type': _infer_market_type(c),
+                    'sector': ind,
+                })
+            if batch2 and db is not None:
+                try:
+                    db.upsert_stocks_batch(batch2)
+                except Exception as e:
+                    logger.debug('写入 stocks 行业失败: %s', e)
+
+    for k in keys:
+        for row in out.get(k) or []:
+            c = _normalize_stock_code(row.get('code', ''))
+            if len(c) < 4:
+                continue
+            ind = merged.get(c)
+            if ind:
+                row['industry'] = ind
 
 
 def get_hot_sectors() -> List:
@@ -365,7 +803,8 @@ def get_hot_concept_sectors() -> List[Dict]:
 
     result: List[Dict] = []
     try:
-        df = _get_ak().stock_board_concept_name_em()
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_board_concept_name_em()
         if df is None or df.empty:
             _set_cached('hot_concept_sectors', result)
             return result
@@ -407,7 +846,7 @@ def get_hot_concept_sectors() -> List[Dict]:
 
 def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
     """
-    板块主力净流入（单位：亿），东方财富 stock_sector_fund_flow_rank。
+    板块主力净流入（单位：亿），东方财富 push2.eastmoney.com 直接请求。
     sector_kind: industry | concept | region → 行业资金流 / 概念资金流 / 地域资金流
     返回 6 条：净流入前三 + 净流出前三（柱状图用）。
     """
@@ -416,8 +855,14 @@ def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
         'concept': '概念资金流',
         'region': '地域资金流',
     }
+    fs_map = {
+        'industry': 'm:90+t:2',
+        'concept': 'm:90+t:3+f:!50',
+        'region': 'm:90+t:1',
+    }
     sk = (sector_kind or 'industry').lower()
     st = sector_type_map.get(sk, '行业资金流')
+    fs = fs_map.get(sk, 'm:90+t:2')
     cache_key = f'sector_main_fund_{sk}'
     cached = _get_cached(cache_key)
     if isinstance(cached, list):
@@ -425,43 +870,63 @@ def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
 
     result: List[Dict] = []
     try:
-        df = _get_ak().stock_sector_fund_flow_rank(indicator='今日', sector_type=st)
-        if df is None or df.empty:
+        import time as _time
+        rt = int(_time.time() * 1000)
+        url = (
+            'https://push2.eastmoney.com/api/qt/clist/get'
+            f'?pn=1&pz=100&po=1&np=1'
+            f'&ut=b2884a393a59ad64002292a3e90d46a5'
+            f'&fltt=2&invt=2&fid=f62'
+            f'&fs={fs}'
+            f'&fields=f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124'
+            f'&rt={rt}'
+        )
+        # 使用 trust_env=False 的 Session 绕过系统代理
+        session = requests.Session()
+        session.trust_env = False
+        resp = session.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Referer': 'https://data.eastmoney.com/bkzj/hy.html',
+            'Accept': '*/*',
+        }, timeout=15)
+        session.close()
+        resp.raise_for_status()
+        data = resp.json()
+        diff = (data.get('data') or {}).get('diff') or []
+        if not diff:
             _set_cached(cache_key, result)
             return result
 
-        col = '今日主力净流入-净额'
-        nm = '名称'
-        ch = '今日涨跌幅'
-        if col not in df.columns:
-            logger.warning('板块资金流缺少列: %s', col)
-            _set_cached(cache_key, result)
-            return result
-
-        df = df.copy()
-        df['_net'] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['_net']).sort_values('_net', ascending=False).reset_index(drop=True)
-        n = len(df)
+        rows = []
+        for r in diff:
+            net_yuan = float(r.get('f62') or 0)
+            rows.append({
+                'name': str(r.get('f14') or ''),
+                'net_yi': round(net_yuan / 1e8, 2),
+                'change': _safe_float(r.get('f3', 0)),
+                '_net': net_yuan,
+            })
+        rows.sort(key=lambda x: x['_net'], reverse=True)
+        n = len(rows)
         if n == 0:
             _set_cached(cache_key, result)
             return result
 
-        def _row(r) -> Dict:
-            net_yuan = float(r['_net'])
+        def _pick(r) -> Dict:
             return {
-                'name': str(r.get(nm, '') or ''),
-                'net_yi': round(net_yuan / 1e8, 2),
-                'change': _safe_float(r.get(ch, 0)),
+                'name': r['name'],
+                'net_yi': r['net_yi'],
+                'change': r['change'],
             }
 
         if n <= 6:
-            for _, r in df.iterrows():
-                result.append(_row(r))
+            for r in rows:
+                result.append(_pick(r))
         else:
-            for _, r in df.head(3).iterrows():
-                result.append(_row(r))
-            for _, r in df.tail(3).sort_values('_net', ascending=False).iterrows():
-                result.append(_row(r))
+            for r in rows[:3]:
+                result.append(_pick(r))
+            for r in rows[-3:]:
+                result.append(_pick(r))
     except Exception as e:
         logger.warning(f'板块主力净流入获取失败: {e}')
 
@@ -472,14 +937,20 @@ def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
 def compute_macro_sentiment() -> Dict:
     """
     综合市场量化指标 + 新闻情感，计算宏观情绪评分（0-100）。
-    公式：
-      SENTIMENT_SCORE = 50
-        + (上涨% - 0.5) × 40
-        + (涨停数 - 跌停数) / 10
-        + (北向净流入 > 0 ? +8 : -8)
-        + (新闻情感分 - 50) / 5
-    上限 92，下限 38。
-    RISK_LEVEL: ≥62→MEDIUM, 48-61→MEDIUM-HIGH, <48→ELEVATED
+
+    涨跌家数估算策略：
+      - 优先使用 snapshot.up/down_count（东方财富数据，最准确）
+      - 备选：使用上证指数涨跌幅估算涨跌家数比（EM 不可用时）
+        +3% 以上 → 全市场普涨（约 80% 上涨）
+        +1% ~ +3% → 多数上涨（约 60% 上涨）
+        +0.5% ~ +1% → 略偏多（约 55% 上涨）
+        -0.5% ~ +0.5% → 基本均衡（约 50% 上涨）
+        -0.5% ~ -1% → 略偏空（约 45% 上涨）
+        -1% ~ -3% → 多数下跌（约 40% 上涨）
+        -3% 以下 → 全市场普跌（约 20% 上涨）
+      - 公式: SENTIMENT_SCORE = 50 + (up_pct - 0.5) × 40 + (涨停-跌停)/10 + (北向>0?+8:-8) + (新闻分-50)/5
+      - 上限 92，下限 38。
+      - RISK_LEVEL: ≥62→MEDIUM, 48-61→MEDIUM-HIGH, <48→ELEVATED
     """
     try:
         snapshot = get_market_snapshot()
@@ -487,10 +958,38 @@ def compute_macro_sentiment() -> Dict:
         limit = get_limit_up_data()
         overview = get_market_overview()
 
-        # ── 1. 涨跌家数 ────────────────────────────────────────────────
+        # ── 1. 涨跌家数（优先 snapshot；备选用指数估算） ───────────────
         up   = int(snapshot.get('up_count', 0)   or 0)
         down = int(snapshot.get('down_count', 0) or 0)
         flat = int(snapshot.get('flat_count', 0)  or 0)
+
+        if up == 0 and down == 0:
+            # EM 不可用，通过指数涨跌幅估算涨跌家数比
+            sh = next((x for x in overview if x.get('name') == '上证指数'), {})
+            sh_chg = float(sh.get('change', 0) or 0)
+            # 根据指数涨跌幅映射上涨比例
+            up_ratio_map = [
+                (3.0,  0.80),
+                (1.0,  0.60),
+                (0.5,  0.55),
+                (-0.5, 0.50),
+                (-1.0, 0.45),
+                (-3.0, 0.40),
+                (-99,  0.20),
+            ]
+            up_ratio = 0.5  # 默认
+            for threshold, ratio in up_ratio_map:
+                if sh_chg >= threshold:
+                    up_ratio = ratio
+                    break
+            # A 股全市场约 5500 只，估算涨跌家数
+            total_est = 5400
+            up_est = int(total_est * up_ratio)
+            down_est = total_est - up_est
+            up = up_est
+            down = down_est
+            flat = 0
+
         total = max(1, up + down + flat)
         up_pct   = up   / total
         down_pct = down / total
@@ -567,9 +1066,13 @@ def compute_macro_sentiment() -> Dict:
         else:
             market_desc = breadth_desc + '，' + money_desc
 
+        breadth_note = ''
+        if snapshot.get('up_count', 0) == 0 and snapshot.get('down_count', 0) == 0:
+            breadth_note = '（估算）'
+
         summary_text = (
             f'今日{tone}。'
-            f'上涨 {up} 家 / 下跌 {down} 家（涨停 {limit_up} / 跌停 {limit_down}）。'
+            f'上涨 {up} 家{breadth_note} / 下跌 {down} 家{breadth_note}（涨停 {limit_up} / 跌停 {limit_down}）。'
             f'{market_desc}。'
             f'建议关注高股息蓝筹与业绩确定性品种。'
         )

@@ -4,7 +4,11 @@
 市场数据路由模块
 """
 
+import logging
+
 from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
 from market_data import (
     get_market_overview,
     get_money_flow,
@@ -16,12 +20,17 @@ from market_data import (
     get_ai_summary,
     get_market_snapshot,
     compute_macro_sentiment,
+    enrich_snapshot_industries,
+    snapshot_rankings_need_industry_enrich,
 )
 from utils.ths_crawler import get_ths_industry_list
 from ticai.news_fetcher import fetch_all_news
 from cache import get, set
 
 market_bp = Blueprint('market', __name__)
+
+# 与旧版区分：此前 Redis 里可能长期缓存了 industry 为空的快照
+SNAPSHOT_REDIS_KEY = 'market/snapshot/v2'
 
 
 @market_bp.route('/')
@@ -48,14 +57,20 @@ def api_market_overview():
 
 @market_bp.route('/api/market/snapshot')
 def api_market_snapshot():
-    """A 股全市场快照（Redis 缓存 30s）"""
-    hit = get('market/snapshot')
+    """A 股全市场快照（Redis 缓存 30s）；命中缓存仍会对缺行业的排行做补全。"""
+    hit = get(SNAPSHOT_REDIS_KEY)
     if hit is not None:
+        if snapshot_rankings_need_industry_enrich(hit):
+            try:
+                enrich_snapshot_industries(hit)
+            except Exception as e:
+                logger.warning('Redis 快照行业补全失败: %s', e)
+            set(SNAPSHOT_REDIS_KEY, hit, ttl=30)
         return jsonify({'success': True, 'data': hit})
 
     try:
         data = get_market_snapshot()
-        set('market/snapshot', data, ttl=30)
+        set(SNAPSHOT_REDIS_KEY, data, ttl=30)
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

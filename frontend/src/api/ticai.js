@@ -115,16 +115,28 @@ export const ticai = {
 
   /**
    * 全量题材数据
-   * @param {{ force?: boolean }} options force=true 强制拉接口；false 时在 TTL 内且缓存存在则直接返回缓存
+   * @param {{ force?: boolean, refreshFirst?: boolean }} options
+   *   force=true 强制拉接口（绕过前端 TTL）；false 时在 TTL 内且缓存存在则直接返回缓存
+   *   refreshFirst=true 先调后端 /api/ticai/refresh 清除 MySQL+Redis，再重新抓取
    * @returns {Promise<{ data: object, market_change: number, fromCache?: boolean, unchanged?: boolean }>}
    */
   async all(options = {}) {
     const force = !!options.force
+    const refreshFirst = !!options.refreshFirst
     const cached = readAllCache()
     const now = Date.now()
 
     if (!force && cached && now - cached.savedAt < ALL_CACHE_TTL_MS) {
       return { ...cached.payload, fromCache: true, unchanged: true }
+    }
+
+    // refreshFirst=true：先清后端 MySQL+Redis，确保下次拿到新数据
+    if (refreshFirst) {
+      try {
+        await this.refresh()
+      } catch (e) {
+        console.warn('[ticai] refresh() failed, continue anyway:', e)
+      }
     }
 
     const res = await fetch(buildUrl('/api/ticai/all'))
@@ -161,6 +173,11 @@ export const ticai = {
       fromCache: false,
       unchanged: sameAsCache,
     }
+  },
+
+  /** 强制刷新：清除后端 MySQL+Redis 缓存，下次 all() 会走完整 pipeline */
+  async refresh() {
+    await postJson('/api/ticai/refresh', {})
   },
 
   /** 清除题材全量缓存（例如退出登录前可调用） */

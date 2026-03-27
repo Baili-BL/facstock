@@ -1,6 +1,7 @@
 """
 题材挖掘路由模块 - 从 Ticai 项目集成
 """
+import json
 import time
 from datetime import date, datetime
 from flask import Blueprint, jsonify, request
@@ -11,7 +12,7 @@ from ticai.theme_quality import evaluate_theme_quality
 from ticai.news_fetcher import fetch_cls_news, evaluate_theme_news_factor, get_market_news_summary
 from ticai.database import (
     init_ticai_tables, save_report, get_report_by_date, get_recent_reports,
-    get_performance_summary, get_stock_history, get_cached_news,
+    get_performance_summary, get_stock_history, get_cached_news, get_connection,
 )
 from ticai.performance_tracker import update_all_performance, get_today_performance_report
 # cache.py 在项目根目录
@@ -85,21 +86,114 @@ def get_themes():
 @ticai_bp.route('/api/ticai/all')
 @ticai_bp.route('/api/ticai/all/')
 def get_all_data():
-    """获取所有热门题材及其推荐股票（Redis 缓存 60s，双路由避免尾部斜杠 302）"""
+    """
+    获取所有热门题材及其推荐股票。
+    读取顺序：
+      1. Redis 缓存（TTL 60s，刷新后自动失效）
+      2. MySQL 今日报表（持久存储，次日自动换新）
+      3. 完整 pipeline（MySQL 也为空时降级执行）
+    """
     hit = get('ticai/all')
     if hit is not None:
-        return jsonify({"success": True, "data": hit.get('data', {}), "market_change": hit.get('market_change', 0)})
+        return jsonify({"success": True, "data": hit.get('data', {}), "market_change": hit.get('market_change', 0), "source": "cache"})
 
+    # ── 2. 尝试从 MySQL 读今日报表 ────────────────────────────────
+    from datetime import date
+    db_report = get_report_by_date(date.today())
+    if db_report is not None:
+        payload = _build_api_payload_from_db(db_report)
+        set('ticai/all', payload, ttl=60)
+        return jsonify({"success": True, "data": payload.get('data', {}), "market_change": payload.get('market_change', 0), "source": "mysql"})
+
+    # ── 3. 降级：跑完整 pipeline ─────────────────────────────────
+    return _fetch_and_build_all_data()
+
+
+def _build_api_payload_from_db(db_report: dict) -> dict:
+    """
+    把 MySQL 读出的报表转成与 get_all_data() 相同的 API payload 格式。
+    """
+    themes = db_report.get('themes', {})
+    market_change = db_report.get('market_change', 0)
+
+    result = {}
+    for theme_name, theme_data in themes.items():
+        stocks_raw = theme_data.get('stocks', [])
+
+        # 把 DB 行格式转成前端期望的字段（与 format_stock_display 输出对齐）
+        formatted_stocks = []
+        for s in stocks_raw:
+            turnover_str = s.get('turnover_rate', 0)
+            try:
+                turnover = float(turnover_str) if turnover_str else 0
+            except Exception:
+                turnover = 0
+
+            front_runner_tags = []
+            if s.get('front_runner_tags'):
+                try:
+                    front_runner_tags = json.loads(s['front_runner_tags'])
+                except Exception:
+                    pass
+
+            formatted_stocks.append({
+                "code": s.get('stock_code', ''),
+                "name": s.get('stock_name', ''),
+                "price": f"{s.get('recommend_price', 0):.2f}",
+                "change_pct": f"{s.get('change_pct', 0):+.2f}%",
+                "change_pct_num": s.get('change_pct', 0),
+                "market_cap": f"{s.get('market_cap', 0)/100000000:.0f}亿" if s.get('market_cap', 0) > 0 else "-",
+                "amount": f"{s.get('amount', 0)/100000000:.2f}亿" if s.get('amount', 0) > 0 else "-",
+                "amplitude": "0.00%",
+                "turnover_rate": f"{turnover:.1f}%",
+                "score": s.get('score', 0),
+                "signal": s.get('signal', '观望'),
+                "role": s.get('role', ''),
+                "role_reason": s.get('role_reason', ''),
+                "volume_level": s.get('volume_level', '-'),
+                "strength": s.get('strength', '-'),
+                "is_weak_to_strong": bool(s.get('is_weak_to_strong')),
+                "weak_to_strong_type": s.get('role_reason', ''),
+                "is_front_runner": bool(s.get('is_front_runner')),
+                "front_runner_tags": front_runner_tags,
+                "is_buyable": bool(s.get('is_buyable', 1)),
+                "unbuyable_reason": s.get('unbuyable_reason', ''),
+                "is_limit_up": s.get('change_pct', 0) >= 9.9,
+                "is_first_limit": False,
+                "open_strength": "平开",
+                "open_change": s.get('open_change', 0),
+            })
+
+        result[theme_name] = {
+            "info": theme_data.get('info', {}),
+            "history": theme_data.get('history', {}),
+            "hot_score": theme_data.get('hot_score', 0),
+            "market_change": theme_data.get('market_change', market_change),
+            "emotion": theme_data.get('emotion', {}),
+            "quality": theme_data.get('quality', {}),
+            "news": theme_data.get('news', {}),
+            "stocks": formatted_stocks,
+        }
+
+    sorted_result = dict(
+        sorted(result.items(), key=lambda x: x[1].get('hot_score', 0), reverse=True)
+    )
+    return {"data": sorted_result, "market_change": market_change}
+
+
+def _fetch_and_build_all_data():
+    """
+    完整 pipeline：爬虫 → 分析 → 存 MySQL → 设 Redis → 返回。
+    """
     try:
         print("\n" + "=" * 60)
-        print("📊 开始获取热门题材数据...")
+        print("📊 MySQL 无今日报表，执行完整 pipeline（爬虫 + 分析）")
         print("=" * 60)
 
         market_change = get_market_index_change()
         print(f"📈 大盘涨跌: {market_change:+.2f}%")
 
         theme_data = fetch_all_themes_with_stocks(theme_limit=8)
-
         news_list = fetch_cls_news(50)
 
         result = {}
@@ -111,7 +205,6 @@ def get_all_data():
 
             theme_change = theme_info.get("change_pct", 0) or 0
             emotion = calculate_theme_emotion(theme_info, stocks)
-
             formatted_stocks = analyze_and_format_stocks(stocks, market_change, theme_change)
 
             fund_tags = []
@@ -140,9 +233,9 @@ def get_all_data():
                     "fund_tags": fund_tags,
                 },
                 "hot_score": hot_score,
+                "market_change": market_change,
                 "quality": quality,
                 "news": news_factor,
-                "market_change": market_change,
                 "emotion": {
                     "stage": emotion["stage"],
                     "stage_desc": emotion["stage_desc"],
@@ -157,10 +250,9 @@ def get_all_data():
         sorted_result = dict(
             sorted(result.items(), key=lambda x: x[1].get("hot_score", 0), reverse=True)
         )
-
         print(f"\n✅ 数据获取完成，共 {len(sorted_result)} 个题材\n")
 
-        # 自动保存报表
+        # 保存 MySQL（报表持久化）+ Redis（短期缓存）
         try:
             save_report(date.today(), market_change, sorted_result)
         except Exception as save_err:
@@ -168,15 +260,31 @@ def get_all_data():
 
         payload = {"data": sorted_result, "market_change": market_change}
         set('ticai/all', payload, ttl=60)
-        return jsonify({
-            "success": True,
-            "data": sorted_result,
-            "market_change": market_change,
-        })
+        return jsonify({"success": True, "data": sorted_result, "market_change": market_change, "source": "pipeline"})
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@ticai_bp.route('/api/ticai/refresh', methods=['POST'])
+def force_refresh():
+    """
+    手动刷新：清除 Redis 缓存 + 删除 MySQL 今日报表，强制重新爬取。
+    前端「刷新」按钮调用此接口。
+    """
+    invalidate('ticai/')
+    try:
+        report = get_report_by_date(date.today())
+        if report:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM ticai_recommended_stocks WHERE report_id = %s', (report['id'],))
+                cursor.execute('DELETE FROM ticai_reports WHERE id = %s', (report['id'],))
+        print("🗑️ 今日报表已清除，即将重新爬取")
+    except Exception as e:
+        print(f"⚠️ 删除今日报表失败: {e}")
+    return jsonify({"success": True, "message": "已清除缓存，即将重新获取数据"})
 
 
 @ticai_bp.route('/api/ticai/kline/<stock_code>')

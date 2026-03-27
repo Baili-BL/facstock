@@ -31,7 +31,8 @@ def init_ticai_tables():
                 market_change DOUBLE DEFAULT 0,
                 themes_count INT DEFAULT 0,
                 stocks_count INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                theme_extras TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_report_date (report_date)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
@@ -86,9 +87,22 @@ def init_ticai_tables():
 
 
 def save_report(report_date: date, market_change: float, themes_data: Dict) -> int:
-    """保存每日推荐报表"""
+    """保存每日推荐报表（含主题级 emotion / quality / news 分析）"""
     themes_count = len(themes_data)
     stocks_count = sum(len(t.get("stocks", [])) for t in themes_data.values())
+
+    # 提取主题级分析字段，存入 theme_extras JSON（完整重建所需字段）
+    theme_extras = {}
+    for theme_name, theme_data in themes_data.items():
+        theme_extras[theme_name] = {
+            "info": theme_data.get("info", {}),
+            "history": theme_data.get("history", {}),
+            "hot_score": theme_data.get("hot_score", 0),
+            "market_change": theme_data.get("market_change", 0),
+            "emotion": theme_data.get("emotion", {}),
+            "quality": theme_data.get("quality", {}),
+            "news": theme_data.get("news", {}),
+        }
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -100,14 +114,14 @@ def save_report(report_date: date, market_change: float, themes_data: Dict) -> i
         if row:
             report_id = row['id']
             cursor.execute(
-                'UPDATE ticai_reports SET market_change=%s, themes_count=%s, stocks_count=%s WHERE id=%s',
-                (market_change, themes_count, stocks_count, report_id)
+                'UPDATE ticai_reports SET market_change=%s, themes_count=%s, stocks_count=%s, theme_extras=%s WHERE id=%s',
+                (market_change, themes_count, stocks_count, json.dumps(theme_extras, ensure_ascii=False), report_id)
             )
             cursor.execute('DELETE FROM ticai_recommended_stocks WHERE report_id = %s', (report_id,))
         else:
             cursor.execute(
-                'INSERT INTO ticai_reports (report_date, market_change, themes_count, stocks_count) VALUES (%s, %s, %s, %s)',
-                (report_date, market_change, themes_count, stocks_count)
+                'INSERT INTO ticai_reports (report_date, market_change, themes_count, stocks_count, theme_extras) VALUES (%s, %s, %s, %s, %s)',
+                (report_date, market_change, themes_count, stocks_count, json.dumps(theme_extras, ensure_ascii=False))
             )
             report_id = cursor.lastrowid
 
@@ -166,7 +180,7 @@ def save_report(report_date: date, market_change: float, themes_data: Dict) -> i
 
 
 def get_report_by_date(report_date: date) -> Optional[Dict]:
-    """获取指定日期的报表"""
+    """获取指定日期的报表（含主题级 emotion/quality/news 重建）"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM ticai_reports WHERE report_date = %s', (report_date,))
@@ -175,18 +189,41 @@ def get_report_by_date(report_date: date) -> Optional[Dict]:
             return None
 
         report = dict(row)
+
+        # 读取主题级分析 JSON
+        theme_extras = {}
+        if report.get('theme_extras'):
+            try:
+                theme_extras = json.loads(report['theme_extras'])
+            except Exception:
+                theme_extras = {}
+
         cursor.execute(
             'SELECT * FROM ticai_recommended_stocks WHERE report_id = %s ORDER BY theme_name, score DESC',
             (report['id'],)
         )
         stocks = [dict(r) for r in cursor.fetchall()]
-        report['stocks'] = stocks
 
+        # 按主题分组，并将 theme_extras 注入每个主题
         themes = {}
         for stock in stocks:
             tn = stock['theme_name']
-            themes.setdefault(tn, []).append(stock)
+            if tn not in themes:
+                extra = theme_extras.get(tn, {})
+                themes[tn] = {
+                    "info": extra.get("info", {"change_pct": report.get('market_change', 0), "up_count": 0, "down_count": 0}),
+                    "history": extra.get("history", {}),
+                    "hot_score": extra.get("hot_score", 0),
+                    "market_change": extra.get("market_change", report.get('market_change', 0)),
+                    "emotion": extra.get("emotion", {}),
+                    "quality": extra.get("quality", {}),
+                    "news": extra.get("news", {}),
+                    "stocks": [],
+                }
+            themes[tn]["stocks"].append(stock)
+
         report['themes'] = themes
+        report['stocks'] = stocks
         return report
 
 

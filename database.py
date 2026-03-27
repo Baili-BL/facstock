@@ -940,7 +940,35 @@ def upsert_stocks_batch(stocks_data: List[Dict]) -> int:
             except Exception:
                 continue
         conn.commit()
-    return saved
+        return saved
+
+
+def get_stock_sectors_by_codes(codes: List[str]) -> Dict[str, str]:
+    """
+    按股票代码批量查询已入库的行业（所属板块）名称。
+    仅返回 sector 非空的记录；code 为 stocks 表中的 6 位代码。
+    """
+    if not codes:
+        return {}
+    seen: List[str] = []
+    for c in codes:
+        c = str(c).strip()
+        if c and c not in seen:
+            seen.append(c)
+    if not seen:
+        return {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        ph = ','.join(['%s'] * len(seen))
+        cursor.execute(
+            f'''
+            SELECT code, sector FROM stocks
+            WHERE code IN ({ph})
+              AND sector IS NOT NULL AND TRIM(sector) != ''
+            ''',
+            seen,
+        )
+        return {row['code']: row['sector'] for row in cursor.fetchall()}
 
 
 # ==================== 新闻缓存 ====================

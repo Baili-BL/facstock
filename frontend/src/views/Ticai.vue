@@ -2,182 +2,179 @@
   <div class="ticai-page">
     <!-- 顶部导航 -->
     <nav class="navbar">
-      <div class="nav-back" @click="$router.push('/strategy')">
+      <div class="nav-icon" @click="$router.push('/strategy')">
         <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
       </div>
-      <div class="nav-close" @click="$router.push('/strategy')">
+      <div class="nav-icon" @click="$router.push('/strategy')">
         <svg class="icon" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       </div>
       <div class="nav-title">题材挖掘</div>
-      <div class="nav-more" @click="refreshForce" :class="{ spinning: loading }">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>
-      </div>
+      <button type="button" class="nav-refresh" @click="refreshForce" :disabled="loading" :class="{ spinning: loading }">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+      </button>
     </nav>
 
-    <!-- 次标题：火焰 + 题材挖掘 -->
-    <div class="sub-header">
-      <svg class="icon icon-fire" style="fill:#FF3B30"><use href="#icon-fire"/></svg>
-      <span class="sub-title">题材挖掘</span>
-    </div>
-
-    <!-- 今日热点 + 数量 + 刷新 -->
-    <div class="hot-section-header">
-      <span class="hot-title">今日热点</span>
-      <span class="hot-count">{{ themes.length }}个</span>
-      <button class="refresh-btn red" @click="refreshForce" :disabled="loading">
+    <!-- 题材概览条 -->
+    <div class="hot-header">
+      <svg class="hot-header__fire"><use href="#icon-fire"/></svg>
+      <span class="hot-header__title">题材挖掘</span>
+      <span class="hot-header__count tabular">{{ themes.length }}个</span>
+      <button type="button" class="btn-primary btn-primary--grad" @click="refreshForce" :disabled="loading">
         {{ loading ? '加载中' : '刷新' }}
       </button>
     </div>
 
     <div class="container">
-      <!-- 加载状态 -->
-      <div v-if="loading && themes.length === 0" class="loading">
-        <div class="spinner"></div>
-        <div>加载热点题材中...</div>
+      <!-- 加载 -->
+      <div v-if="loading && themes.length === 0" class="state">
+        <div class="spinner" />
+        <p>加载热点题材中...</p>
       </div>
 
-      <!-- 错误状态 -->
-      <div v-else-if="error" class="error">
-        <div class="error-icon">⚠️</div>
-        <div>{{ error }}</div>
-        <button class="retry-btn" @click="refreshForce">重试</button>
+      <!-- 错误 -->
+      <div v-else-if="error" class="state state--err">
+        <div class="state__icon">⚠️</div>
+        <p>{{ error }}</p>
+        <button type="button" class="btn-primary btn-primary--grad" @click="refreshForce">重试</button>
       </div>
 
-      <!-- 空状态 -->
-      <div v-else-if="themes.length === 0" class="empty">
-        <div class="empty-icon">📊</div>
-        <div>暂无热点题材</div>
+      <!-- 空 -->
+      <div v-else-if="themes.length === 0" class="state">
+        <div class="state__icon">📊</div>
+        <p>暂无热点题材</p>
       </div>
 
       <!-- 题材卡片列表 -->
       <div v-else class="theme-list">
         <div v-for="theme in themes" :key="theme.name" class="theme-card">
-          <!-- 卡片头部：火焰+题材名，徽章，涨跌幅 -->
-          <div class="theme-header">
-            <div class="theme-info">
-              <span class="theme-name">
-                <svg class="icon" style="fill:var(--apple-orange)"><use href="#icon-fire"/></svg>
+
+          <!-- 卡片头部 -->
+          <div class="theme-head">
+            <div class="theme-head__left">
+              <div class="theme-head__name">
+                <svg class="theme-head__fire"><use href="#icon-fire"/></svg>
                 {{ theme.name }}
-              </span>
-              <div class="theme-badges">
-                <span v-if="theme.emotion?.stage" class="badge badge-emotion" :style="{ color: theme.emotion.color }">
-                  {{ theme.emotion.stage }}
-                </span>
-                <span v-for="t in (theme.quality?.tags || [])" :key="t.name" class="badge badge-quality" :style="{ color: t.color }">
-                  {{ t.name }}
-                </span>
+              </div>
+              <div class="theme-head__badges">
+                <span
+                  v-if="theme.emotion?.stage"
+                  class="badge badge-emotion"
+                  :style="{ color: theme.emotion.color }"
+                >{{ theme.emotion.stage }}</span>
+                <span
+                  v-for="t in (theme.quality?.tags || [])"
+                  :key="t.name"
+                  class="badge badge-quality"
+                  :style="{ color: t.color }"
+                >{{ t.name }}</span>
               </div>
             </div>
-            <div class="theme-change" :class="(theme.info?.change_pct || 0) >= 0 ? 'up' : 'down'">
-              {{ (theme.info?.change_pct || 0) >= 0 ? '+' : '' }}{{ (theme.info?.change_pct || 0).toFixed(2) }}%
+            <div class="theme-head__change tabular" :class="themeChangeDir(theme)">
+              {{ themeChangeText(theme) }}
             </div>
           </div>
 
-          <!-- 统计行：热度、涨、跌 -->
+          <!-- 题材统计条 -->
           <div class="theme-stats">
-            <span class="stat-item">热度 {{ Math.round(theme.hot_score || 0) }}</span>
-            <span class="stat-item">涨 {{ theme.info?.up_count || 0 }}</span>
-            <span class="stat-item">跌 {{ theme.info?.down_count || 0 }}</span>
+            <span class="stat">热度 <em class="tabular">{{ Math.round(theme.hot_score || 0) }}</em></span>
+            <span class="stat stat--up">涨 <em class="tabular">{{ theme.info?.up_count || 0 }}</em></span>
+            <span class="stat stat--down">跌 <em class="tabular">{{ theme.info?.down_count || 0 }}</em></span>
           </div>
 
-          <!-- 成分股列表 -->
-          <div class="stock-list">
-            <div v-if="theme.stocks && theme.stocks.length > 0">
-              <div
-                v-for="(stock, idx) in theme.stocks"
-                :key="stock.code"
-                class="stock-item"
-                @click="showStockDetail(stock, theme.name)"
-              >
-                <div class="stock-left">
-                  <span class="stock-rank" :class="'rank-' + (idx + 1)">{{ idx + 1 }}</span>
-                  <span v-if="stock.role" class="stock-role" :class="'role-' + stock.role">{{ stock.role }}</span>
-                  <div class="stock-name-wrap">
-                    <span class="stock-name">{{ stock.name }}</span>
-                    <span class="stock-code">{{ stock.code }}</span>
-                  </div>
-                  <div class="stock-tags">
-                    <span v-if="stock.is_first_limit || stock.is_limit_up" class="stock-tag">首板</span>
-                    <span v-if="stock.is_weak_to_strong" class="stock-tag">弱转强</span>
-                    <span v-if="stock.volume_level === '地量'" class="stock-tag">地量</span>
-                  </div>
+          <!-- 成分股表格 -->
+          <div class="stock-table">
+            <div class="stock-table__head">
+              <span>股票</span>
+              <span class="tar">涨跌幅</span>
+            </div>
+            <div
+              v-for="(stock, idx) in (theme.stocks || [])"
+              :key="stock.code"
+              class="stock-row"
+              @click="showStockDetail(stock, theme.name)"
+            >
+              <div class="stock-row__main">
+                <div class="stock-row__rank">
+                  <span class="rank-num" :class="'rank-' + Math.min(idx + 1, 5)">{{ idx + 1 }}</span>
+                  <span v-if="stock.role" class="role-tag" :class="'role-' + stock.role">{{ stock.role }}</span>
                 </div>
-                <div class="stock-right">
-                  <span class="stock-change" :class="(stock.change_pct_num ?? 0) >= 0 ? 'up' : 'down'">
-                    {{ formatStockChange(stock) }}
-                  </span>
-                  <span v-if="stock.price" class="stock-price">¥{{ String(stock.price) }}</span>
-                  <span v-if="stock.score" class="stock-score">{{ stock.score }}分</span>
+                <div class="stock-row__info">
+                  <div class="stock-row__nm">{{ stock.name }}<span class="stock-row__cd tabular">{{ stock.code }}</span></div>
                 </div>
               </div>
+              <div class="stock-row__right">
+                <div class="stock-row__chg tabular" :class="stockDir(stock)">
+                  {{ stockChangeText(stock) }}
+                </div>
+                <div v-if="stock.price" class="stock-row__price tabular">¥{{ stock.price }}</div>
+                <div v-if="stock.score" class="stock-row__score">{{ stock.score }}分</div>
+              </div>
+              <!-- 特征标签单独一行，贴在 stock-row 底部 -->
+              <div v-if="hasFeatureTags(stock)" class="stock-row__feat">
+                <span v-if="stock.is_first_limit || stock.is_limit_up" class="feat-tag feat-tag--red">首板</span>
+                <span v-if="stock.is_weak_to_strong" class="feat-tag feat-tag--blue">弱转强</span>
+                <span v-if="stock.volume_level === '地量'" class="feat-tag feat-tag--gray">地量</span>
+              </div>
             </div>
-            <div v-else class="no-stocks">暂无成分股数据</div>
+            <div v-if="!theme.stocks?.length" class="stock-empty">暂无成分股数据</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 股票详情弹窗（与布林带类似） -->
+    <!-- 股票详情弹窗 -->
     <div class="detail-modal" :class="{ active: stockModalVisible }" @click.self="closeDetail">
       <div class="detail-panel">
         <div class="detail-header">
-          <button class="close-btn" @click="closeDetail">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
+          <button type="button" class="detail-icon-btn" @click="closeDetail">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
           </button>
           <span class="detail-title">
-            <svg class="icon" style="fill:var(--apple-orange)"><use href="#icon-fire"/></svg>
+            <svg class="detail-title__fire"><use href="#icon-fire"/></svg>
             {{ selectedStock?.name || '' }}
           </span>
-          <button
-            class="detail-star-btn"
-            :class="{ active: stockStarred }"
-            @click="toggleStockStar"
-            :title="stockStarred ? '取消自选' : '加自选'"
-          >
-            <svg class="icon" viewBox="0 0 24 24">
-              <use :href="stockStarred ? '#icon-star' : '#icon-star-outline'"/>
+          <button type="button" class="detail-star-btn" :class="{ on: stockStarred }" :title="stockStarred ? '取消自选' : '加自选'" @click="toggleStockStar">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path :fill="stockStarred ? 'var(--brand)' : 'none'" :stroke="stockStarred ? 'var(--brand)' : 'currentColor'" stroke-width="1.5" d="M12 17.3l5.2 3.1-1.4-5.9L20 9.8l-6-.5L12 3.7 9.9 9.3l-6 .5 4.2 4.7-1.4 5.9 5.3-3.1z"/>
             </svg>
           </button>
         </div>
-        <div class="detail-content" v-if="selectedStock">
-          <!-- 基础行情 -->
+
+        <div v-if="selectedStock" class="detail-scroll">
+          <!-- 价格卡片 -->
           <div class="detail-price-card">
-            <div class="detail-price-main">
-              <span class="detail-price">¥{{ fmtPrice(selectedStock) }}</span>
-              <span class="detail-pct" :class="fmtPct(selectedStock).cls">{{ fmtPct(selectedStock).text }}</span>
+            <div class="detail-price-row">
+              <span class="detail-px tabular">{{ selectedStock.price ? '¥' + Number(selectedStock.price).toFixed(2) : '--' }}</span>
+              <span class="detail-pct tabular" :class="stockDir(selectedStock)">{{ stockChangeText(selectedStock) }}</span>
             </div>
-            <div class="detail-meta-row">
-              <span class="detail-meta-item">{{ selectedStock.code }}</span>
-              <span v-if="selectedThemeName" class="detail-meta-item">{{ selectedThemeName }}</span>
+            <div class="detail-tags-row">
+              <span class="detail-tag">{{ selectedStock.code }}</span>
+              <span v-if="selectedThemeName" class="detail-tag">{{ selectedThemeName }}</span>
             </div>
           </div>
 
-          <!-- K线图 -->
+          <!-- K线 -->
           <div class="detail-kline-card">
-            <div class="detail-section-label detail-kline-heading">K线走势</div>
+            <div class="detail-label">K线走势</div>
             <KlineChart v-if="selectedStock?.code" :code="selectedStock.code" />
           </div>
 
           <!-- 评分 -->
           <div v-if="selectedStock.score" class="detail-score-card">
-            <div class="detail-score-left">
-              <div class="detail-score-label">题材评分</div>
-              <div class="detail-score-val">
-                <span class="detail-score-num">{{ selectedStock.score }}分</span>
-                <span v-if="selectedStock.role" class="detail-grade-badge grade-role">{{ selectedStock.role }}</span>
+            <div class="detail-score-row">
+              <div>
+                <div class="detail-label">题材评分</div>
+                <div class="detail-score-num tabular">{{ selectedStock.score }}分</div>
               </div>
+              <span v-if="selectedStock.role" class="detail-grade-badge">{{ selectedStock.role }}</span>
             </div>
           </div>
 
           <!-- 特征标签 -->
-          <div class="detail-tags-card" v-if="getStockTags(selectedStock).length">
-            <div class="detail-section-label">特征标签</div>
-            <div class="detail-tags">
-              <span
-                v-for="tag in getStockTags(selectedStock)"
-                :key="tag"
-                class="pill-tag pill-default"
-              >{{ tag }}</span>
+          <div v-if="getStockTags(selectedStock).length" class="detail-tags-card">
+            <div class="detail-label">特征标签</div>
+            <div class="detail-pills">
+              <span v-for="tag in getStockTags(selectedStock)" :key="tag" class="pill-tag">{{ tag }}</span>
             </div>
           </div>
         </div>
@@ -202,15 +199,13 @@ const stockStarred = ref(false)
 let refreshTimer = null
 let inFlight = false
 
-/** force=false：TTL 内且同日缓存命中则不请求；force=true：始终请求（刷新/重试） */
 async function refresh({ force = false } = {}) {
   if (inFlight) return
   inFlight = true
-  const showFullLoading = force || themes.value.length === 0
-  if (showFullLoading) loading.value = true
+  if (force || themes.value.length === 0) loading.value = true
   error.value = ''
   try {
-    const result = await ticai.all({ force })
+    const result = await ticai.all({ force, refreshFirst: force })
     themes.value = Object.entries(result.data || {}).map(([name, info]) => ({ name, ...info }))
   } catch (e) {
     error.value = e.message || '加载失败'
@@ -220,32 +215,28 @@ async function refresh({ force = false } = {}) {
   }
 }
 
-function refreshForce() {
-  return refresh({ force: true })
+function refreshForce() { return refresh({ force: true }) }
+
+function themeChangeDir(theme) {
+  return (theme.info?.change_pct || 0) >= 0 ? 'up' : 'down'
+}
+function themeChangeText(theme) {
+  const n = theme.info?.change_pct || 0
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
 }
 
-function formatStockChange(stock) {
-  const num = stock.change_pct_num ?? 0
-  const str = stock.change_pct
-  if (str) return str
-  return (num >= 0 ? '+' : '') + Number(num).toFixed(2) + '%'
+function stockDir(stock) {
+  return (stock.change_pct_num ?? 0) >= 0 ? 'up' : 'down'
+}
+function stockChangeText(stock) {
+  if (stock.change_pct) return stock.change_pct
+  const n = stock.change_pct_num ?? 0
+  return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'
 }
 
-function fmtPrice(s) {
-  const p = s.price
-  if (p == null || p === '') return '--'
-  const n = Number(p)
-  return Number.isFinite(n) ? n.toFixed(2) : String(p)
-}
-
-function fmtPct(s) {
-  const n = Number(s.change_pct_num)
-  if (Number.isFinite(n)) {
-    return { text: (n >= 0 ? '+' : '') + n.toFixed(2) + '%', cls: n >= 0 ? 'up' : 'down' }
-  }
-  const str = String(s.change_pct || '')
-  const isUp = str.startsWith('+') || (!str.startsWith('-') && str !== '--')
-  return { text: str || '--', cls: isUp ? 'up' : 'down' }
+function hasFeatureTags(s) {
+  if (!s) return false
+  return !!(s.is_first_limit || s.is_limit_up || s.is_weak_to_strong || s.volume_level === '地量')
 }
 
 function getStockTags(s) {
@@ -263,13 +254,10 @@ async function showStockDetail(stock, themeName) {
   selectedThemeName.value = themeName || ''
   stockModalVisible.value = true
   document.body.style.overflow = 'hidden'
-  // 检查是否已自选
   try {
     const { in_watchlist } = await watchlist.check(stock.code)
     stockStarred.value = !!in_watchlist
-  } catch {
-    stockStarred.value = false
-  }
+  } catch { stockStarred.value = false }
 }
 
 async function toggleStockStar() {
@@ -283,9 +271,7 @@ async function toggleStockStar() {
       await watchlist.add(code, name)
       stockStarred.value = true
     }
-  } catch (e) {
-    error.value = e.message || '操作失败'
-  }
+  } catch (e) { error.value = e.message || '操作失败' }
 }
 
 function closeDetail() {
@@ -297,204 +283,498 @@ function startAutoRefresh() {
   refreshTimer = setInterval(() => refresh({ force: false }), 60000)
 }
 
-onMounted(() => {
-  refresh()
-  startAutoRefresh()
-})
-
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
-})
+onMounted(() => { refresh(); startAutoRefresh() })
+onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 </script>
 
 <style scoped>
-.ticai-page { padding-bottom: 0; }
+/*
+ * 题材挖掘 — Architectural Ledger 风格（参考 Watchlist.vue）
+ * 涨跌语义：正向/涨 #006d41，负向/跌 #a00024
+ */
+.ticai-page {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: 'Inter', var(--font);
+}
 
+/* ── 顶部导航 ── */
 .navbar {
-  position: sticky; top: 0; z-index: 100;
-  background: rgba(255,255,255,0.98);
-  backdrop-filter: saturate(180%) blur(20px);
-  padding: 10px 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
-  display: flex; align-items: center; gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: calc(48px + env(safe-area-inset-top, 0));
+  padding: 0 12px;
+  padding-top: env(safe-area-inset-top, 0);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 1px 0 var(--divider);
 }
-.nav-back, .nav-close {
-  width: 30px; height: 30px; border-radius: 8px;
-  background: var(--apple-gray6); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+.nav-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.nav-back .icon, .nav-close .icon { fill: var(--apple-text2); }
-.nav-title { font-size: 17px; font-weight: 600; flex: 1; text-align: center; }
-.nav-more {
-  width: 30px; height: 30px; border-radius: 8px;
-  background: var(--apple-gray6); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+.nav-icon .icon { fill: var(--text-2); }
+.nav-title {
+  flex: 1;
+  font-family: 'Manrope', var(--font);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+  color: var(--brand);
 }
-.nav-more .icon { fill: var(--apple-text2); }
-.spinning { opacity: 0.6; }
-
-.sub-header {
-  padding: 10px 16px 8px;
-  display: flex; align-items: center; gap: 8px;
-  border-bottom: 0.5px solid var(--apple-gray5);
+.nav-refresh {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.sub-header .icon-fire { width: 20px; height: 20px; }
-.sub-title { font-size: 15px; font-weight: 600; color: #FF3B30; }
-
-.hot-section-header {
-  padding: 12px 16px;
-  display: flex; align-items: center; gap: 12px;
-}
-.hot-title { font-size: 16px; font-weight: 600; }
-.hot-count { font-size: 14px; color: var(--apple-text3); }
-.refresh-btn { margin-left: auto; padding: 6px 14px; border-radius: 16px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: var(--apple-gray6); color: var(--apple-text2); }
-.refresh-btn.red { background: #FF3B30; color: #fff; }
-.refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-.container { padding: 0 16px 24px; }
-
-.loading { text-align: center; padding: 80px 20px; color: var(--apple-gray); }
-.spinner { width: 32px; height: 32px; border: 3px solid var(--apple-gray5); border-top-color: var(--apple-blue); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 14px; }
+.nav-refresh .icon { fill: var(--text-2); }
+.spinning .icon { animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.error { text-align: center; padding: 60px 20px; }
-.error-icon { font-size: 48px; margin-bottom: 16px; }
-.retry-btn { background: var(--apple-blue); color: #fff; border: none; padding: 10px 24px; border-radius: 20px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+/* ── 题材概览条 ── */
+.hot-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--divider);
+}
+.hot-header__fire {
+  width: 18px;
+  height: 18px;
+  fill: var(--brand);
+  flex-shrink: 0;
+}
+.hot-header__title {
+  font-family: 'Manrope', var(--font);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--brand);
+}
+.hot-header__count {
+  font-size: 13px;
+  color: var(--text-3);
+}
+.btn-primary {
+  margin-left: auto;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.btn-primary--grad {
+  background: linear-gradient(135deg, var(--brand) 0%, #1a56d4 100%);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(41, 98, 255, 0.28);
+}
+.btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
-.empty { text-align: center; padding: 80px 20px; color: var(--apple-gray); }
-.empty-icon { font-size: 48px; margin-bottom: 16px; }
+/* ── 内容区 ── */
+.container { padding: 12px 14px 32px; }
 
-.theme-list { display: flex; flex-direction: column; gap: 14px; }
+.state {
+  text-align: center;
+  padding: 72px 20px 48px;
+  color: var(--text-3);
+  font-size: 14px;
+}
+.state--err { color: var(--down); }
+.state__icon { font-size: 48px; margin-bottom: 14px; }
+.state p { margin-bottom: 14px; }
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 2.5px solid var(--divider);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  margin: 0 auto 12px;
+}
+
+/* ── 题材列表 ── */
+.theme-list { display: flex; flex-direction: column; gap: 12px; }
 
 .theme-card {
-  background: var(--apple-card);
-  border-radius: 16px; overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+  background: var(--surface);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
 }
 
-.theme-header {
-  padding: 14px 16px;
-  display: flex; justify-content: space-between; align-items: flex-start;
-  border-bottom: 0.5px solid var(--apple-gray5);
+/* 题材头部 */
+.theme-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 14px 10px;
+  background: linear-gradient(165deg, rgba(41, 98, 255, 0.08) 0%, #fff 55%);
 }
-.theme-info { flex: 1; }
-.theme-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
-.theme-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
-.badge-emotion { background: #FFF3E0; }
-.badge-quality { background: #E3F2FD; }
-.theme-change { font-size: 18px; font-weight: 700; flex-shrink: 0; }
+.theme-head__left { flex: 1; min-width: 0; }
+.theme-head__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Manrope', var(--font);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+.theme-head__fire { width: 16px; height: 16px; fill: var(--brand); flex-shrink: 0; }
+.theme-head__badges { display: flex; flex-wrap: wrap; gap: 5px; }
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.badge-emotion { background: rgba(41, 98, 255, 0.1); }
+.badge-quality { background: rgba(107, 79, 163, 0.12); }
+.theme-head__change {
+  font-size: 16px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
 
+/* 题材统计条 */
 .theme-stats {
-  padding: 8px 16px; display: flex; gap: 16px;
-  font-size: 13px; color: var(--apple-text3);
-  border-bottom: 0.5px solid var(--apple-gray5);
+  display: flex;
+  gap: 16px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-top: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
 }
-.stat-item { font-weight: 500; }
+.stat { font-weight: 600; }
+.stat em { font-style: normal; }
+.stat--up { color: #006d41; font-weight: 800; }
+.stat--down { color: #a00024; font-weight: 800; }
 
-.stock-list { padding: 0; }
-.stock-item {
-  padding: 12px 16px;
-  border-bottom: 0.5px solid var(--apple-gray5);
-  display: flex; justify-content: space-between; align-items: center;
+/* ── 成分股表格（仿 Watchlist 风格）── */
+.stock-table { }
+.stock-table__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--divider);
+}
+.tar { text-align: right; }
+
+.stock-row {
+  padding: 11px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.1s ease;
+  border-bottom: 1px solid var(--divider);
 }
-.stock-item:last-child { border-bottom: none; }
-.stock-item:active { background: var(--apple-gray6); }
+.stock-row:last-of-type { border-bottom: none; }
+.stock-row:active { background: var(--surface-2); }
 
-.stock-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.stock-rank {
-  width: 22px; height: 22px; border-radius: 6px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: #fff; flex-shrink: 0;
+.stock-row__main {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
 }
-.rank-1 { background: var(--apple-red); }
-.rank-2 { background: var(--apple-orange); }
-.rank-3 { background: var(--apple-purple); }
-.rank-4, .rank-5 { background: var(--apple-gray); }
+.stock-row__rank {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.rank-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+.rank-1 { background: var(--brand); }
+.rank-2 { background: #1e56c9; }
+.rank-3 { background: #4a6fa5; }
+.rank-4, .rank-5 { background: #8e9299; }
 
-.stock-role { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
-.role-龙头 { background: #FF3B30; color: #fff; }
-.role-中军 { background: #007AFF; color: #fff; }
-.role-低吸, .role-跟风 { background: var(--apple-gray); color: #fff; }
+.role-tag {
+  font-size: 9px;
+  font-weight: 800;
+  padding: 3px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+.role-龙头 { background: #a00024; color: #fff; }
+.role-中军 { background: var(--brand); color: #fff; }
+.role-低吸, .role-跟风 { background: var(--text-2); color: #fff; }
 
-.stock-name-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.stock-name { font-size: 15px; font-weight: 600; }
-.stock-code { font-size: 12px; color: var(--apple-text3); }
+.stock-row__info { flex: 1; min-width: 0; }
+.stock-row__nm {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.3;
+}
+.stock-row__cd {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
 
-.stock-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.stock-tag { font-size: 10px; color: var(--apple-text3); padding: 2px 6px; border-radius: 4px; background: var(--apple-gray6); }
+.stock-row__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.stock-row__chg {
+  font-size: 14px;
+  font-weight: 800;
+}
+.stock-row__price {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.stock-row__score {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #a00024;
+  color: #fff;
+}
 
-.stock-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
-.stock-change { font-size: 15px; font-weight: 700; }
-.stock-price { font-size: 12px; color: var(--apple-text3); }
-.stock-score { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; background: rgba(255,59,48,0.12); color: var(--apple-red); }
+/* 特征标签单独一行 */
+.stock-row__feat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 29px;
+}
+.feat-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.feat-tag--red { background: rgba(160, 0, 36, 0.1); color: #a00024; }
+.feat-tag--blue { background: rgba(41, 98, 255, 0.1); color: var(--brand); }
+.feat-tag--gray { background: var(--surface-2); color: var(--text-3); }
 
-.no-stocks { padding: 24px; text-align: center; color: var(--apple-gray); font-size: 14px; }
+.stock-empty {
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+  border-top: 1px solid var(--divider);
+}
 
-.up { color: var(--apple-red) !important; }
-.down { color: var(--apple-green) !important; }
+/* 涨跌通用 */
+.up { color: #006d41 !important; }
+.down { color: #a00024 !important; }
+em { font-style: normal; }
 
-/* 股票详情弹窗（与布林带一致） */
-.detail-modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 200; }
+/* ── 详情弹窗 ── */
+.detail-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(25, 28, 29, 0.42);
+  z-index: 200;
+}
 .detail-modal.active { display: block; }
 .detail-panel {
-  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-  background: var(--apple-bg);
-  animation: slideIn 0.35s cubic-bezier(0.32, 0.72, 0, 1);
-  display: flex; flex-direction: column; overflow: hidden;
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  animation: slideIn 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
 .detail-header {
-  background: rgba(255,255,255,0.78); backdrop-filter: saturate(180%) blur(20px);
-  padding: 12px 16px; padding-top: calc(12px + env(safe-area-inset-top));
-  display: flex; align-items: center; gap: 12px;
-  border-bottom: 0.5px solid var(--apple-gray5); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0));
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 1px 0 var(--divider);
+  flex-shrink: 0;
 }
-.close-btn {
-  width: 32px; height: 32px; background: var(--apple-gray6); border-radius: 50%;
-  border: none; display: flex; align-items: center; justify-content: center; cursor: pointer;
+.detail-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.detail-title { flex: 1; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.detail-title .icon { fill: var(--apple-orange); }
+.detail-icon-btn svg { fill: var(--text-2); }
+.detail-title {
+  flex: 1;
+  font-family: 'Manrope', var(--font);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-1);
+  min-width: 0;
+}
+.detail-title__fire { width: 18px; height: 18px; fill: var(--brand); flex-shrink: 0; }
 .detail-star-btn {
-  width: 36px; height: 36px; background: var(--apple-gray6); border-radius: 50%;
-  border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.detail-star-btn .icon { width: 18px; height: 18px; fill: var(--apple-gray2); }
-.detail-star-btn.active .icon { fill: #FF9500; }
-.detail-content { flex: 1; overflow-y: auto; padding: 16px; }
+.detail-star-btn svg { fill: none; stroke: var(--text-4); stroke-width: 1.5; }
+.detail-star-btn.on svg { fill: var(--brand); stroke: var(--brand); }
 
-.detail-price-card {
-  background: var(--apple-card); border-radius: 16px; padding: 18px;
-  margin-bottom: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+.detail-scroll { flex: 1; overflow-y: auto; padding: 14px; }
+
+.detail-card {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 16px 16px 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  outline: 1px solid rgba(115, 118, 136, 0.15);
+  outline-offset: -1px;
 }
-.detail-price-main { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
-.detail-price { font-size: 36px; font-weight: 800; }
-.detail-pct { font-size: 20px; font-weight: 700; }
-.detail-meta-row { display: flex; gap: 12px; flex-wrap: wrap; }
-.detail-meta-item { font-size: 13px; color: var(--apple-text3); }
+.detail-price-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.detail-px {
+  font-size: 34px;
+  font-weight: 800;
+  color: var(--text-1);
+}
+.detail-pct { font-size: 18px; font-weight: 800; }
+.detail-tags-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.detail-tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
 
-.detail-kline-card { margin-bottom: 12px; }
-.detail-kline-heading { margin-bottom: 6px; font-size: 12px; color: var(--apple-text3); font-weight: 600; }
+.detail-kline-card { margin-bottom: 10px; }
+.detail-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
 
 .detail-score-card {
-  background: var(--apple-card); border-radius: 16px; padding: 16px 18px;
-  margin-bottom: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  outline: 1px solid rgba(115, 118, 136, 0.15);
+  outline-offset: -1px;
 }
-.detail-score-left { flex: 1; }
-.detail-score-label { font-size: 12px; color: var(--apple-text3); margin-bottom: 4px; }
-.detail-score-val { display: flex; align-items: baseline; gap: 8px; }
-.detail-score-num { font-size: 28px; font-weight: 800; }
-.detail-grade-badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 8px; }
-.detail-grade-badge.grade-role { background: var(--apple-blue); color: #fff; }
+.detail-score-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.detail-score-num {
+  font-family: 'Manrope', var(--font);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-1);
+  margin-top: 4px;
+}
+.detail-grade-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--brand);
+  color: #fff;
+}
 
 .detail-tags-card {
-  background: var(--apple-card); border-radius: 16px; padding: 14px 18px;
-  margin-bottom: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  outline: 1px solid rgba(115, 118, 136, 0.15);
+  outline-offset: -1px;
 }
-.detail-section-label { font-size: 12px; color: var(--apple-text3); font-weight: 600; margin-bottom: 10px; }
-.detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.pill-tag { font-size: 12px; padding: 4px 10px; border-radius: 8px; background: var(--apple-gray6); color: var(--apple-text2); }
+.detail-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill-tag {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
 </style>
