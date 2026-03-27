@@ -10,6 +10,9 @@ import News from './views/News.vue'
 import Strategy from './views/Strategy.vue'
 import Bollinger from './views/Bollinger.vue'
 import AIStrategy from './views/AIStrategy.vue'
+import AISummaryDetail from './views/AISummaryDetail.vue'
+import StrategyAgents from './views/StrategyAgents.vue'
+import AgentHoldings from './views/AgentHoldings.vue'
 import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
@@ -22,7 +25,10 @@ const routes = [
   { path: '/news', component: News },
   { path: '/strategy', component: Strategy },
   { path: '/strategy/bollinger', component: Bollinger },
+  { path: '/strategy/ai/summary', component: AISummaryDetail },
   { path: '/strategy/ai', component: AIStrategy },
+  { path: '/strategy/agents', component: StrategyAgents },
+  { path: '/strategy/agents/:id', component: AgentHoldings },
   { path: '/ticai', component: Ticai },
   { path: '/ticai/history', component: TicaiHistory },
   { path: '/ticai/performance', component: TicaiPerformance },

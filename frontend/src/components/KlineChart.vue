@@ -2,10 +2,10 @@
   <div class="kline-wrap">
     <!-- 图例 -->
     <div v-show="status === 'ready'" class="kline-legend">
-      <span class="legend-item"><span class="legend-dot" style="background:#ef5350"></span>K线</span>
-      <span class="legend-item"><span class="legend-dot" style="background:#FF9800"></span>MA5</span>
-      <span class="legend-item"><span class="legend-dot" style="background:#2196F3"></span>MA10</span>
-      <span class="legend-item"><span class="legend-dot" style="background:#9C27B0"></span>MA20</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--rise"></span>K线</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--ma5"></span>MA5</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--ma10"></span>MA10</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--ma20"></span>MA20</span>
     </div>
     <div class="kline-panel">
       <!-- Tab 紧贴图表上沿（与画布同一卡片内） -->
@@ -109,23 +109,24 @@ const TOOLTIP_H = 138
 const CH = 248
 
 const C = {
-  up:    '#ef5350',
-  down:  '#26a69a',
-  bbU:   'rgba(33,150,243,0.55)',
-  bbM:   'rgba(33,150,243,0.90)',
-  bbL:   'rgba(33,150,243,0.55)',
-  volU:  'rgba(239,83,80,0.75)',
-  volD:  'rgba(38,166,154,0.75)',
-  cmfP:  'rgba(239,83,80,0.85)',
-  cmfN:  'rgba(38,166,154,0.85)',
+  up:    '#a00024',
+  down:  '#006d41',
+  /* 布林带：灰系虚线，与下方均线（橙/蓝/紫）明显区分 */
+  bbU:   'rgba(100, 116, 139, 0.55)',
+  bbM:   'rgba(71, 85, 105, 0.88)',
+  bbL:   'rgba(100, 116, 139, 0.55)',
+  volU:  'rgba(160, 0, 36, 0.72)',
+  volD:  'rgba(0, 109, 65, 0.72)',
+  cmfP:  'rgba(160, 0, 36, 0.85)',
+  cmfN:  'rgba(0, 109, 65, 0.85)',
   bwMain: 'rgba(156,136,255,0.95)',
   bwMa5:  'rgba(255,193,7,0.90)',
   bwMa10: 'rgba(33,150,243,0.90)',
   sigU:  '#4caf50',
   sigD:  '#f44336',
-  ma5:   '#FF9800',
-  ma10:  '#2196F3',
-  ma20:  '#9C27B0',
+  ma5:   '#E65100',
+  ma10:  '#1565C0',
+  ma20:  '#6A1B9A',
 }
 
 // ── helpers ────────────────────────────────
@@ -328,15 +329,21 @@ function buildChart(data, tab) {
 
   // ── 布林带 ─────────────────────────────────
   const bbUpper = chart.addSeries(LineSeries, {
-    color: C.bbU, lineWidth: 1,
+    color: C.bbU,
+    lineWidth: 1,
+    lineStyle: 2,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   const bbMid = chart.addSeries(LineSeries, {
-    color: C.bbM, lineWidth: 1.5,
+    color: C.bbM,
+    lineWidth: 1,
+    lineStyle: 0,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   const bbLower = chart.addSeries(LineSeries, {
-    color: C.bbL, lineWidth: 1,
+    color: C.bbL,
+    lineWidth: 1,
+    lineStyle: 2,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   if (data.bb_upper?.length)   bbUpper.setData(data.bb_upper.map(v => ({ time: v.time, value: Number(v.value) })))
@@ -345,21 +352,21 @@ function buildChart(data, tab) {
 
   // ── 均线 MA5 / MA10 / MA20 ──────────────────────
   const ma5Series = chart.addSeries(LineSeries, {
-    color: C.ma5, lineWidth: 1.5,
+    color: C.ma5, lineWidth: 2,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   const ma5Pts = zipByDates(data.dates, data.ma5)
   if (ma5Pts.length) ma5Series.setData(ma5Pts)
 
   const ma10Series = chart.addSeries(LineSeries, {
-    color: C.ma10, lineWidth: 1.5,
+    color: C.ma10, lineWidth: 2,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   const ma10Pts = zipByDates(data.dates, data.ma10)
   if (ma10Pts.length) ma10Series.setData(ma10Pts)
 
   const ma20Series = chart.addSeries(LineSeries, {
-    color: C.ma20, lineWidth: 1.5,
+    color: C.ma20, lineWidth: 2,
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   })
   const ma20Pts = zipByDates(data.dates, data.ma20)
@@ -550,6 +557,10 @@ onUnmounted(() => clearAll())
   border-radius: 50%;
   flex-shrink: 0;
 }
+.legend-dot--rise { background: #a00024; }
+.legend-dot--ma5 { background: #e65100; }
+.legend-dot--ma10 { background: #1565c0; }
+.legend-dot--ma20 { background: #6a1b9a; }
 
 .kline-panel {
   display: flex;
@@ -603,7 +614,7 @@ onUnmounted(() => clearAll())
 }
 
 .kline-tab.active {
-  background: #1c1c1e;
+  background: var(--brand, #2962ff);
   color: #ffffff;
   font-weight: 600;
 }
@@ -685,12 +696,12 @@ onUnmounted(() => clearAll())
 }
 
 .kline-tooltip-num.is-up {
-  color: #ef5350;
+  color: #a00024;
   font-weight: 600;
 }
 
 .kline-tooltip-num.is-down {
-  color: #26a69a;
+  color: #006d41;
   font-weight: 600;
 }
 

@@ -3,20 +3,18 @@
     <div class="st-inner">
       <!-- 页头：对齐 stitch 选股策略列表 -->
       <header class="st-hero">
+        <div class="st-hero__glow" aria-hidden="true" />
         <div class="st-hero__text">
           <h1 class="st-hero__title">选股策略列表</h1>
           <p class="st-hero__sub">
-            基于 AI 与量化筛选的 FacSstock 策略入口；卡片数据来自扫描与报告，非收益承诺。
+            基于 AI 与量化筛选的策略入口；卡片数据来自扫描与报告，非收益承诺。
           </p>
         </div>
-        <button type="button" class="st-sort" @click="sortReversed = !sortReversed">
-          智能排序
-        </button>
       </header>
 
       <div class="st-grid">
         <router-link
-          v-for="item in orderedCards"
+          v-for="item in baseCards"
           :key="item.id"
           :to="item.to"
           class="st-card"
@@ -29,13 +27,13 @@
                   <span class="st-tag-pill">{{ item.pill }}</span>
                 </div>
                 <h2 class="st-card__name">{{ item.title }}</h2>
-                <p class="st-card__desc">{{ item.desc }}</p>
               </div>
               <div class="st-card__kpi">
                 <div class="st-card__kpi-val tabular">{{ item.headline }}</div>
                 <div class="st-card__kpi-lbl">{{ item.headlineLbl }}</div>
               </div>
             </div>
+            <p class="st-card__desc">{{ item.desc }}</p>
             <div class="st-card__metrics">
               <div class="st-metric">
                 <div class="st-metric__lbl">{{ item.m1Lbl }}</div>
@@ -46,23 +44,6 @@
                 <div class="st-metric__val tabular">{{ item.m2Val }}</div>
               </div>
             </div>
-          </div>
-          <div class="st-card__spark" aria-hidden="true">
-            <svg
-              class="st-spark-svg"
-              viewBox="0 0 400 56"
-              preserveAspectRatio="none"
-            >
-              <!-- 单段平滑曲线：无 T 链式、无 non-scaling-stroke，横向拉伸时仍为一条连续线 -->
-              <path
-                :d="item.sparkPath"
-                fill="none"
-                :stroke="item.sparkStroke"
-                stroke-width="2.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
           </div>
         </router-link>
       </div>
@@ -87,12 +68,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { scan, report } from '@/api/strategy.js'
 
-/** 单段三次贝塞尔，整条路径一笔连续 */
-const SPARK_BOLLINGER_D = 'M0 46 C140 36 280 14 400 4'
-const SPARK_TICAI_D = 'M0 40 C110 44 250 22 400 6'
-const SPARK_AI_D = 'M0 44 C130 20 270 30 400 12'
-
-const sortReversed = ref(false)
 const stats = ref({ scans: '—', stocks: '—', sectors: '—' })
 const latestScan = ref(null)
 const reportCount = ref('—')
@@ -106,6 +81,20 @@ const baseCards = computed(() => {
 
   return [
     {
+      id: 'agents',
+      to: '/strategy/agents',
+      cat: 'AI 智能体',
+      pill: '游资专家库',
+      title: '金融智能 · 策略智能体',
+      desc: '市场监测下的多角色策略库：胜率、收益与状态一览；全场策略总结跳转大模型解读。',
+      headline: '6',
+      headlineLbl: '策略角色（位）',
+      m1Lbl: '扫描次数',
+      m1Val: scans,
+      m2Lbl: '累计覆盖股票',
+      m2Val: stocks,
+    },
+    {
       id: 'bollinger',
       to: '/strategy/bollinger',
       cat: '量化突破',
@@ -113,13 +102,11 @@ const baseCards = computed(() => {
       title: '布林收缩策略',
       desc: '基于布林带收口检测，提前发现蓄势突破标的；结合扫描结果动态更新命中列表。',
       headline: lastHit != null ? String(lastHit) : '—',
-      headlineLbl: '最近一次命中（只）',
+      headlineLbl: '上次命中（只）',
       m1Lbl: '扫描次数',
       m1Val: scans,
       m2Lbl: '累计覆盖股票',
       m2Val: stocks,
-      sparkPath: SPARK_BOLLINGER_D,
-      sparkStroke: 'var(--st-secondary)',
     },
     {
       id: 'ticai',
@@ -129,13 +116,11 @@ const baseCards = computed(() => {
       title: '题材挖掘',
       desc: 'AI 驱动的热点题材与板块轮动分析，追踪龙头与情绪周期，入口进入题材中心。',
       headline: sectors !== '—' ? String(sectors) : '—',
-      headlineLbl: '历史监测板块（个）',
+      headlineLbl: '监测板块（个）',
       m1Lbl: '扫描次数',
       m1Val: scans,
       m2Lbl: '累计覆盖股票',
       m2Val: stocks,
-      sparkPath: SPARK_TICAI_D,
-      sparkStroke: 'var(--st-secondary)',
     },
     {
       id: 'ai',
@@ -150,15 +135,8 @@ const baseCards = computed(() => {
       m1Val: scans,
       m2Lbl: '最近扫描',
       m2Val: lastTime,
-      sparkPath: SPARK_AI_D,
-      sparkStroke: 'var(--st-secondary)',
     },
   ]
-})
-
-const orderedCards = computed(() => {
-  const list = baseCards.value
-  return sortReversed.value ? [...list].reverse() : list
 })
 
 async function loadHistory() {
@@ -218,8 +196,6 @@ onMounted(() => {
 .st-page {
   --st-primary: #003ec7;
   --st-primary-mid: #0052ff;
-  --st-secondary: #006d41;
-  --st-tertiary: #a00024;
   /* 策略标签 & 卡片金边 */
   --st-gold: #9a7209;
   --st-gold-mid: #b8860b;
@@ -241,7 +217,7 @@ onMounted(() => {
   min-height: 100dvh;
   background: var(--st-surface);
   color: var(--st-text);
-  padding-top: calc(12px + env(safe-area-inset-top, 0));
+  padding-top: 0;
   padding-bottom: calc(24px + env(safe-area-inset-bottom, 0) + 72px);
   font-family: 'Inter', var(--font, system-ui, sans-serif);
 }
@@ -257,52 +233,49 @@ onMounted(() => {
   font-feature-settings: 'tnum' 1;
 }
 
-/* 页头 */
+/* 页头：安全区顶内边距放在此处，避免顶部出现与背景不一致的「缝隙」 */
 .st-hero {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 28px;
+  position: relative;
+  overflow: hidden;
+  margin: 0 -20px 0;
+  padding: calc(14px + env(safe-area-inset-top, 0)) 20px 20px;
+  background:
+    radial-gradient(ellipse 90% 60% at 105% 0%, rgba(201, 162, 39, 0.22), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 5% 0%, rgba(0, 62, 199, 0.14), transparent 52%),
+    linear-gradient(170deg, #fffdf5 0%, #fff 40%, rgba(248, 249, 250, 0.95) 100%);
+}
+
+.st-hero__glow {
+  position: absolute;
+  inset: -40% 0 auto 50%;
+  height: 160%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(201, 162, 39, 0.14) 0%, transparent 65%);
+  pointer-events: none;
+}
+
+.st-hero__text {
+  position: relative;
+  z-index: 1;
 }
 
 .st-hero__title {
   margin: 0;
   font-family: 'Manrope', var(--font, system-ui, sans-serif);
-  font-size: 2.125rem;
+  font-size: 2rem;
   font-weight: 800;
   letter-spacing: -0.02em;
-  line-height: 1.12;
+  line-height: 1.1;
   color: var(--st-text);
 }
 
 .st-hero__sub {
   margin: 8px 0 0;
-  font-size: 1.125rem;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.55;
   color: var(--st-muted);
-  max-width: 22rem;
-}
-
-.st-sort {
-  flex-shrink: 0;
-  align-self: flex-end;
-  padding: 10px 14px;
-  font-family: inherit;
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--st-text);
-  background: var(--st-high);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.st-sort:active {
-  background: #d9dadb;
+  max-width: 100%;
 }
 
 /* 卡片列表 */
@@ -310,26 +283,33 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 18px 0 28px;
 }
 
+/* 金色质感卡片：顶金边 + 底部金色阴影，无下边框 */
 .st-card {
   display: flex;
   flex-direction: column;
-  min-height: 200px;
-  padding: 24px 22px 18px;
+  min-height: 0;
+  padding: 22px 22px 20px;
   background: var(--st-white);
   border-radius: 10px;
   box-shadow:
-    inset 0 0 0 1px var(--st-ghost),
-    inset 0 0 0 2px var(--st-gold-border),
-    inset 0 -3px 0 0 var(--st-gold-glow),
+    inset 0 0 0 1px rgba(180, 134, 11, 0.3),
+    inset 0 3px 0 0 var(--st-gold-mid),
+    inset 0 -4px 0 0 rgba(201, 162, 39, 0.08),
     var(--st-ambient);
   text-decoration: none;
   color: inherit;
   transition: background 0.15s, box-shadow 0.15s;
 }
 .st-card:active {
-  background: var(--st-low);
+  background: #fdfdf5;
+  box-shadow:
+    inset 0 0 0 1px rgba(180, 134, 11, 0.4),
+    inset 0 3px 0 0 var(--st-gold-light),
+    inset 0 -4px 0 0 rgba(201, 162, 39, 0.12),
+    var(--st-ambient);
 }
 
 .st-card__main {
@@ -356,11 +336,11 @@ onMounted(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .st-tag-cat {
-  font-size: 0.8125rem;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -368,19 +348,19 @@ onMounted(() => {
 }
 
 .st-tag-pill {
-  font-size: 0.8125rem;
+  font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 3px;
-  background: var(--st-gold-bg);
+  background: rgba(201, 162, 39, 0.14);
   color: var(--st-gold);
-  box-shadow: inset 0 0 0 1px var(--st-gold-border);
+  box-shadow: inset 0 0 0 1px rgba(180, 134, 11, 0.35);
 }
 
 .st-card__name {
-  margin: 0 0 7px;
+  margin: 0 0 6px;
   font-family: 'Manrope', var(--font, system-ui, sans-serif);
-  font-size: 1.5rem;
+  font-size: 17px;
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.25;
@@ -393,22 +373,24 @@ onMounted(() => {
 }
 
 .st-card__desc {
-  margin: 0;
-  font-size: 1.0625rem;
+  margin: 10px 0 0;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.55;
   color: var(--st-muted);
-  max-width: 100%;
+  width: 100%;
 }
 
 .st-card__kpi {
+  flex: 0 0 auto;
+  max-width: 38%;
   text-align: right;
-  flex-shrink: 0;
+  align-self: flex-start;
 }
 
 .st-card__kpi-val {
   font-family: 'Manrope', var(--font, system-ui, sans-serif);
-  font-size: 1.9375rem;
+  font-size: 26px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.03em;
@@ -416,27 +398,25 @@ onMounted(() => {
 }
 
 .st-card__kpi-lbl {
-  margin-top: 6px;
-  font-size: 0.8125rem;
+  margin-top: 5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   color: var(--st-outline);
-  line-height: 1.35;
-  max-width: 7rem;
+  line-height: 1.25;
   margin-left: auto;
   text-align: right;
+  white-space: nowrap;
 }
 
 .st-card__metrics {
   display: flex;
-  gap: 24px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--st-low);
+  gap: 28px;
+  margin-top: 14px;
 }
 
 .st-metric__lbl {
-  font-size: 0.8125rem;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.03em;
   color: var(--st-outline);
@@ -444,23 +424,9 @@ onMounted(() => {
 
 .st-metric__val {
   margin-top: 4px;
-  font-size: 1.125rem;
+  font-size: 15px;
   font-weight: 800;
   color: var(--st-text);
-}
-
-.st-card__spark {
-  margin-top: 16px;
-  height: 48px;
-  width: 100%;
-  overflow: visible;
-}
-
-.st-spark-svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
 }
 
 /* 更多策略 */
@@ -470,7 +436,7 @@ onMounted(() => {
 
 .st-more__title {
   margin: 0 0 12px;
-  font-size: 1rem;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -486,7 +452,7 @@ onMounted(() => {
 
 .st-more__lead {
   margin: 0 0 8px;
-  font-size: 1.0625rem;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.55;
   color: var(--st-muted);
@@ -499,7 +465,7 @@ onMounted(() => {
 
 .st-more__muted {
   margin: 0;
-  font-size: 1rem;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.45;
   color: var(--st-outline);

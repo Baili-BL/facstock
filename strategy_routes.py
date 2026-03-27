@@ -5,6 +5,7 @@
 """
 
 from flask import Blueprint, jsonify, request
+from typing import Optional
 import database as db
 import json
 import requests
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
 
 # 全局变量存储当前扫描状态
+last_api_request_time = 0.0
+API_REQUEST_INTERVAL = 1.0
 scan_lock = threading.Lock()
 scan_status = {
     'is_scanning': False,
@@ -853,7 +856,7 @@ def get_watchlist_enriched():
             code = s.get('stock_code') or s.get('code') or ''
             codes.append(code)
 
-        # 东方财富批量行情接口
+        # 东方财富批量行情接口（优先），失败后用新浪备选
         secids = []
         for c in codes:
             m = "1" if c.startswith(("6", "9")) else "0"
@@ -891,7 +894,50 @@ def get_watchlist_enriched():
                     'mkt_cap':    item.get('f62'),
                 }
         except Exception as e:
-            logger.warning(f"批量行情获取失败: {e}")
+            logger.warning(f"东方财富批量行情获取失败: {e}")
+
+        # 备选：新浪实时行情（分批请求，每批20只）
+        if not price_map:
+            try:
+                for batch in [codes[i:i+20] for i in range(0, len(codes), 20)]:
+                    sina_codes = ",".join(
+                        f"{'sh' if c.startswith(('6','9')) else 'sz'}{c}" for c in batch
+                    )
+                    resp = requests.get(
+                        f"http://hq.sinajs.cn/list={sina_codes}",
+                        headers={"Referer": "http://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
+                        timeout=8,
+                    )
+                    if resp.status_code == 200:
+                        for line in resp.text.strip().split("\n"):
+                            if "=" not in line:
+                                continue
+                            sym = line.split('="')[0].split("_")[-1]
+                            raw = line.split('="')[1].rstrip('";\r\n')
+                            parts = raw.split(",")
+                            if len(parts) < 32:
+                                continue
+                            code = sym[2:] if sym.startswith(("sh", "sz")) else sym
+                            prev_close = float(parts[2]) if parts[2] else 0
+                            close_price = float(parts[3]) if parts[3] else 0
+                            change = round(close_price - prev_close, 3) if prev_close else 0
+                            pct_change = round((change / prev_close) * 100, 2) if prev_close else 0
+                            price_map[code] = {
+                                'close': close_price,
+                                'pct_change': pct_change,
+                                'change': change,
+                                'volume': float(parts[8]) if parts[8] else 0,
+                                'amount': float(parts[9]) if parts[9] else 0,
+                                'high': float(parts[4]) if parts[4] else 0,
+                                'low': float(parts[5]) if parts[5] else 0,
+                                'open': float(parts[1]) if parts[1] else 0,
+                                'prev_close': prev_close,
+                                'turnover': 0,
+                                'qty_ratio': None,
+                                'mkt_cap': None,
+                            }
+            except Exception as e2:
+                logger.warning(f"新浪批量行情获取失败: {e2}")
 
         # 迷你K线（最近10日收盘价，用于缩略图）
         mini_kline_map = {}
@@ -993,3 +1039,301 @@ def check_watchlist(code: str):
         return jsonify({'success': True, 'in_watchlist': in_watchlist})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+# ==================== 股票搜索 / 同步 / 行情 API ====================
+
+@strategy_bp.route('/api/stocks/search')
+def search_stocks():
+    """
+    模糊搜索股票（支持代码、名称、拼音首字母）。
+    前端调用: /api/stocks/search?q=关键词&limit=20
+    """
+    try:
+        keyword = request.args.get('q', '').strip()
+        limit = max(1, min(50, request.args.get('limit', 20, type=int)))
+
+        if not keyword:
+            return jsonify({'success': True, 'data': [], 'stock_count': db.get_all_stocks_count()})
+
+        results = db.search_stocks(keyword, limit=limit)
+        total = db.get_all_stocks_count()
+        needs_sync = total == 0
+
+        return jsonify({
+            'success': True,
+            'data': results,
+            'stock_count': total,
+            'needs_sync': needs_sync,
+        })
+    except Exception as e:
+        logger.error(f"股票搜索失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/stocks/status')
+def stocks_status():
+    """
+    获取股票数据库状态。
+    返回数据库中股票数量，以及是否需要同步。
+    """
+    try:
+        total = db.get_all_stocks_count()
+        return jsonify({
+            'success': True,
+            'count': total,
+            'needs_sync': total == 0,
+        })
+    except Exception as e:
+        logger.error(f"获取股票状态失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/stocks/sync', methods=['POST'])
+def sync_stocks():
+    """
+    从 akshare 同步全量 A 股股票基础数据到本地数据库。
+    同步完成后前端可以正常搜索股票。
+    后台运行，不阻塞请求。
+    """
+    import threading as _t
+    import akshare as _ak
+    import pandas as _pd
+
+    def _do_sync():
+        logger.info("[StockSync] 开始同步股票数据...")
+        saved = 0
+        try:
+            # 沪市
+            try:
+                df_sh = _ak.stock_info_a_code_name(market="SH")
+                if df_sh is not None and not df_sh.empty:
+                    records = []
+                    for _, row in df_sh.iterrows():
+                        code = str(row.get('code', '') or row.get('证券代码', '')).strip()
+                        name = str(row.get('name', '') or row.get('证券简称', '')).strip()
+                        if code and name and len(code) == 6 and code.isdigit():
+                            records.append({
+                                'code': code,
+                                'name': name,
+                                'market_type': 'sh',
+                            })
+                    if records:
+                        saved += db.upsert_stocks_batch(records)
+            except Exception as e:
+                logger.warning(f"[StockSync] 沪市同步失败: {e}")
+
+            # 深市
+            try:
+                df_sz = _ak.stock_info_a_code_name(market="SZ")
+                if df_sz is not None and not df_sz.empty:
+                    records = []
+                    for _, row in df_sz.iterrows():
+                        code = str(row.get('code', '') or row.get('证券代码', '')).strip()
+                        name = str(row.get('name', '') or row.get('证券简称', '')).strip()
+                        if code and name and len(code) == 6 and code.isdigit():
+                            records.append({
+                                'code': code,
+                                'name': name,
+                                'market_type': 'sz',
+                            })
+                    if records:
+                        saved += db.upsert_stocks_batch(records)
+            except Exception as e:
+                logger.warning(f"[StockSync] 深市同步失败: {e}")
+
+            # 北交所
+            try:
+                df_bj = _ak.stock_info_a_code_name(market="BJ")
+                if df_bj is not None and not df_bj.empty:
+                    records = []
+                    for _, row in df_bj.iterrows():
+                        code = str(row.get('code', '') or row.get('证券代码', '')).strip()
+                        name = str(row.get('name', '') or row.get('证券简称', '')).strip()
+                        if code and name and len(code) == 6 and code.isdigit():
+                            records.append({
+                                'code': code,
+                                'name': name,
+                                'market_type': 'bj',
+                            })
+                    if records:
+                        saved += db.upsert_stocks_batch(records)
+            except Exception as e:
+                logger.warning(f"[StockSync] 北交所同步失败: {e}")
+
+            # 如果上述接口全部失败，使用备用方案
+            if saved == 0:
+                try:
+                    df_all = _ak.stock_zh_a_spot_em()
+                    if df_all is not None and not df_all.empty:
+                        code_col = next((c for c in df_all.columns if '代码' in c), None)
+                        name_col = next((c for c in df_all.columns if '名称' in c), None)
+                        if code_col and name_col:
+                            records = []
+                            for _, row in df_all.iterrows():
+                                code = str(row[code_col]).strip()
+                                name = str(row[name_col]).strip()
+                                if code and name and len(code) == 6 and code.isdigit():
+                                    mtype = 'sh' if code.startswith(('6', '9')) else 'sz' if code.startswith(('0', '3')) else 'bj'
+                                    records.append({'code': code, 'name': name, 'market_type': mtype})
+                            if records:
+                                saved = db.upsert_stocks_batch(records)
+                except Exception as e:
+                    logger.warning(f"[StockSync] 备用方案（全市场快照）失败: {e}")
+
+            logger.info(f"[StockSync] 同步完成，共写入 {saved} 条股票记录")
+
+        except Exception as e:
+            logger.error(f"[StockSync] 同步过程异常: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # 后台线程执行，避免阻塞 HTTP 请求
+    t = _t.Thread(target=_do_sync, daemon=True)
+    t.start()
+
+    try:
+        total = db.get_all_stocks_count()
+    except Exception:
+        total = 0
+
+    return jsonify({
+        'success': True,
+        'message': '同步任务已启动',
+        'total': total,
+    })
+
+
+@strategy_bp.route('/api/stock/<code>/quote')
+def get_stock_quote(code: str):
+    """
+    获取单只股票实时行情。
+    优先使用新浪接口（更稳定），东方财富作为备选。
+    返回字段与前端 Watchlist.vue 期望一致。
+    """
+    try:
+        if not code or not code.isdigit() or len(code) != 6:
+            return jsonify({'success': False, 'error': '无效股票代码'}), 400
+
+        result = _get_quote_sina(code)
+        if result:
+            return jsonify({'success': True, **result})
+
+        # 备选：东方财富批量接口
+        mkt = "1" if code.startswith(("6", "9")) else "0"
+        secid = f"{mkt}.{code}"
+        try:
+            resp = requests.get(
+                "http://push2.eastmoney.com/api/qt/ulist/get",
+                params={
+                    "fltt": "2",
+                    "secids": secid,
+                    "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f62",
+                },
+                timeout=8,
+            )
+            items = resp.json().get('data', {}).get('diff', [])
+            if items:
+                item = items[0]
+                return jsonify({
+                    'success': True,
+                    'code': code,
+                    'name': item.get('f14', ''),
+                    'close': item.get('f2'),
+                    'pct_change': item.get('f3'),
+                    'change': item.get('f4'),
+                    'volume': item.get('f5'),
+                    'amount': item.get('f6'),
+                    'turnover': item.get('f8'),
+                    'qty_ratio': item.get('f10'),
+                    'high': item.get('f15'),
+                    'low': item.get('f16'),
+                    'open': item.get('f17'),
+                    'prev_close': item.get('f18'),
+                    'mkt_cap': item.get('f62'),
+                })
+        except Exception:
+            pass
+
+        return jsonify({'success': False, 'error': '未找到行情数据'}), 404
+
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'error': '请求超时，请稍后重试'}), 504
+    except Exception as e:
+        logger.error(f"获取股票 {code} 行情失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _get_quote_sina(code: str) -> Optional[dict]:
+    """
+    使用新浪实时行情接口获取股票数据。
+    返回格式: {code, name, close, pct_change, change, volume, amount,
+               turnover, qty_ratio, high, low, open, prev_close, mkt_cap}
+    """
+    prefix = "sh" if code.startswith(("6", "9")) else "sz"
+    try:
+        resp = requests.get(
+            f"http://hq.sinajs.cn/list={prefix}{code}",
+            headers={
+                "Referer": "http://finance.sina.com.cn",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return None
+        text = resp.text.strip()
+        if "=" not in text or text.count(",") < 30:
+            return None
+
+        raw = text.split('="')[1].rstrip('";')
+        parts = raw.split(",")
+        if len(parts) < 32:
+            return None
+
+        def _f(val: str) -> Optional[float]:
+            try:
+                v = float(val)
+                return None if v == 0 else v
+            except Exception:
+                return None
+
+        name = parts[0]
+        prev_close = _f(parts[2])   # 昨收
+        open_price = _f(parts[1])   # 今开
+        close_price = _f(parts[3])  # 最新价
+        high_price = _f(parts[4])   # 最高
+        low_price = _f(parts[5])    # 最低
+        volume = float(parts[8]) if parts[8] else 0   # 成交量（手）
+        amount = float(parts[9]) if parts[9] else 0   # 成交额（元）
+        date_str = parts[30] if len(parts) > 30 else ""
+        time_str = parts[31] if len(parts) > 31 else ""
+
+        pct_change = 0.0
+        change = 0.0
+        if prev_close and close_price:
+            change = round(close_price - prev_close, 3)
+            pct_change = round((change / prev_close) * 100, 2)
+
+        turnover = 0.0
+        qty_ratio = None
+        mkt_cap = None
+
+        return {
+            "code": code,
+            "name": name,
+            "close": close_price,
+            "pct_change": pct_change,
+            "change": change,
+            "volume": volume,
+            "amount": amount,
+            "turnover": turnover,
+            "qty_ratio": qty_ratio,
+            "high": high_price,
+            "low": low_price,
+            "open": open_price,
+            "prev_close": prev_close,
+            "mkt_cap": mkt_cap,
+        }
+    except Exception:
+        return None

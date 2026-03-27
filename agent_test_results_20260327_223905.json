@@ -1,0 +1,47 @@
+{
+  "test_time": "2026-03-27T22:39:05.291417",
+  "results": [
+    {
+      "agent_id": "jun",
+      "agent_name": "钧哥天下无双",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    },
+    {
+      "agent_id": "qiao",
+      "agent_name": "乔帮主",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    },
+    {
+      "agent_id": "jia",
+      "agent_name": "炒股养家",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    },
+    {
+      "agent_id": "speed",
+      "agent_name": "极速先锋",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    },
+    {
+      "agent_id": "trend",
+      "agent_name": "趋势追随者",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    },
+    {
+      "agent_id": "quant",
+      "agent_name": "量化之翼",
+      "success": false,
+      "error": "HTTPSConnectionPool(host='api.hunyuan.cloud.tencent.com', port=443): Max retries exceeded with url: /v1/chat/completions (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 403 Forbidden')))",
+      "content": ""
+    }
+  ]
+}
