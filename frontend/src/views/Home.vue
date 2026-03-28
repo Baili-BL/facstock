@@ -1,22 +1,8 @@
 <template>
   <div class="market-home">
-    <header class="hm-top">
-      <div class="hm-top__brand">
-        <svg class="hm-top__ico" viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
-        </svg>
-        <h1 class="hm-top__title">MARKET OVERVIEW</h1>
-      </div>
-      <button type="button" class="hm-top__search" aria-label="搜索个股" @click="$router.push('/strategy')">
-        <svg class="hm-top__search-svg" viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-        </svg>
-      </button>
-    </header>
-
     <div class="hm-status">
-      <span class="hm-status__dot" aria-hidden="true" />
-      <span>{{ marketStatus }}</span>
+      <span class="hm-status__dot" :class="marketStatus.dot" aria-hidden="true" />
+      <span>{{ marketStatus.label }}</span>
       <span class="hm-status__sep">·</span>
       <span class="hm-status__date">{{ dateStrFull }}</span>
       <span class="hm-status__grow" />
@@ -220,10 +206,6 @@
         </div>
       </section>
     </main>
-
-    <div v-if="allSkeletonsShown" class="page-loading" aria-busy="true">
-      <div class="spinner" />
-    </div>
   </div>
 </template>
 
@@ -278,23 +260,58 @@ const rankTabDefs = [
   { id: 'amount', label: '成交额', key: 'top_by_amount' },
 ]
 
-const now = new Date()
+// 交易时段：优先 /api/market/session（服务端北京时间）；失败时用浏览器按上海时区推算
+const sessionFromApi = ref(null)
+/** 驱动日期与本地兜底状态刷新（SPA 长时间停留时仍更新） */
+const clockTick = ref(0)
+
+const MARKET_OPEN_MORNING = 9 * 60 + 30
+const MARKET_CLOSE_MORNING = 11 * 60 + 30
+const MARKET_OPEN_AFTERNOON = 13 * 60
+const MARKET_CLOSE_AFTERNOON = 15 * 60
+
+function shanghaiMinuteOfDay() {
+  const d = new Date()
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const h = Number(parts.find(p => p.type === 'hour').value)
+  const m = Number(parts.find(p => p.type === 'minute').value)
+  return h * 60 + m
+}
+
+function isShanghaiWeekend() {
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date())
+  return wd === 'Sat' || wd === 'Sun'
+}
+
+function localFallbackMarketStatus() {
+  void clockTick.value
+  if (isShanghaiWeekend()) return { label: '非交易日', dot: 'is-off' }
+  const t = shanghaiMinuteOfDay()
+  if (t >= MARKET_OPEN_MORNING && t < MARKET_CLOSE_MORNING) return { label: '交易中', dot: 'is-up' }
+  if (t >= MARKET_OPEN_AFTERNOON && t < MARKET_CLOSE_AFTERNOON) return { label: '交易中', dot: 'is-up' }
+  if (t >= MARKET_CLOSE_MORNING && t < MARKET_OPEN_AFTERNOON) return { label: '午间休市', dot: 'is-off' }
+  return { label: '已收盘', dot: 'is-off' }
+}
 
 const marketStatus = computed(() => {
-  const h = now.getHours()
-  const m = now.getMinutes()
-  const t = h * 60 + m
-  if (t >= 9 * 60 + 30 && t < 11 * 60 + 30) return '交易中'
-  if (t >= 13 * 60 && t < 15 * 60) return '交易中'
-  return '已收盘'
+  const s = sessionFromApi.value
+  if (s && s.label && s.dot) return { label: s.label, dot: s.dot }
+  return localFallbackMarketStatus()
 })
 
 const dateStrFull = computed(() => {
-  const w = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()]
-  const y = now.getFullYear()
-  const mo = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  return `${y}-${mo}-${d} 星期${w}`
+  void clockTick.value
+  const d = new Date()
+  const w = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${mo}-${day} 星期${w}`
 })
 
 const northNet = computed(() => flow.value?.north_money?.north_net_inflow ?? 0)
@@ -556,7 +573,20 @@ function setupIndexReady() {
   loadingIndex.value = false
 }
 
+async function loadSession() {
+  try {
+    const data = await market.session()
+    if (data && typeof data === 'object' && data.label && data.dot) {
+      sessionFromApi.value = data
+    }
+  } catch (e) {
+    console.error('session error', e)
+    sessionFromApi.value = null
+  }
+}
+
 let timer = null
+let sessionPollTimer = null
 onMounted(() => {
   loadFlow()
   loadOverview()
@@ -565,6 +595,7 @@ onMounted(() => {
   loadSectors()
   loadTurnover()
   loadMacro()
+  loadSession()
 
   // 指数在 overview 返回后即 ready
   const unwatch = setInterval(() => {
@@ -574,8 +605,13 @@ onMounted(() => {
     }
   }, 100)
 
+  sessionPollTimer = setInterval(() => {
+    clockTick.value += 1
+    loadSession()
+  }, 30_000)
+
   timer = setInterval(() => {
-    market.invalidate()
+    // 不清缓存，让前端 TTL 缓存自动管理，静静静后台刷新
     loadOverview()
     loadFlow()
     loadLimit()
@@ -583,10 +619,12 @@ onMounted(() => {
     loadSectors()
     loadTurnover()
     loadMacro()
+    loadSession()
   }, 120_000)
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (sessionPollTimer) clearInterval(sessionPollTimer)
 })
 </script>
 
@@ -621,60 +659,6 @@ onUnmounted(() => {
   font-feature-settings: 'tnum' 1;
 }
 
-.hm-top {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px 6px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 1px 0 var(--hm-ghost);
-}
-.hm-top__brand {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.hm-top__ico {
-  width: 20px;
-  height: 20px;
-  color: var(--hm-primary-mid);
-  flex-shrink: 0;
-}
-.hm-top__title {
-  margin: 0;
-  font-family: 'Manrope', var(--font);
-  font-size: 0.8125rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--hm-primary);
-}
-.hm-top__search {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--hm-outline);
-  cursor: pointer;
-}
-.hm-top__search:active {
-  background: var(--hm-low);
-}
-.hm-top__search-svg {
-  width: 22px;
-  height: 22px;
-  display: block;
-}
-
 .hm-status {
   display: flex;
   align-items: center;
@@ -692,6 +676,8 @@ onUnmounted(() => {
   background: var(--hm-up);
   flex-shrink: 0;
 }
+.hm-status__dot.is-up { background: var(--hm-up); }
+.hm-status__dot.is-off { background: var(--hm-outline); }
 .hm-status__sep {
   opacity: 0.5;
 }

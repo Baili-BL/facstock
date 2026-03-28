@@ -99,7 +99,7 @@ def test_agent(agent_id: str) -> dict:
     agent = AGENTS[agent_id]
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scan_date = datetime.now().strftime("%Y-%m-%d")
-    messages = build_messages(agent, DEMO_SCAN, DEMO_NEWS, current_time, scan_date)
+    messages = build_messages(agent, DEMO_SCAN, DEMO_NEWS, "【暂无历史持仓数据】", current_time, scan_date)
 
     print(f"\n{'='*60}")
     print(f"🤖 {agent['name']}（{agent['role']}）— {agent['adviseType']}策略")

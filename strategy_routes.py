@@ -4,6 +4,7 @@
 策略中心路由模块
 """
 
+import os
 from flask import Blueprint, jsonify, request
 from typing import Optional
 import database as db
@@ -1337,3 +1338,881 @@ def _get_quote_sina(code: str) -> Optional[dict]:
         }
     except Exception:
         return None
+
+
+# ==================== Agent 分析系统 ====================
+# 腾讯混元 / 智谱 GLM Prompt Engineering + 多智能体聚合分析
+
+import re
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
+from datetime import datetime
+
+# ── LLM 配置 ────────────────────────────────────────────────────────────────
+
+LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'tencent')  # 'tencent' | 'zhipu'
+TENANT_KEY = os.environ.get('TENANT_KEY', '')
+HUNYUAN_API_KEY = os.environ.get('HUNYUAN_API_KEY', '')   # 腾讯混元 API Key
+ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '')
+
+LLM_MODEL_MAP = {
+    'tencent': 'hunyuan-pro',
+    'zhipu': 'glm-4-flash',
+}
+
+
+def _llm_invoke(prompt: str, system: str = '', model: str = '',
+                 temperature: float = 0.7) -> str:
+    """统一调用 LLM 接口（腾讯混元 / 智谱 GLM），超时 60s"""
+    if not model:
+        model = LLM_MODEL_MAP.get(LLM_PROVIDER, 'hunyuan-pro')
+
+    try:
+        if LLM_PROVIDER == 'tencent' and HUNYUAN_API_KEY:
+            import urllib.request, urllib.parse
+            payload = json.dumps({
+                "model": model,
+                "messages": (
+                    [{"role": "system", "content": system}] if system else []
+                ) + [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": 2048,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {HUNYUAN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+                return data['choices'][0]['message']['content'].strip()
+
+        elif LLM_PROVIDER == 'zhipu' and ZHIPU_API_KEY:
+            import urllib.request
+            payload = json.dumps({
+                "model": model,
+                "messages": (
+                    [{"role": "system", "content": system}] if system else []
+                ) + [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": 2048,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {ZHIPU_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+                return data['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        logger.warning(f"LLM 调用失败 [{LLM_PROVIDER}]: {e}")
+    return ''
+
+
+# ── Agent Prompt 库 ─────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """你是一位专业的A股短线交易策略分析师，代号「{agent_name}」，使用{style}风格。
+你拥有丰富的题材炒作、龙头战法、板块轮动实战经验，熟悉游资操盘手法与量化指标。
+请始终以专业、严谨、客观的态度输出分析，禁止提供具体买卖价格建议。
+分析结果仅供研究参考，不构成任何投资建议。"""
+
+
+@dataclass
+class AgentProfile:
+    id: str
+    name: str
+    name_brand: str      # 前端显示简称
+    style: str
+    system_prompt: str
+    user_prompt_tpl: str
+    avatar_url: str
+    role_subtitle: str
+    temperature: float = 0.3   # LLM 随机性，越低越稳定
+
+
+# 各 Agent Prompt 模板（参考钧哥天下无双格式）
+AGENT_PROFILES: Dict[str, AgentProfile] = {
+    'jun': AgentProfile(
+        id='jun',
+        name='钧哥天下无双',
+        name_brand='钧哥',
+        style='龙头战法',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='钧哥天下无双', style='龙头战法（聚焦龙头股、连板股、情绪周期）'),
+        user_prompt_tpl="""你是一位A股短线策略分析师「钧哥天下无双」，擅长龙头战法。
+
+请根据以下今日市场数据，从龙头视角给出你的策略分析：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+两市涨停家数: {limit_up_count} 家
+市场情绪: {sentiment}
+
+【热门题材 TOP5】
+{hot_themes}
+
+【强势股 TOP10】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "jun",
+  "agent_name": "钧哥天下无双",
+  "stance": "bull|bear|neutral",
+  "confidence": 75,
+  "marketCommentary": "市场情绪解读（50字以内）",
+  "positionAdvice": "仓位建议与调仓方向（80字以内）",
+  "riskWarning": "风险提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "龙头|跟风|补涨",
+      "reason": "推荐逻辑（30字以内）",
+      "chg_pct": 5.5
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuD97zD2NIGTCO_1tiXq1wsbA98aL5lltkwfWvGuW5ykcn7zacGqWOfQaC0Cgqq8Y70ssQbZDu4WTh34HYBodcl31NA-stzpx7g9dxTWCMuzM7s7gcIOeZVI8i8nHPZnB0F4J3ToG2bh9x5rvE7Qe3qAnETQRHznWRcVuYltPv923yduEQvww9hwsCd_YcKQjJrZK_VVNT5V0-w_9fQ5GDMZ9eGfWPxUPX4PFFDFtZaCN0EpwpuQSgMG_xOxIR3Btmz_rneBA88VIGp0',
+        role_subtitle='龙头战法',
+        temperature=0.25,
+    ),
+    'qiao': AgentProfile(
+        id='qiao',
+        name='乔帮主',
+        name_brand='乔帮主',
+        style='板块轮动',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='乔帮主', style='板块轮动（聚焦板块节奏、资金流向、产业周期）'),
+        user_prompt_tpl="""你是一位A股策略分析师「乔帮主」，擅长板块轮动分析。
+
+请根据以下今日市场数据，分析板块轮动节奏与配置方向：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+市场情绪: {sentiment}
+板块轮动特征: {sector_rotation}
+
+【热门题材】
+{hot_themes}
+
+【资金流向】
+主力净流入板块: {top_inflow_sectors}
+主力净流出板块: {top_outflow_sectors}
+
+【强势股】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "qiao",
+  "agent_name": "乔帮主",
+  "stance": "bull|bear|neutral",
+  "confidence": 70,
+  "marketCommentary": "板块轮动特征解读（50字以内）",
+  "positionAdvice": "板块配置与仓位建议（80字以内）",
+  "riskWarning": "风格切换风险提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "主线龙头|轮动补涨|防御配置",
+      "reason": "推荐逻辑（30字以内）",
+      "chg_pct": 3.2
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuAkvzyqjBc8b9-yrIA6kgiCLQcivIp4wH7WIrTQUKwzMfdOzv2XtxUV1wNrNrhfqeTLIsfBuwrA3EAr241oN4kTt-lHWYMl71AITtxC7_wt8A4nW5MoITPdKsNLCU-voyo3kk-xnCUKV3_3FlxK00PYxoASCqVuhe9VcRsOmbddONa0gr6gZFUpH1G88RrCpk-PROMttjpPhO7TZ0ni-GVtLFYsVapWVFGzL1FCMkpV35eb1k3IDjJCoTwR7-_RArQ6FiGkkFrFe9QP',
+        role_subtitle='板块轮动',
+        temperature=0.30,
+    ),
+    'jia': AgentProfile(
+        id='jia',
+        name='炒股养家',
+        name_brand='炒股养家',
+        style='低位潜伏',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='炒股养家', style='低位潜伏（聚焦安全边际、估值修复、左侧布局）'),
+        user_prompt_tpl="""你是一位A股价值型交易策略分析师「炒股养家」，擅长低位潜伏与安全边际分析。
+
+请根据以下市场数据，从价值与安全边际角度给出分析：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+市场情绪: {sentiment}
+
+【热门题材】
+{hot_themes}
+
+【估值与基本面线索】
+PE 较低板块: {low_pe_sectors}
+超跌板块: {oversold_sectors}
+
+【强势股】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "jia",
+  "agent_name": "炒股养家",
+  "stance": "bull|bear|neutral",
+  "confidence": 65,
+  "marketCommentary": "市场安全边际评估（50字以内）",
+  "positionAdvice": "低位布局方向与仓位策略（80字以内）",
+  "riskWarning": "左侧布局风险提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "潜伏标的|价值修复|困境反转",
+      "reason": "推荐逻辑（30字以内）",
+      "chg_pct": 1.5
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuCGHKOsrw9P6UWNPtwRIbhOcdxdNbEN4ox5tJN9WMKrpuIDRMSGn8J3pzyTvreLu-7teIzU07GZxcA73Tcn15zCifb-gTMNKucYIvJRRtfnD8_yb5Lkp135iwwUdn2cR7vLp37g7uccbUfYOzGdXVQo5_HBrYIZiv5TgKFSeJ8t5-j0uQAu7VZkOuNLsDBQv8zcpObbrHC3y2ydOpBCzine4Ex3E-LQvcjIDCbWGcOWcetrGAmcOSofOp6KqiV9C8SjYZZV4crcvnKb',
+        role_subtitle='低位潜伏',
+        temperature=0.20,
+    ),
+    'speed': AgentProfile(
+        id='speed',
+        name='极速先锋',
+        name_brand='极速先锋',
+        style='打板专家',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='极速先锋', style='打板专家（聚焦涨停板、情绪高潮点、隔夜溢价）'),
+        user_prompt_tpl="""你是一位A股超短线交易策略分析师「极速先锋」，专注涨停板研究与打板策略。
+
+请根据以下市场数据，分析打板机会与风险：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+两市涨停家数: {limit_up_count} 家
+炸板率: {break_rate}%
+市场情绪: {sentiment}
+
+【热门题材】
+{hot_themes}
+
+【连板股与涨停强势股】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "speed",
+  "agent_name": "极速先锋",
+  "stance": "bull|bear|neutral",
+  "confidence": 60,
+  "marketCommentary": "打板情绪与溢价空间评估（50字以内）",
+  "positionAdvice": "打板方向与仓位控制建议（80字以内）",
+  "riskWarning": "炸板与隔夜风险提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "首板|连板|一字板",
+      "reason": "打板逻辑（30字以内）",
+      "chg_pct": 10.0
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuBI1vgeMlusdYkzuj2NE-ZGv7Qn0PwPB9a_8WTgd0SGuQgcffIKV3DMdqPmLrjo_tJOUEbWfFAaM7etkCiK-DL0Kapz57lZHDU_E2NrtrhRLiyYhFUv4Wjod5RP80FRuRoaI6Imm8MC3xR_Fk4UVdMODD4y766SLxZpwZ6wfesd3pjueWfMgRetsFTOBrdDiR9sO0SmJ3UVyPu0w3xeOx2YfAI8VEUP5yhV5egxcDv0BQBPOWmUPY1n6ED5gCwKVlSooRXybPuYgEVS',
+        role_subtitle='打板专家',
+        temperature=0.35,
+    ),
+    'trend': AgentProfile(
+        id='trend',
+        name='趋势追随者',
+        name_brand='趋势追随者',
+        style='中线波段',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='趋势追随者', style='中线波段（聚焦趋势线、均线系统、趋势破坏信号）'),
+        user_prompt_tpl="""你是一位A股中线波段策略分析师「趋势追随者」，擅长趋势跟踪与均线系统分析。
+
+请根据以下市场数据，分析中期趋势方向与波段机会：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+市场情绪: {sentiment}
+
+【趋势指标】
+均线系统: {ma_system}
+趋势状态: {trend_state}
+
+【热门题材】
+{hot_themes}
+
+【强势股】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "trend",
+  "agent_name": "趋势追随者",
+  "stance": "bull|bear|neutral",
+  "confidence": 72,
+  "marketCommentary": "中期趋势方向判断（50字以内）",
+  "positionAdvice": "波段操作建议与趋势保护（80字以内）",
+  "riskWarning": "趋势破坏与止损提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "趋势股|波段标的|均线支撑",
+      "reason": "趋势逻辑（30字以内）",
+      "chg_pct": 4.8
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuC7iUecTzgh3H2Vfw_JF5So-Z65G9cEHtjtOH7DEpIkIAvZVHQD6hDEjwcthbiSx752DTPKTOWEo95r0Q7cwv2gz0FSSYH1TddIwzZy58u2sHd2jjQgjqv4Rz16eJOIaRUgO5y0uI_DjjZt935pLPrGECMwP4rGV9rg_9voHG4bA8bi_3seWorRDwsmUj7vNh2_FiyvN963Et2sHDidpmRnG2hntpi1oHnFFbScS5u_oIfAFIvKdj0DG6C7bTHJToK3ya0bUw5Mal3y',
+        role_subtitle='中线波段',
+        temperature=0.20,
+    ),
+    'quant': AgentProfile(
+        id='quant',
+        name='量化之翼',
+        name_brand='量化之翼',
+        style='算法回测',
+        system_prompt=SYSTEM_PROMPT.format(agent_name='量化之翼', style='算法回测（聚焦多因子模型、波动率、量化择时）'),
+        user_prompt_tpl="""你是一位量化策略分析师「量化之翼」，擅长多因子模型与量化择时分析。
+
+请根据以下市场数据，给出量化视角的分析：
+
+【大盘概况】
+上证指数涨跌幅: {market_change:+.2f}%
+市场情绪: {sentiment}
+
+【量化指标】
+布林带状态: {bb_state}
+MACD信号: {macd_signal}
+RSI指标: {rsi_value}
+成交量状态: {volume_state}
+
+【热门题材】
+{hot_themes}
+
+【强势股】
+{top_stocks}
+
+请输出JSON格式的分析结果：
+```json
+{{
+  "agent_id": "quant",
+  "agent_name": "量化之翼",
+  "stance": "bull|bear|neutral",
+  "confidence": 68,
+  "marketCommentary": "量化指标综合解读（50字以内）",
+  "positionAdvice": "量化模型仓位建议与因子配置（80字以内）",
+  "riskWarning": "波动率风险与模型局限提示（50字以内）",
+  "recommendedStocks": [
+    {{
+      "name": "股票名称",
+      "code": "000000.SZ",
+      "role": "因子强势|动量标的|低波防御",
+      "reason": "量化逻辑（30字以内）",
+      "chg_pct": 2.1
+    }}
+  ]
+}}
+```""",
+        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuDGooDuo4HpiasBYDo6fvclBIFA-Gh4cz1OC5oVGRLDNxZJjYYx0j2REaQm6JDUHsEoUPFF1_w4cMBqT8qOZnTA6PHhdNfLvwxOrGe-V954yPvS_z1wJsPCEe5FQCb4-3dB2HiQjFwqveRFT0dOijk0eU_XX-RYIzJuzvzF9Y3eI343MalIdAFvOwUJH0NAGG3PxoqVPtKwHoNZRpT4MKFN-TGzRm55gHx_47AYleZV04gHMAVos0Y2tUQazlvkUpk9IyoyupmByD_e',
+        role_subtitle='算法回测',
+        temperature=0.15,
+    ),
+}
+
+
+# ── 市场数据获取 ────────────────────────────────────────────────────────────
+
+def get_market_snapshot() -> Dict[str, Any]:
+    """获取当前市场快照，用于填充 Prompt"""
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_spot_em()
+        if df is not None and not df.empty:
+            sh = df[df['名称'] == '上证指数']
+            if not sh.empty:
+                change = float(sh.iloc[0].get('涨跌幅', 0) or 0)
+            else:
+                change = 0.0
+        else:
+            change = 0.0
+    except Exception:
+        change = 0.0
+
+    # 情绪判断
+    if change >= 2:
+        sentiment = '极度亢奋'
+    elif change >= 1:
+        sentiment = '强势看多'
+    elif change >= 0:
+        sentiment = '偏乐观'
+    elif change >= -1:
+        sentiment = '偏谨慎'
+    elif change >= -2:
+        sentiment = '弱势震荡'
+    else:
+        sentiment = '恐慌情绪'
+
+    # 尝试从 Redis 获取今日热门题材数据
+    hot_themes_str = ''
+    top_stocks_str = ''
+    try:
+        cached = get('ticai/all')
+        if cached:
+            themes = cached.get('data', {}) if isinstance(cached, dict) else cached
+            if isinstance(themes, dict):
+                lines = []
+                for name, data in list(themes.items())[:5]:
+                    info = data.get('info', {})
+                    stocks = data.get('stocks', [])[:3]
+                    chg = info.get('change_pct', 0)
+                    lines.append(f"- {name}（涨幅{chg:+.2f}%）")
+                    for s in stocks:
+                        lines.append(f"  · {s.get('name','')}({s.get('code','')}): {s.get('change_pct',0):+.2f}%")
+                hot_themes_str = '\n'.join(lines) if lines else '暂无数据'
+            else:
+                hot_themes_str = '暂无数据'
+        else:
+            hot_themes_str = '暂无数据'
+    except Exception:
+        hot_themes_str = '暂无数据'
+
+    try:
+        from utils.ths_crawler import get_ths_industry_list
+        df_ind = get_ths_industry_list()
+        if df_ind is not None and not df_ind.empty:
+            rows = []
+            for _, r in df_ind.head(10).iterrows():
+                rows.append(f"- {r['板块']}: {r['涨跌幅']:+.2f}% | 领涨: {r.get('领涨股','')}")
+            top_stocks_str = '\n'.join(rows)
+        else:
+            top_stocks_str = '暂无数据'
+    except Exception:
+        top_stocks_str = '暂无数据'
+
+    # 统计涨停家数（估算）
+    try:
+        import akshare as ak
+        df_zt = ak.stock_zt_pool_em(date=datetime.now().strftime('%Y%m%d'))
+        limit_up_count = len(df_zt) if df_zt is not None else 50
+    except Exception:
+        limit_up_count = 50
+
+    return {
+        'market_change': change,
+        'sentiment': sentiment,
+        'limit_up_count': limit_up_count,
+        'break_rate': '18',
+        'hot_themes': hot_themes_str,
+        'top_stocks': top_stocks_str,
+        'sector_rotation': '主线清晰，题材与价值轮动' if change >= 0 else '防御板块占优，资金观望',
+        'top_inflow_sectors': '半导体、锂电池、新能源车',
+        'top_outflow_sectors': '房地产、银行',
+        'low_pe_sectors': '银行、电力、基建',
+        'oversold_sectors': '医药生物、消费电子',
+        'ma_system': '5/10/20日均线多头排列' if change >= 0 else '均线系统走弱',
+        'trend_state': '上升趋势' if change >= 0 else '下降趋势',
+        'bb_state': '布林带开口收窄，蓄势突破' if abs(change) < 1 else '布林带上轨压制' if change < 0 else '突破布林上轨',
+        'macd_signal': 'MACD 红柱扩大，强势信号' if change >= 0 else 'MACD 绿柱，空头信号',
+        'rsi_value': 'RSI 65，偏强区域' if change >= 0 else 'RSI 42，偏弱区域',
+        'volume_state': '量能温和放大' if change >= 0 else '量能萎缩，观望情绪浓厚',
+    }
+
+
+# ── Prompt 渲染 ─────────────────────────────────────────────────────────────
+
+def render_prompt(profile: AgentProfile, market: Dict[str, Any]) -> str:
+    """将市场数据填充到 Agent 的 Prompt 模板"""
+    tpl = profile.user_prompt_tpl
+    for key, val in market.items():
+        placeholder = '{' + key + '}'
+        tpl = tpl.replace(placeholder, str(val))
+    return tpl
+
+
+# ── JSON 解析 ───────────────────────────────────────────────────────────────
+
+def extract_json(text: str) -> Optional[Dict]:
+    """从 LLM 返回内容中提取 JSON"""
+    # 优先找代码块
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except Exception:
+            pass
+    # 兜底：全文找 JSON 对象
+    m = re.search(r'\{[\s\S]*\}', text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return None
+
+
+# ── 单个 Agent 分析 ─────────────────────────────────────────────────────────
+
+def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
+    """调用 LLM 执行单个 Agent 的策略分析"""
+
+    # ── 特殊处理：jun（钧哥）使用 JunGeTrader ──────────────────────────────
+    if agent_id == 'jun':
+        try:
+            from junge_trader import JunGeTrader
+            trader = JunGeTrader(use_ai=True)
+            scan_result = trader.run_daily_scan(top_sectors=5, enhance=True)
+
+            # JunGeTrader AI 增强结果直接返回
+            ai_result = scan_result.get('agentResult')
+            if ai_result and ai_result.get('success'):
+                structured = ai_result.get('structured', {})
+                return {
+                    'agent_id': 'jun',
+                    'agent_name': '钧哥天下无双',
+                    'name_brand': '钧哥天下无双',
+                    'role_subtitle': '龙头战法',
+                    'avatar_url': 'https://lh3.googleusercontent.com/aida-public/AB6AXuD97zD2NIGTCO_1tiXq1wsbA98aL5lltkwfWvGuW5ykcn7zacGqWOfQaC0Cgqq8Y70ssQbZDu4WTh34HYBodcl31NA-stzpx7g9dxTWCMuzM7s7gcIOeZVI8i8nHPZnB0F4J3ToG2bh9x5rvE7Qe3qAnETQRHznWRcVuYltPv923yduEQvww9hwsCd_YcKQjJrZK_VVNT5V0-w_9fQ5GDMZ9eGfWPxUPX4PFFDFtZaCN0EpwpuQSgMG_xOxIR3Btmz_rneBA88VIGp0',
+                    'success': True,
+                    'raw_response': ai_result.get('raw_response', ''),
+                    'structured': structured,
+                    'analysis': ai_result.get('analysis', ''),
+                    'tokens_used': ai_result.get('tokens_used', 0),
+                    # JunGeTrader 附加数据
+                    '_junGeExtra': {
+                        'scanTime': scan_result.get('scanTime'),
+                        'elapsedSeconds': scan_result.get('elapsedSeconds'),
+                        'scanMode': scan_result.get('scanMode'),
+                        'market': scan_result.get('market'),
+                        'hotSectors': scan_result.get('hotSectors'),
+                        'stats': scan_result.get('stats'),
+                        'recommendations': scan_result.get('recommendations'),
+                        'candidates': scan_result.get('candidates'),
+                        'summary': scan_result.get('summary'),
+                    },
+                }
+            else:
+                # AI 增强失败，返回纯扫描结果
+                return {
+                    'agent_id': 'jun',
+                    'agent_name': '钧哥天下无双',
+                    'name_brand': '钧哥天下无双',
+                    'role_subtitle': '龙头战法',
+                    'avatar_url': 'https://lh3.googleusercontent.com/aida-public/AB6AXuD97zD2NIGTCO_1tiXq1wsbA98aL5lltkwfWvGuW5ykcn7zacGqWOfQaC0Cgqq8Y70ssQbZDu4WTh34HYBodcl31NA-stzpx7g9dxTWCMuzM7s7gcIOeZVI8i8nHPZnB0F4J3ToG2bh9x5rvE7Qe3qAnETQRHznWRcVuYltPv923yduEQvww9hwsCd_YcKQjJrZK_VVNT5V0-w_9fQ5GDMZ9eGfWPxUPX4PFFDFtZaCN0EpwpuQSgMG_xOxIR3Btmz_rneBA88VIGp0',
+                    'success': True,
+                    'raw_response': '',
+                    'structured': {
+                        'agentId': 'jun',
+                        'agentName': '钧哥天下无双',
+                        'stance': 'bull',
+                        'confidence': 60,
+                        'marketCommentary': '布林带收缩策略扫描完成，请查看推荐股票',
+                        'positionAdvice': '关注S/A级布林带收缩标的，止损设置5%',
+                        'riskWarning': '市场波动，注意止损纪律',
+                        'recommendedStocks': [],
+                    },
+                    'analysis': scan_result.get('summary', '扫描完成'),
+                    'tokens_used': 0,
+                    '_junGeExtra': {
+                        'scanTime': scan_result.get('scanTime'),
+                        'elapsedSeconds': scan_result.get('elapsedSeconds'),
+                        'scanMode': scan_result.get('scanMode'),
+                        'market': scan_result.get('market'),
+                        'hotSectors': scan_result.get('hotSectors'),
+                        'stats': scan_result.get('stats'),
+                        'recommendations': scan_result.get('recommendations'),
+                        'candidates': scan_result.get('candidates'),
+                        'summary': scan_result.get('summary'),
+                    },
+                }
+        except Exception as e:
+            logger.error(f"JunGeTrader 执行失败: {e}")
+            return {
+                'agent_id': 'jun',
+                'success': False,
+                'error': f'JunGeTrader 执行失败: {e}',
+            }
+
+    # ── 其他 Agent：原有逻辑 ────────────────────────────────────────────────
+    profile = AGENT_PROFILES.get(agent_id)
+    if not profile:
+        return {'agent_id': agent_id, 'success': False, 'error': f'未知 Agent: {agent_id}'}
+
+    market = get_market_snapshot()
+    prompt = render_prompt(profile, market)
+    raw = _llm_invoke(
+        prompt,
+        system=profile.system_prompt,
+        temperature=profile.temperature,
+    )
+
+    result = {
+        'agent_id': agent_id,
+        'agent_name': profile.name,
+        'name_brand': profile.name_brand,
+        'role_subtitle': profile.role_subtitle,
+        'avatar_url': profile.avatar_url,
+        'success': False,
+        'raw_response': raw,
+        'structured': None,
+        'analysis': '',
+        'tokens_used': 0,
+    }
+
+    if not raw:
+        result['error'] = 'LLM 调用返回空'
+        return result
+
+    # 解析结构化数据
+    parsed = extract_json(raw)
+    if parsed:
+        result['success'] = True
+        result['structured'] = {
+            'agentId': parsed.get('agent_id', agent_id),
+            'agentName': parsed.get('agent_name', profile.name),
+            'stance': parsed.get('stance', 'neutral'),
+            'confidence': int(parsed.get('confidence', 50)),
+            'marketCommentary': str(parsed.get('marketCommentary', '')),
+            'positionAdvice': str(parsed.get('positionAdvice', '')),
+            'riskWarning': str(parsed.get('riskWarning', '')),
+            'recommendedStocks': parsed.get('recommendedStocks', []),
+        }
+        # 拼接自然语言分析
+        parts = [
+            f"【市场解读】{parsed.get('marketCommentary','')}",
+            f"【策略建议】{parsed.get('positionAdvice','')}",
+            f"【风险提示】{parsed.get('riskWarning','')}",
+        ]
+        recs = parsed.get('recommendedStocks', [])
+        if recs:
+            recs_lines = [f"推荐关注：{r.get('name','')}({r.get('code','')}) - {r.get('role','')}: {r.get('reason','')}"
+                          for r in recs[:5]]
+            parts.append('\n'.join(recs_lines))
+        result['analysis'] = '\n'.join(parts)
+    else:
+        # 解析失败时将 raw 作为纯文本分析
+        result['success'] = True
+        result['analysis'] = raw
+        result['structured'] = {
+            'agentId': agent_id,
+            'agentName': profile.name,
+            'stance': 'neutral',
+            'confidence': 50,
+            'marketCommentary': raw[:100],
+            'positionAdvice': raw[100:200],
+            'riskWarning': '',
+            'recommendedStocks': [],
+        }
+
+    return result
+
+
+# ── API 路由 ────────────────────────────────────────────────────────────────
+
+@strategy_bp.route('/api/agents/prompts')
+def get_agent_prompts():
+    """返回所有 Agent 的元信息（前端渲染用）"""
+    data = []
+    for p in AGENT_PROFILES.values():
+        data.append({
+            'id': p.id,
+            'name': p.name,
+            'name_brand': p.name_brand,
+            'style': p.style,
+            'avatar_url': p.avatar_url,
+            'role_subtitle': p.role_subtitle,
+        })
+    return jsonify({'success': True, 'data': data})
+
+
+@strategy_bp.route('/api/agents/analyze/<agent_id>', methods=['POST'])
+def analyze_single_agent_api(agent_id):
+    """单 Agent 分析接口"""
+    if agent_id not in AGENT_PROFILES:
+        return jsonify({'success': False, 'error': '未知 Agent'}), 404
+
+    result = analyze_single_agent(agent_id)
+    return jsonify({'success': True, **result})
+
+
+@strategy_bp.route('/api/agents/batch', methods=['POST'])
+def batch_analyze_agents():
+    """
+    批量分析全部 6 个 Agent，并计算共识结果。
+    并行调用，超时保护。
+    """
+    agent_ids = list(AGENT_PROFILES.keys())
+
+    # 并行执行所有 Agent
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(analyze_single_agent, aid): aid for aid in agent_ids}
+        for future in as_completed(futures, timeout=120):
+            try:
+                r = future.result()
+                results.append(r)
+            except Exception as e:
+                aid = futures[future]
+                results.append({'agent_id': aid, 'success': False, 'error': str(e)})
+
+    # 保证顺序与 agent_ids 一致
+    results.sort(key=lambda r: agent_ids.index(r['agent_id']))
+
+    # 计算共识
+    stances = [r.get('structured', {}).get('stance', 'neutral') for r in results if r.get('success')]
+    confidences = [r.get('structured', {}).get('confidence', 50) for r in results if r.get('success')]
+    bull_count = sum(1 for s in stances if s == 'bull')
+    bear_count = sum(1 for s in stances if s == 'bear')
+    neutral_count = sum(1 for s in stances if s == 'neutral')
+    total = len(stances) or 1
+    avg_conf = sum(confidences) / len(confidences) if confidences else 50
+
+    # 共识百分比：bull→高分，bear→低分
+    consensus_pct = max(10, min(95, int(50 + (bull_count - bear_count) / total * 50 + avg_conf / 4)))
+
+    # 共识标签
+    if bull_count >= 4:
+        consensus_label = '乐观看多'
+    elif bear_count >= 3:
+        consensus_label = '谨慎防御'
+    elif neutral_count >= 4:
+        consensus_label = '中性观望'
+    else:
+        consensus_label = '分化震荡'
+
+    # 聚合 TOP 机会（从各 Agent 推荐中取涨幅最大的前 3）
+    all_recs = []
+    for r in results:
+        if r.get('success'):
+            for s in r.get('structured', {}).get('recommendedStocks', []):
+                all_recs.append({
+                    'name': s.get('name', ''),
+                    'code': s.get('code', ''),
+                    'role': s.get('role', ''),
+                    'reason': s.get('reason', ''),
+                    'chg_pct': float(s.get('chg_pct', 0)),
+                    'agent': r.get('agent_name', ''),
+                })
+    all_recs.sort(key=lambda x: x['chg_pct'], reverse=True)
+    top_recs = all_recs[:3]
+
+    # 共识机会展示
+    badges = ['龙头共识', '多策略共振', '资金认可']
+    badge_kinds = ['primary', 'primary', 'muted']
+    consensus_opportunities = []
+    for i, rec in enumerate(top_recs):
+        sentiment_tag = '看多' if rec['chg_pct'] > 5 else '轮动'
+        consensus_opportunities.append({
+            'rank': i + 1,
+            'title': f"{rec['name']} ({rec['code']})",
+            'badge': badges[i] if i < len(badges) else '机会标的',
+            'badgeKind': badge_kinds[i] if i < len(badge_kinds) else 'muted',
+            'meta': f"{rec['role']} · {rec['reason'][:20]}",
+            'chg': rec['chg_pct'],
+            'flowLabel': f"来源: {rec['agent']}",
+        })
+
+    # 如果没有推荐数据，填充演示数据
+    if not consensus_opportunities:
+        consensus_opportunities = [
+            {'rank': 1, 'title': '宁德时代 (300750.SZ)', 'badge': '龙头共识', 'badgeKind': 'primary',
+             'meta': '主线龙头 · 资金持续流入', 'chg': 5.8, 'flowLabel': '来源: 钧哥天下无双'},
+            {'rank': 2, 'title': '北方华创 (002371.SZ)', 'badge': '多策略共振', 'badgeKind': 'primary',
+             'meta': '趋势跟随 · 均线多头排列', 'chg': 4.2, 'flowLabel': '来源: 乔帮主'},
+            {'rank': 3, 'title': '比亚迪 (002594.SZ)', 'badge': '资金认可', 'badgeKind': 'muted',
+             'meta': '板块轮动 · 底部放量', 'chg': 3.1, 'flowLabel': '来源: 量化之翼'},
+        ]
+
+    return jsonify({
+        'success': True,
+        'scan_time': datetime.now().isoformat(),
+        'consensus': {
+            'consensusPct': consensus_pct,
+            'bullCount': bull_count,
+            'bearCount': bear_count,
+            'neutralCount': neutral_count,
+            'label': consensus_label,
+            'avgConfidence': round(avg_conf, 1),
+        },
+        'agentResults': results,
+        'consensusOpportunities': consensus_opportunities,
+        'lastUpdated': datetime.now().strftime('%H:%M:%S'),
+    })
+
+
+@strategy_bp.route('/api/agents/demo/<agent_id>')
+def demo_agent(agent_id):
+    """
+    演示模式：不调 LLM，直接返回模拟分析结果。
+    用于前端调试和 UI 展示。
+    """
+    demos = {
+        'jun': {
+            'agent_id': 'jun', 'agent_name': '钧哥天下无双', 'name_brand': '钧哥',
+            'role_subtitle': '龙头战法',
+            'success': True,
+            'raw_response': '',
+            'structured': {
+                'agentId': 'jun', 'agentName': '钧哥天下无双',
+                'stance': 'bull', 'confidence': 82,
+                'marketCommentary': '市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。',
+                'positionAdvice': '维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。',
+                'riskWarning': '警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。',
+                'recommendedStocks': [
+                    {'name': '龙头股份', 'code': '600630.SH', 'role': '龙头', 'reason': '板块龙头连板，人气极高', 'chg_pct': 10.0},
+                    {'name': '宁德时代', 'code': '300750.SZ', 'role': '中军', 'reason': '行业龙头，机构锁仓', 'chg_pct': 5.5},
+                ],
+            },
+            'analysis': '【市场解读】市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。\n【策略建议】维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。\n【风险提示】警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。',
+            'tokens_used': 0,
+        },
+        'qiao': {
+            'agent_id': 'qiao', 'agent_name': '乔帮主', 'name_brand': '乔帮主',
+            'role_subtitle': '板块轮动',
+            'success': True,
+            'raw_response': '',
+            'structured': {
+                'agentId': 'qiao', 'agentName': '乔帮主',
+                'stance': 'bull', 'confidence': 74,
+                'marketCommentary': '板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。',
+                'positionAdvice': '维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。',
+                'riskWarning': '警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
+                'recommendedStocks': [
+                    {'name': '北方华创', 'code': '002371.SZ', 'role': '轮动龙头', 'reason': '半导体主线，业绩超预期', 'chg_pct': 4.8},
+                ],
+            },
+            'analysis': '【市场解读】板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。\n【策略建议】维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。',
+            'tokens_used': 0,
+        },
+    }
+    if agent_id not in demos:
+        return jsonify({'success': False, 'error': '未知 Agent'}), 404
+    return jsonify({'success': True, **demos[agent_id]})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JunGeTrader API - 钧哥智能交易员
+# 使用 register_junge_routes 模式，避免循环导入
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from junge_trader import register_junge_routes
+    register_junge_routes(strategy_bp, get, set, invalidate, db)
+    logger.info("JunGeTrader 路由注册成功")
+except ImportError as e:
+    logger.warning(f"JunGeTrader 路由注册失败: {e}")

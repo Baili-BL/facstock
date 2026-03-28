@@ -9,6 +9,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
+from a_share_session import get_a_share_session_payload
 from market_data import (
     get_market_overview,
     get_money_flow,
@@ -38,6 +39,21 @@ def index():
     """首页 - 重定向到 Vue 前端"""
     from flask import redirect
     return redirect('/frontend/')
+
+
+@market_bp.route('/api/market/session')
+def api_market_session():
+    """A 股交易时段状态（北京时间，与上证连续竞价时间一致）；纯计算、可短缓存。"""
+    hit = get('market/session')
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+    try:
+        data = get_a_share_session_payload()
+        set('market/session', data, ttl=10)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.exception('market session')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @market_bp.route('/api/market/overview')

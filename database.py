@@ -172,6 +172,48 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
                 INDEX idx_code (code)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
+
+        # Agent 分析历史（按 Agent + 日期唯一，历史锁定，当天可更新）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS agent_analysis_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                agent_id VARCHAR(30) NOT NULL,
+                report_date DATE NOT NULL,
+                scan_id INT,
+                holdings_snapshot_json LONGTEXT NOT NULL COMMENT '分析时的持仓快照JSON',
+                analysis_result_json LONGTEXT NOT NULL COMMENT 'AI分析结果JSON（含持仓对比结论）',
+                raw_response_text LONGTEXT COMMENT 'AI原始返回文本',
+                stance VARCHAR(20),
+                confidence INT DEFAULT 0,
+                tokens_used INT DEFAULT 0,
+                model VARCHAR(50) DEFAULT 'deepseek-chat',
+                report_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_agent_date (agent_id, report_date),
+                INDEX idx_report_date (report_date DESC),
+                INDEX idx_report_time (report_time DESC),
+                FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS holdings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                stock_code VARCHAR(10) NOT NULL,
+                stock_name VARCHAR(50) NOT NULL,
+                sector VARCHAR(100) DEFAULT '',
+                position_ratio DECIMAL(5,2) DEFAULT 0,
+                avg_cost DECIMAL(10,3) DEFAULT 0,
+                current_price DECIMAL(10,3) DEFAULT 0,
+                profit_loss_pct DECIMAL(10,2) DEFAULT 0,
+                profit_loss_amount DECIMAL(12,2) DEFAULT 0,
+                hold_days INT DEFAULT 0,
+                position_type VARCHAR(20) DEFAULT 'long',
+                remark TEXT,
+                update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_code (stock_code),
+                INDEX idx_update_time (update_time DESC)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
         
         conn.commit()
 
@@ -1099,6 +1141,302 @@ def delete_expired_news_cache(keep_days: int = 30) -> int:
             (keep_days,)
         )
         return cursor.rowcount
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 持仓数据管理
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upsert_holding(code: str, name: str, sector: str = '', avg_cost: float = 0,
+                   current_price: float = 0, position_ratio: float = 0,
+                   profit_loss_pct: float = 0, profit_loss_amount: float = 0,
+                   hold_days: int = 0, position_type: str = 'long',
+                   remark: str = '') -> bool:
+    """新增或更新一条持仓记录（code 唯一）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO holdings
+                (stock_code, stock_name, sector, avg_cost, current_price,
+                 position_ratio, profit_loss_pct, profit_loss_amount,
+                 hold_days, position_type, remark)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                stock_name = VALUES(stock_name),
+                sector = VALUES(sector),
+                avg_cost = VALUES(avg_cost),
+                current_price = VALUES(current_price),
+                position_ratio = VALUES(position_ratio),
+                profit_loss_pct = VALUES(profit_loss_pct),
+                profit_loss_amount = VALUES(profit_loss_amount),
+                hold_days = VALUES(hold_days),
+                position_type = VALUES(position_type),
+                remark = VALUES(remark)
+        ''', (code, name, sector, avg_cost, current_price,
+              position_ratio, profit_loss_pct, profit_loss_amount,
+              hold_days, position_type, remark))
+        return cursor.rowcount > 0
+
+
+def get_all_holdings() -> List[Dict]:
+    """获取所有持仓，按更新时间倒序"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT stock_code, stock_name, sector,
+                   position_ratio, avg_cost, current_price,
+                   profit_loss_pct, profit_loss_amount,
+                   hold_days, position_type, remark,
+                   update_time
+            FROM holdings
+            ORDER BY update_time DESC
+        ''')
+        rows = cursor.fetchall()
+        # DictCursor 已返回 dict，禁止 dict(zip(cols, row))（会把列名当值）
+        return [dict(r) if isinstance(r, dict) else dict(zip([d[0] for d in cursor.description], r)) for r in rows]
+
+
+def delete_holding(code: str) -> bool:
+    """删除一条持仓"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM holdings WHERE stock_code = %s', (code,))
+        return cursor.rowcount > 0
+
+
+def upsert_holdings_batch(holdings_list: List[Dict]) -> int:
+    """批量新增或更新持仓（原子操作）"""
+    count = 0
+    for h in holdings_list:
+        ok = upsert_holding(
+            code=h.get('code', ''),
+            name=h.get('name', ''),
+            sector=h.get('sector', ''),
+            avg_cost=float(h.get('avgCost', 0)),
+            current_price=float(h.get('currentPrice', 0)),
+            position_ratio=float(h.get('positionRatio', 0)),
+            profit_loss_pct=float(h.get('profitLossPct', 0)),
+            profit_loss_amount=float(h.get('profitLossAmount', 0)),
+            hold_days=int(h.get('holdDays', 0)),
+            position_type=h.get('positionType', 'long'),
+            remark=h.get('remark', ''),
+        )
+        if ok:
+            count += 1
+    return count
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent 分析历史（按 Agent + 日期唯一，历史锁定，当天可覆盖）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _snapshot_float(v, default: float = 0.0) -> float:
+    if v is None or v == '':
+        return default
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        s = str(v).strip().rstrip('%').replace('+', '').replace(',', '')
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
+def snapshot_rows_from_db_holdings(rows: List[Dict]) -> List[Dict]:
+    """将 holdings 表行规范为历史快照字段（与前端 AgentHoldings 一致）"""
+    out: List[Dict] = []
+    for h in rows or []:
+        code = h.get('stock_code') or h.get('code') or ''
+        if not code:
+            continue
+        out.append({
+            'stock_code': str(code),
+            'stock_name': str(h.get('stock_name') or h.get('name') or ''),
+            'sector': str(h.get('sector') or ''),
+            'current_price': _snapshot_float(h.get('current_price') or h.get('price')),
+            'profit_loss_pct': _snapshot_float(h.get('profit_loss_pct') or h.get('changePct')),
+            'source': 'holdings',
+        })
+    return out
+
+
+def snapshot_rows_from_recommended_stocks(stocks: List[Dict]) -> List[Dict]:
+    """将 AI recommendedStocks 规范为历史快照（无真实持仓时的展示用）"""
+    out: List[Dict] = []
+    for s in stocks or []:
+        code = s.get('code') or ''
+        if not code:
+            continue
+        out.append({
+            'stock_code': str(code),
+            'stock_name': str(s.get('name') or ''),
+            'sector': str(s.get('sector') or ''),
+            'current_price': _snapshot_float(s.get('price')),
+            'profit_loss_pct': _snapshot_float(s.get('changePct')),
+            'source': 'recommended',
+        })
+    return out
+
+
+def build_analysis_holdings_snapshot(
+    db_holdings: List[Dict],
+    analysis_result: Any = None,
+) -> List[Dict]:
+    """
+    写入 agent_analysis_history 的快照：优先真实持仓；若为空则用分析结果中的推荐股，
+    避免持仓页在「未维护 holdings 表」时始终 0 条。
+    analysis_result 可为扁平 dict（含 recommendedStocks），或 app 保存的 { structured, raw_text }。
+    """
+    snap = snapshot_rows_from_db_holdings(db_holdings)
+    if snap:
+        return snap
+    rec: List[Dict] = []
+    if isinstance(analysis_result, dict):
+        if isinstance(analysis_result.get('recommendedStocks'), list):
+            rec = analysis_result['recommendedStocks']
+        st = analysis_result.get('structured')
+        if isinstance(st, dict) and isinstance(st.get('recommendedStocks'), list):
+            rec = st['recommendedStocks']
+    return snapshot_rows_from_recommended_stocks(rec)
+
+
+def save_agent_analysis_history(
+    agent_id: str,
+    report_date: str,
+    holdings_snapshot: List[Dict],
+    analysis_result: Dict,
+    raw_response: str = '',
+    stance: str = '',
+    confidence: int = 0,
+    tokens_used: int = 0,
+    model: str = 'deepseek-chat',
+    scan_id: int = None,
+) -> int:
+    """
+    保存 Agent 分析历史记录。
+
+    - agent_id + report_date 联合唯一：历史日期锁定，当天可覆盖更新
+    - holdings_snapshot：分析时持仓数据的完整快照（JSON）
+    - analysis_result：AI 返回的结构化分析结果（JSON）
+    """
+    import json as _json
+    local_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO agent_analysis_history
+                (agent_id, report_date, scan_id, holdings_snapshot_json,
+                 analysis_result_json, raw_response_text, stance,
+                 confidence, tokens_used, model, report_time)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                scan_id = VALUES(scan_id),
+                holdings_snapshot_json = VALUES(holdings_snapshot_json),
+                analysis_result_json = VALUES(analysis_result_json),
+                raw_response_text = VALUES(raw_response_text),
+                stance = VALUES(stance),
+                confidence = VALUES(confidence),
+                tokens_used = VALUES(tokens_used),
+                model = VALUES(model),
+                report_time = VALUES(report_time)
+        ''', (
+            agent_id,
+            report_date,
+            scan_id,
+            _json.dumps(holdings_snapshot, ensure_ascii=False),
+            _json.dumps(analysis_result, ensure_ascii=False),
+            raw_response,
+            stance,
+            confidence,
+            tokens_used,
+            model,
+            local_time,
+        ))
+        return cursor.lastrowid
+
+
+def get_agent_analysis_history(
+    agent_id: str,
+    start_date: str = None,
+    end_date: str = None,
+    limit: int = 30,
+) -> List[Dict]:
+    """
+    查询 Agent 分析历史，支持按日期范围过滤。
+    默认返回最近 limit 条。
+    """
+    import json as _json
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        sql = '''
+            SELECT id, agent_id, report_date, scan_id,
+                   holdings_snapshot_json, analysis_result_json,
+                   raw_response_text, stance, confidence,
+                   tokens_used, model, report_time
+            FROM agent_analysis_history
+            WHERE agent_id = %s
+        '''
+        args = [agent_id]
+
+        if start_date:
+            sql += ' AND report_date >= %s'
+            args.append(start_date)
+        if end_date:
+            sql += ' AND report_date <= %s'
+            args.append(end_date)
+
+        sql += ' ORDER BY report_date DESC, report_time DESC LIMIT %s'
+        args.append(limit)
+
+        cursor.execute(sql, tuple(args))
+        result = []
+        for row in cursor.fetchall():
+            # cursorclass=DictCursor 已返回 dict，直接使用
+            d = dict(row) if not isinstance(row, dict) else row
+            d['holdings_snapshot'] = _json.loads((d.pop('holdings_snapshot_json') or '[]')) if d.get('holdings_snapshot_json') else []
+            d['analysis_result']   = _json.loads((d.pop('analysis_result_json')   or '{}')) if d.get('analysis_result_json')  else {}
+            rd = d.get('report_date')
+            if hasattr(rd, 'isoformat'):
+                d['report_date'] = rd.isoformat()
+            rt = d.get('report_time')
+            if isinstance(rt, datetime):
+                d['report_time'] = rt.strftime('%Y-%m-%d %H:%M:%S')
+            result.append(d)
+        return result
+
+
+def get_latest_agent_analysis(agent_id: str) -> Optional[Dict]:
+    """获取某 Agent 最新一次分析（含持仓快照和分析结果）"""
+    import json as _json
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, agent_id, report_date, scan_id,
+                   holdings_snapshot_json, analysis_result_json,
+                   raw_response_text, stance, confidence,
+                   tokens_used, model, report_time
+            FROM agent_analysis_history
+            WHERE agent_id = %s
+            ORDER BY report_date DESC, report_time DESC
+            LIMIT 1
+        ''', (agent_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        # cursorclass=DictCursor 已返回 dict，直接使用
+        d = dict(row) if not isinstance(row, dict) else row
+        d['holdings_snapshot'] = _json.loads(d.pop('holdings_snapshot_json') or '[]') if d.get('holdings_snapshot_json') else []
+        d['analysis_result']   = _json.loads(d.pop('analysis_result_json') or '{}')   if d.get('analysis_result_json')  else {}
+        rd = d.get('report_date')
+        if hasattr(rd, 'isoformat'):
+            d['report_date'] = rd.isoformat()
+        rt = d.get('report_time')
+        if isinstance(rt, datetime):
+            d['report_time'] = rt.strftime('%Y-%m-%d %H:%M:%S')
+        return d
 
 
 # 初始化新闻缓存表

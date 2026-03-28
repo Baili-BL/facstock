@@ -34,6 +34,8 @@ async function apiFetch(path, cacheKey, ttl) {
 }
 
 export const market = {
+  /** A 股交易时段（后端北京时间判定） */
+  session:   () => cached('market/session',   15_000, () => apiFetch('/api/market/session',     'market/session')),
   overview:  () => cached('market/overview',  30_000, () => apiFetch('/api/market/overview',    'market/overview')),
   snapshot:  () => cached('market/snapshot/v2',  15_000, () => apiFetch('/api/market/snapshot',    'market/snapshot/v2')),
   flow:      () => cached('market/flow',      30_000, () => apiFetch('/api/market/flow',         'market/flow')),
