@@ -85,6 +85,8 @@ def analyze_single_stock(strategy, stock_info, precache_kline=True):
                 tags.append("多头排列")
             elif result.get('ma_bullish'):
                 tags.append("短多")
+            if result.get('cross_above_ma5'):
+                tags.append("上穿M5")
             
             if result.get('macd_golden') and result.get('macd_hist_positive'):
                 tags.append("MACD强势")
@@ -298,9 +300,9 @@ def start_scan():
     min_days = data.get('min_days', 3)
     period = data.get('period', 20)
     
-    top_sectors = max(1, min(20, int(top_sectors)))
-    min_days = max(1, min(10, int(min_days)))
-    period = max(10, min(60, int(period)))
+    top_sectors = max(1, min(30, int(top_sectors)))
+    min_days = max(0, min(100, int(min_days)))
+    period = max(10, min(365, int(period)))
     
     logger.info(f"开始扫描: sectors={top_sectors}, min_days={min_days}, period={period}")
     
@@ -467,9 +469,11 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         if stock_codes:
             print(f"  🌐 需要获取: {len(stock_codes)} 只股票K线")
             
+            fetch_days = max(120, int(period) + 40)
+
             def fetch_kline(code):
                 try:
-                    kline_df = get_stock_kline_sina(code, days=120)
+                    kline_df = get_stock_kline_sina(code, days=min(fetch_days, 800))
                     if kline_df is not None and len(kline_df) >= period + 10:
                         return (code, kline_df)
                     return (code, None)
@@ -546,6 +550,7 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                         'grade': latest['grade'],
                         'bb_width_pct': round(float(latest['bb_width_pct']), 2),
                         'ma_bullish': bool(latest.get('ma_bullish', False)),
+                        'cross_above_ma5': bool(latest.get('cross_above_ma5', False)),
                         'macd_golden': bool(latest.get('macd_golden', False)),
                         'cmf_bullish': bool(latest.get('cmf_bullish', False)),
                         'is_volume_up': bool(latest.get('is_volume_up', False)),
@@ -586,6 +591,8 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                         tags.append("多头排列")
                     elif latest.get('ma_bullish'):
                         tags.append("短多")
+                    if latest.get('cross_above_ma5'):
+                        tags.append("上穿M5")
 
                     # MACD标签
                     if latest.get('macd_golden') and latest.get('macd_hist_positive'):

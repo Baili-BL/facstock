@@ -1,192 +1,220 @@
 <template>
   <div class="bollinger-page">
-    <!-- 顶部导航 -->
-    <nav class="navbar">
-      <div class="nav-back" @click="$router.push('/strategy')">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
-      </div>
-      <div class="nav-center">
-        <div class="nav-title">
-          <svg class="icon" style="fill:var(--apple-indigo);margin-right:6px" viewBox="0 0 24 24"><use href="#icon-strategy"/></svg>
-          布林收缩策略
-        </div>
-        <div class="nav-sub">布林带收缩 · Bollinger Squeeze</div>
-      </div>
-    </nav>
-
-    <div class="container">
-      <!-- 扫描参数 -->
-      <div class="param-card">
-        <div class="param-card-title">
-          <svg class="icon icon-sm" style="fill:var(--apple-orange)"><use href="#icon-tune"/></svg>
-          扫描参数
-        </div>
-        <div class="param-item">
-          <div class="param-label">
-            <span class="param-name">扫描板块数</span>
-            <span class="param-value">{{ params.sectors }}</span>
-          </div>
-          <input type="range" class="param-slider" v-model.number="params.sectors" min="1" max="20" step="1">
-          <div class="param-desc">从热点板块中选取分析的板块数量</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">
-            <span class="param-name">收缩天数</span>
-            <span class="param-value">{{ params.minDays }}</span>
-          </div>
-          <input type="range" class="param-slider" v-model.number="params.minDays" min="1" max="10" step="1">
-          <div class="param-desc">布林带收缩持续的最少天数</div>
-        </div>
-        <div class="param-item">
-          <div class="param-label">
-            <span class="param-name">分析周期</span>
-            <span class="param-value">{{ params.period }}</span>
-          </div>
-          <input type="range" class="param-slider" v-model.number="params.period" min="10" max="60" step="5">
-          <div class="param-desc">布林带计算周期（交易日）</div>
-        </div>
-      </div>
-
-      <!-- 扫描按钮 -->
-      <button class="scan-btn" :disabled="scanning" @click="startScan">
-        <svg v-if="!scanning" class="icon" viewBox="0 0 24 24"><use href="#icon-play"/></svg>
-        <svg v-else class="icon spinning" viewBox="0 0 24 24"><use href="#icon-refresh"/></svg>
-        {{ scanning ? '启动中...' : '开始扫描' }}
-      </button>
-      <button v-if="scanning" class="cancel-btn" @click="cancelScan">
-        <svg class="icon" viewBox="0 0 24 24"><use href="#icon-cancel"/></svg>
-        取消扫描
-      </button>
-
-      <!-- 扫描进度 -->
-      <div class="scan-status-card" :class="{ active: scanning }">
-        <div class="scan-status-header">
-          <div class="scan-status-dot" :class="{ error: scanError }"></div>
-          <div>
-            <div class="scan-status-label">{{ scanCancelled ? '正在取消...' : '扫描中...' }}</div>
-            <div class="scan-sector">{{ currentSector }}</div>
-          </div>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: progress + '%' }"></div>
-        </div>
-        <div class="progress-text">{{ progress }}%</div>
-      </div>
-
-      <!-- 扫描结果 -->
-      <div class="results-card" :class="{ active: resultsExist }">
-        <div class="results-header">
-          <svg class="icon icon-sm" style="fill:var(--apple-green)"><use href="#icon-check"/></svg>
-          扫描结果
-          <span class="results-time">{{ resultsTime }}</span>
-          <span class="results-hint" :class="{ show: scanning && resultsExist }">
-            最近一次已完成 · 本次扫描完成后自动更新
+    <header class="bb-header">
+      <div class="bb-header__inner">
+        <button type="button" class="bb-back" aria-label="返回" @click="$router.push('/strategy')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
+        </button>
+        <div class="bb-header__brand">
+          <span class="bb-header__mark" aria-hidden="true">
+            <svg class="icon bb-analytics-ic" viewBox="0 0 24 24"><use href="#icon-analytics"/></svg>
           </span>
+          <div>
+            <h1 class="bb-header__title">布林带收缩策略</h1>
+            <p class="bb-header__sub">调整参数以发现技术形态</p>
+          </div>
         </div>
-        <div v-if="resultsLoading" class="loading">
-          <div class="spinner"></div>
+        <div class="bb-header__tools">
+          <button type="button" class="bb-ghost-btn" @click="scrollToHistory">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
+            <span class="bb-ghost-btn__txt">历史</span>
+          </button>
         </div>
-        <div v-else-if="resultsError" class="error-msg">{{ resultsError }}</div>
-        <div v-else-if="!resultsExist" class="empty">
-          <svg class="icon empty-icon" viewBox="0 0 24 24"><use href="#icon-analytics"/></svg>
-          暂无扫描结果
+      </div>
+    </header>
+
+    <main class="bb-main">
+      <section class="bb-config">
+        <div class="bb-config__head">
+          <div>
+            <h2 class="bb-config__title">扫描配置</h2>
+            <p class="bb-config__hint">调整参数以发现技术形态</p>
+          </div>
+          <button type="button" class="bb-primary-pill" :disabled="scanning" @click="startScan">
+            {{ scanning ? '启动中…' : '开始分析' }}
+          </button>
         </div>
-        <template v-else>
-          <!-- 板块 Tab 行 -->
-          <div class="sector-tabs-scroll">
+        <div class="bb-sliders">
+          <div class="bb-slider-block">
+            <div class="bb-slider-block__row">
+              <label class="bb-slider-block__label">板块数量</label>
+              <span class="bb-slider-block__val">{{ params.sectors }}</span>
+            </div>
+            <input
+              type="range"
+              class="bb-range"
+              v-model.number="params.sectors"
+              min="1"
+              max="30"
+              step="1"
+              :style="{ '--range-fill': rangeFillSectors }"
+            >
+            <div class="bb-slider-block__ticks"><span>1</span><span>30</span></div>
+          </div>
+          <div class="bb-slider-block">
+            <div class="bb-slider-block__row">
+              <label class="bb-slider-block__label">挤压天数</label>
+              <span class="bb-slider-block__val">{{ params.minDays }}</span>
+            </div>
+            <input
+              type="range"
+              class="bb-range"
+              v-model.number="params.minDays"
+              min="0"
+              max="100"
+              step="1"
+              :style="{ '--range-fill': rangeFillMinDays }"
+            >
+            <div class="bb-slider-block__ticks"><span>0</span><span>100</span></div>
+          </div>
+          <div class="bb-slider-block">
+            <div class="bb-slider-block__row">
+              <label class="bb-slider-block__label">分析周期</label>
+              <span class="bb-slider-block__val">{{ params.period }}天</span>
+            </div>
+            <input
+              type="range"
+              class="bb-range"
+              v-model.number="params.period"
+              min="30"
+              max="365"
+              step="5"
+              :style="{ '--range-fill': rangeFillPeriod }"
+            >
+            <div class="bb-slider-block__ticks"><span>30天</span><span>365天</span></div>
+          </div>
+        </div>
+      </section>
+
+      <button v-if="scanning" type="button" class="bb-cancel" @click="cancelScan">取消扫描</button>
+
+      <div class="bb-progress" :class="{ 'bb-progress--on': scanning }">
+        <div class="bb-progress__head">
+          <span class="bb-progress__dot" :class="{ 'bb-progress__dot--err': scanError }"></span>
+          <div>
+            <div class="bb-progress__label">{{ scanCancelled ? '正在取消…' : '扫描中…' }}</div>
+            <div class="bb-progress__sector">{{ currentSector }}</div>
+          </div>
+          <span class="bb-progress__pct">{{ progress }}%</span>
+        </div>
+        <div class="bb-progress__bar"><div class="bb-progress__fill" :style="{ width: progress + '%' }"></div></div>
+      </div>
+
+      <section class="bb-results-wrap">
+        <div class="bb-results-meta">
+          <span class="bb-results-meta__title">
+            <svg class="icon bb-check-ic" viewBox="0 0 24 24"><use href="#icon-check"/></svg>
+            扫描结果
+          </span>
+          <span class="bb-results-meta__time">{{ resultsTime || '—' }}</span>
+        </div>
+        <p v-if="scanning && resultsExist" class="bb-results-live">最近一次已完成 · 本次分析结束后自动更新</p>
+
+        <div v-if="resultsLoading" class="bb-loading"><div class="bb-spinner"></div></div>
+        <div v-else-if="resultsError" class="bb-error">{{ resultsError }}</div>
+        <template v-else-if="resultsExist">
+          <div class="bb-sector-pills">
             <button
               v-for="g in groupedResults"
               :key="g.sectorName"
               type="button"
-              class="sector-tab"
-              :class="{ active: selectedSector === g.sectorName }"
+              class="bb-pill"
+              :class="{ 'bb-pill--on': selectedSector === g.sectorName }"
               @click="selectedSector = g.sectorName"
             >
-              <div class="sector-tab-name">{{ g.sectorName }}</div>
-              <div class="sector-tab-change" :class="g.avgChange >= 0 ? 'up' : 'down'">
-                {{ g.avgChange >= 0 ? '+' : '' }}{{ g.avgChange.toFixed(2) }}%
-              </div>
+              <span class="bb-pill__name">{{ g.sectorName }}</span>
+              <span
+                class="bb-pill__chg"
+                :class="g.avgChange >= 0 ? 'bb-pill__chg--up' : 'bb-pill__chg--down'"
+              >{{ g.avgChange >= 0 ? '+' : '' }}{{ g.avgChange.toFixed(2) }}%</span>
             </button>
           </div>
 
-          <!-- 股票筛选项 -->
-          <div class="results-toolbar">
-            <div class="filter-chips">
-              <button
-                v-for="f in filterOptions"
-                :key="f.key"
-                type="button"
-                class="filter-chip"
-                :class="{ active: filterTab === f.key }"
-                @click="filterTab = f.key"
-              >
-                {{ f.label }}
-              </button>
+          <div class="bb-results-block">
+            <div class="bb-results-block__head">
+              <h2 class="bb-results-block__title">最新扫描结果</h2>
+              <div class="bb-seg">
+                <button
+                  v-for="f in filterOptions"
+                  :key="f.key"
+                  type="button"
+                  class="bb-seg__btn"
+                  :class="{ 'bb-seg__btn--on': filterTab === f.key }"
+                  @click="filterTab = f.key"
+                >{{ f.label }}</button>
+              </div>
             </div>
-          </div>
 
-          <!-- 当前选中板块的股票列表 -->
-          <div v-if="activeSectorStocks.length === 0" class="empty-inner">当前筛选条件下暂无股票</div>
-          <div v-else class="squeeze-list">
-            <div
-              v-for="s in activeSectorStocks"
-              :key="s.code"
-              class="squeeze-card"
-              :class="cardToneClass(s)"
-              @click="showDetail(s)"
-            >
-              <div class="squeeze-card-top">
-                <div class="squeeze-left">
-                  <div class="squeeze-name-line">
-                    <span class="squeeze-name">{{ s.name }}</span>
-                    <span class="squeeze-code">{{ s.code }}</span>
-                  </div>
-                  <div class="squeeze-sector">{{ s.sector_name }}</div>
-                </div>
-                <div class="squeeze-price-block">
-                  <span class="squeeze-price">{{ fmtClose(s) }}</span>
-                  <span class="squeeze-pct-pill" :class="fmtPct(s).cls">{{ fmtPct(s).text }}</span>
-                </div>
-                <button type="button" class="star-btn" aria-label="自选" @click.stop.prevent>
-                  <svg class="icon star-icon" viewBox="0 0 24 24"><use href="#icon-star-outline"/></svg>
+            <div v-if="displayStockList.length === 0" class="bb-empty-list">当前筛选条件下暂无股票</div>
+            <div v-else class="bb-stock-list">
+              <article
+                v-for="s in displayStockList"
+              :key="s.code + '-' + (s.sector_name || '')"
+              class="bb-stock"
+              :class="{ 'bb-stock--leader': truthy(s.is_leader) || Number(s.leader_rank) > 0 }"
+                @click="showDetail(s)"
+              >
+                <button
+                  type="button"
+                  class="bb-stock__star"
+                  :class="{ 'bb-stock__star--on': isInWatchlist(s.code) }"
+                  :aria-label="isInWatchlist(s.code) ? '取消自选' : '加自选'"
+                  @click.stop="toggleRowStar(s)"
+                >
+                  <svg class="icon" viewBox="0 0 24 24">
+                    <use :href="isInWatchlist(s.code) ? '#icon-star' : '#icon-star-outline'"/>
+                  </svg>
                 </button>
-              </div>
-              <div class="metric-grid">
-                <div class="metric-cell">
-                  <div class="metric-val">
-                    <span class="metric-num">{{ fmtScore(s) }}</span>
-                    <span v-if="s.grade" class="metric-grade">{{ s.grade }}级</span>
+                <div class="bb-stock__main">
+                  <div class="bb-stock__title-row">
+                    <span class="bb-stock__name">{{ s.name }}</span>
+                    <span class="bb-stock__code">{{ s.code }}</span>
                   </div>
-                  <div class="metric-label">评分</div>
+                  <div class="bb-stock__tags">
+                    <span v-if="s.grade === 'S'" class="bb-tag bb-tag--s">S级</span>
+                    <span v-else-if="s.grade === 'A'" class="bb-tag bb-tag--a">A级</span>
+                    <span
+                      v-for="tag in stockTagsForCard(s)"
+                      :key="tag"
+                      class="bb-stock-pill"
+                      :class="tagClass(tag)"
+                    >{{ tag }}</span>
+                  </div>
                 </div>
-                <div class="metric-cell">
-                  <div class="metric-val"><span class="metric-num">{{ fmtBandwidth(s) }}</span></div>
-                  <div class="metric-label">带宽</div>
+                <div class="bb-stock__stats">
+                  <div class="bb-stock__price-block">
+                    <div class="bb-stock__price">¥{{ fmtClose(s) }}</div>
+                    <div class="bb-stock__pct" :class="fmtPct(s).cls">
+                      <span class="bb-stock__pct-arrow" aria-hidden="true">{{ fmtPct(s).arrow }}</span>
+                      {{ fmtPct(s).text }}
+                    </div>
+                  </div>
+                  <div class="bb-stock__metrics">
+                    <div class="bb-metric">
+                      <span class="bb-metric__lbl">量化评分</span>
+                      <span class="bb-metric__val">{{ fmtScore(s) }}</span>
+                    </div>
+                    <div class="bb-metric">
+                      <span class="bb-metric__lbl">带宽值</span>
+                      <span class="bb-metric__val">{{ fmtBandwidth(s) }}</span>
+                    </div>
+                    <div class="bb-metric">
+                      <span class="bb-metric__lbl">收缩期</span>
+                      <span class="bb-metric__val">{{ fmtSqueezeDays(s) }}</span>
+                    </div>
+                  </div>
                 </div>
-                <div class="metric-cell">
-                  <div class="metric-val"><span class="metric-num">{{ fmtSqueezeDays(s) }}</span></div>
-                  <div class="metric-label">收缩</div>
-                </div>
-                <div class="metric-cell">
-                  <div class="metric-val"><span class="metric-num">{{ fmtVolumeRatio(s) }}</span></div>
-                  <div class="metric-label">量比</div>
-                </div>
-              </div>
-              <div class="squeeze-tags">
-                <span
-                  v-for="tag in resolveStockTags(s)"
-                  :key="tag"
-                  class="pill-tag"
-                  :class="tagClass(tag)"
-                >{{ tag }}</span>
-              </div>
+              </article>
             </div>
           </div>
         </template>
-      </div>
+        <div v-else class="bb-empty-page">
+          <svg class="icon bb-empty-page__ic" viewBox="0 0 24 24"><use href="#icon-analytics"/></svg>
+          暂无扫描结果
+        </div>
+      </section>
 
-      <!-- 历史记录 -->
-      <div class="history-section">
+      <section id="bollinger-history" class="bb-history">
         <div class="section-header">
           <div class="section-title">
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
@@ -227,8 +255,18 @@
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
+
+    <button
+      v-if="!scanning"
+      type="button"
+      class="bb-fab"
+      aria-label="开始分析"
+      @click="startScan"
+    >
+      <svg class="icon" viewBox="0 0 24 24"><use href="#icon-bolt"/></svg>
+    </button>
 
     <!-- 股票详情弹窗 -->
     <div class="detail-modal" :class="{ active: stockModalVisible }" @click.self="closeDetail">
@@ -361,12 +399,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { scan, watchlist } from '@/api/strategy.js'
 import KlineChart from '@/components/KlineChart.vue'
 
 // ─── 参数 ───
-const params = ref({ sectors: 5, minDays: 3, period: 20 })
+const params = ref({ sectors: 12, minDays: 45, period: 180 })
 
 // ─── 扫描状态 ───
 const scanning = ref(false)
@@ -387,12 +425,15 @@ const selectedSector = ref('')
 const selectedStock = ref(null)
 const stockModalVisible = ref(false)
 const stockStarred = ref(false)
+/** 自选代码集合，与列表星标、详情星标同步 */
+const watchlistCodes = shallowRef(new Set())
 const filterOptions = [
   { key: 'all', label: '全部' },
-  { key: 'S', label: '★ S级' },
-  { key: 'A', label: '👍 A级' },
-  { key: 'volume', label: '📈 放量' },
-  { key: 'money', label: '$ 资金' },
+  { key: 'S', label: 'S级' },
+  { key: 'A', label: 'A级' },
+  { key: 'volume', label: '放量' },
+  { key: 'vol_price', label: '量价齐升' },
+  { key: 'leader', label: '中军' },
 ]
 
 const resultsExist = computed(() => Object.keys(results.value).length > 0)
@@ -417,47 +458,48 @@ const flatStocks = computed(() => {
   return list
 })
 
-const filteredStocks = computed(() => {
-  let arr = flatStocks.value
-  if (filterTab.value === 'S') arr = arr.filter(s => s.grade === 'S')
-  else if (filterTab.value === 'A') arr = arr.filter(s => s.grade === 'A')
-  else if (filterTab.value === 'volume') {
-    arr = arr.filter(s => truthy(s.is_volume_up) || truthy(s.is_volume_price_up) ||
-      resolveStockTags(s).some(t => String(t).includes('放量')))
-  } else if (filterTab.value === 'money') {
-    arr = arr.filter(s => truthy(s.cmf_bullish) ||
-      resolveStockTags(s).some(t => /资金|流入/.test(String(t))))
-  }
-  return arr
+// 滑杆左侧蓝色填充比例（与 min/max 对齐）
+const rangeFillSectors = computed(() => {
+  const v = params.value.sectors
+  return `${((v - 1) / (30 - 1)) * 100}%`
+})
+const rangeFillMinDays = computed(() => `${(params.value.minDays / 100) * 100}%`)
+const rangeFillPeriod = computed(() => {
+  const v = params.value.period
+  return `${((v - 30) / (365 - 30)) * 100}%`
 })
 
-// 当前选中板块的股票（支持筛选）
+// 当前选中板块的股票：受 Tab 筛选；板块胶囊切换当前板块
 const activeSectorStocks = computed(() => {
-  // 无板块时清空
   if (!groupedResults.value.length) {
     selectedSector.value = ''
     return []
   }
-  // 兜底默认选中第一个板块
   if (!selectedSector.value || !groupedResults.value.find(g => g.sectorName === selectedSector.value)) {
     selectedSector.value = groupedResults.value[0].sectorName
   }
   const group = groupedResults.value.find(g => g.sectorName === selectedSector.value)
+  if (!group) return []
   let stocks = group.stocks
   if (filterTab.value === 'S') stocks = stocks.filter(s => s.grade === 'S')
   else if (filterTab.value === 'A') stocks = stocks.filter(s => s.grade === 'A')
   else if (filterTab.value === 'volume') {
     stocks = stocks.filter(s => truthy(s.is_volume_up) || truthy(s.is_volume_price_up) ||
       resolveStockTags(s).some(t => String(t).includes('放量')))
-  } else if (filterTab.value === 'money') {
-    stocks = stocks.filter(s => truthy(s.cmf_bullish) ||
-      resolveStockTags(s).some(t => /资金|流入/.test(String(t))))
+  } else if (filterTab.value === 'vol_price') {
+    stocks = stocks.filter(s => truthy(s.is_volume_price_up) ||
+      resolveStockTags(s).some(t => String(t).includes('量价齐升')))
+  } else if (filterTab.value === 'leader') {
+    stocks = stocks.filter(s => truthy(s.is_leader) || Number(s.leader_rank) > 0)
   }
   return stocks
 })
+
+const displayStockList = computed(() => activeSectorStocks.value)
+// groupedResults：始终基于全量未筛选数据，分组用于板块胶囊，Tab 切换不影响
 const groupedResults = computed(() => {
   const map = {}
-  for (const s of filteredStocks.value) {
+  for (const s of flatStocks.value) {
     const key = s.sector_name || '其他'
     if (!map[key]) {
       map[key] = { sectorName: key, stocks: [], totalScore: 0, totalChange: 0, count: 0 }
@@ -468,7 +510,6 @@ const groupedResults = computed(() => {
     if (Number.isFinite(sc)) { map[key].totalScore += sc; map[key].count++ }
     if (Number.isFinite(pc)) map[key].totalChange += pc
   }
-
   return Object.values(map)
     .map(g => ({
       ...g,
@@ -482,13 +523,11 @@ const groupedResults = computed(() => {
       })(),
     }))
     .sort((a, b) => {
-      // S级板块优先，其次按均分
       const scoreA = (a.bestGrade === 'S' ? 2 : a.bestGrade === 'A' ? 1 : 0)
       const scoreB = (b.bestGrade === 'S' ? 2 : b.bestGrade === 'A' ? 1 : 0)
       if (scoreA !== scoreB) return scoreB - scoreA
       return b.avgScore - a.avgScore
     })
-    return val
 })
 
 // ─── 历史 ───
@@ -508,6 +547,56 @@ function showToast(msg, type = '') {
   toastVisible.value = true
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toastVisible.value = false }, 2500)
+}
+
+async function refreshWatchlistCodes() {
+  try {
+    const list = await watchlist.list()
+    const next = new Set()
+    for (const row of list || []) {
+      const c = row?.code ?? row?.stock_code
+      if (c) next.add(String(c))
+    }
+    watchlistCodes.value = next
+  } catch {
+    watchlistCodes.value = new Set()
+  }
+}
+
+function isInWatchlist(code) {
+  return Boolean(code && watchlistCodes.value.has(String(code)))
+}
+
+async function toggleRowStar(s) {
+  const code = s?.code
+  if (!code) return
+  const name = (s.name && String(s.name).trim()) || String(code)
+  try {
+    if (isInWatchlist(code)) {
+      await watchlist.remove(code)
+      showToast('已取消自选', 'success')
+    } else {
+      await watchlist.add(code, name, s.sector_name)
+      showToast('已加入自选', 'success')
+    }
+    await refreshWatchlistCodes()
+    if (selectedStock.value?.code === code) {
+      stockStarred.value = isInWatchlist(code)
+    }
+  } catch (e) {
+    showToast(e.message || '操作失败', 'error')
+  }
+}
+
+function scrollToHistory() {
+  const el = document.getElementById('bollinger-history')
+  if (!el) return
+  const top = el.getBoundingClientRect().top + window.scrollY - 80
+  window.scrollTo({ top, behavior: 'smooth' })
+}
+
+function stockTagsForCard(s) {
+  return resolveStockTags(s).filter(t => !/^(S|A)级$/.test(String(t)))
 }
 
 // ─── 轮询 ───
@@ -588,6 +677,7 @@ async function loadResults() {
     results.value = json.results
     resultsTime.value = json.last_update ? '更新于 ' + fmtDate(json.last_update) : ''
     filterTab.value = 'all'
+    await refreshWatchlistCodes()
   } catch (e) {
     resultsError.value = e.message || '加载失败'
   } finally {
@@ -621,6 +711,7 @@ async function viewDetail(id) {
     results.value = data.results || {}
     resultsTime.value = data.scan_time ? '历史扫描 · ' + fmtDate(data.scan_time) : '历史扫描'
     filterTab.value = 'all'
+    await refreshWatchlistCodes()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch (e) {
     showToast('加载失败', 'error')
@@ -660,6 +751,7 @@ function buildFallbackTags(s) {
   }
   if (truthy(s.ma_full_bullish)) tags.push('多头排列')
   else if (truthy(s.ma_bullish)) tags.push('短多')
+  if (truthy(s.cross_above_ma5)) tags.push('上穿M5')
   if (truthy(s.macd_golden) && truthy(s.macd_hist_positive)) tags.push('MACD强势')
   else if (truthy(s.macd_golden)) tags.push('MACD金叉')
   if (truthy(s.is_volume_price_up)) tags.push('量价齐升')
@@ -696,6 +788,7 @@ function tagClass(tag) {
   if (x.includes('MACD') || x.includes('RSV')) return 'pill-ind'
   if (x.includes('多头') || x.includes('短多')) return 'pill-trend'
   if (x.includes('量价') || x.includes('放量')) return 'pill-vol'
+  if (x.includes('上穿M5') || x.includes('M5')) return 'pill-ma5'
   if (x.includes('先锋')) return 'pill-pioneer'
   return 'pill-default'
 }
@@ -708,8 +801,13 @@ function fmtScore(s) {
 
 function fmtPct(s) {
   const n = Number(s.pct_change)
-  if (!Number.isFinite(n)) return { text: '--', cls: '' }
-  return { text: (n >= 0 ? '+' : '') + n.toFixed(2) + '%', cls: n >= 0 ? 'up' : 'down' }
+  if (!Number.isFinite(n)) return { text: '--', cls: '', arrow: '' }
+  const up = n >= 0
+  return {
+    text: (up ? '+' : '') + n.toFixed(2) + '%',
+    cls: up ? 'up' : 'down',
+    arrow: up ? '▲' : '▼',
+  }
 }
 
 function fmtSqueezeDays(s) {
@@ -733,13 +831,6 @@ function fmtVolumeRatio(s) {
   return Number.isFinite(n) ? n.toFixed(1) : '--'
 }
 
-function cardToneClass(s) {
-  const g = s.grade
-  if (g === 'S') return 'tone-s'
-  if (g === 'A') return 'tone-a'
-  return 'tone-default'
-}
-
 async function showDetail(stock) {
   selectedStock.value = stock
   stockModalVisible.value = true
@@ -757,15 +848,17 @@ async function showDetail(stock) {
 
 async function toggleStockStar() {
   if (!selectedStock.value?.code) return
-  const { code, name } = selectedStock.value
+  const { code, name, sector_name } = selectedStock.value
+  const displayName = (name && String(name).trim()) || String(code)
   try {
     if (stockStarred.value) {
       await watchlist.remove(code)
       stockStarred.value = false
     } else {
-      await watchlist.add(code, name)
+      await watchlist.add(code, displayName, sector_name)
       stockStarred.value = true
     }
+    await refreshWatchlistCodes()
   } catch (e) {
     showToast(e.message || '操作失败', 'error')
   }
@@ -800,10 +893,10 @@ async function init() {
       currentSector.value = statusJson.current_sector || ''
       await startPolling()
     } else {
-      await Promise.all([loadResults(), loadHistory()])
+      await Promise.all([loadResults(), loadHistory(), refreshWatchlistCodes()])
     }
   } catch {
-    await Promise.all([loadResults(), loadHistory()])
+    await Promise.all([loadResults(), loadHistory(), refreshWatchlistCodes()])
   }
 }
 
@@ -814,387 +907,775 @@ onUnmounted(stopPolling)
 <style scoped>
 .bollinger-page {
   min-height: 100vh;
-  /* App.vue 已改用 TV token；本页仍大量引用旧名，在此统一映射 */
-  --apple-bg: var(--bg);
-  --apple-card: var(--surface);
-  --apple-text2: var(--text-2);
-  --apple-text3: var(--text-3);
-  --apple-blue: var(--brand);
-  --apple-blue-light: var(--brand-alpha);
-  --apple-red: var(--down);
-  --apple-green: var(--up);
+  padding-bottom: calc(100px + env(safe-area-inset-bottom));
+  font-family: 'Inter', 'Manrope', 'PingFang SC', var(--font), system-ui, sans-serif;
+  --bb-primary: #003ec7;
+  --bb-cta: #0052ff;
+  --bb-surface: #f9f9fe;
+  --bb-surface-low: #f3f3f8;
+  --bb-track: #e2e2e7;
+  --bb-card: #ffffff;
+  --bb-on: #1a1c1f;
+  --bb-muted: #434656;
+  --bb-outline: #737688;
+  --bb-up: #059669;
+  --bb-down: #dc2626;
+  --apple-bg: var(--bb-surface);
+  --apple-card: var(--bb-card);
+  --apple-text2: var(--bb-on);
+  --apple-text3: var(--bb-muted);
+  --apple-blue: var(--bb-cta);
+  --apple-blue-light: rgba(0, 82, 255, 0.14);
+  --apple-red: var(--bb-down);
+  --apple-green: var(--bb-up);
   --apple-orange: #ff9800;
-  --apple-indigo: var(--brand);
-  --apple-gray: var(--text-3);
-  --apple-gray2: var(--text-4);
+  --apple-indigo: var(--bb-cta);
+  --apple-gray: var(--bb-muted);
+  --apple-gray2: var(--bb-muted);
   --apple-gray3: #8e8e93;
-  --apple-gray4: var(--divider-hover);
-  --apple-gray5: var(--divider);
-  --apple-gray6: var(--surface-2);
-  background: var(--apple-bg);
+  --apple-gray4: #c3c5d9;
+  --apple-gray5: var(--bb-track);
+  --apple-gray6: var(--bb-surface-low);
+  background: var(--bb-surface);
+  color: var(--bb-on);
 }
 
-.navbar {
-  position: sticky; top: 0; z-index: 100;
-  background: rgba(255,255,255,0.78);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+.icon { fill: currentColor; }
+
+/* —— 顶栏 —— */
+.bb-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 1px 0 rgba(26, 28, 31, 0.06);
+}
+.bb-header__inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 10px 16px;
   padding-top: calc(10px + env(safe-area-inset-top));
-  display: flex; align-items: flex-start; gap: 12px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
-.nav-back {
-  width: 30px; height: 30px; border-radius: 8px;
-  background: var(--apple-gray6); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  margin-top: 2px;
+.bb-back {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: var(--bb-surface-low);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--bb-on);
+  flex-shrink: 0;
 }
-.nav-back .icon { fill: var(--apple-text2); }
-.nav-center { flex: 1; text-align: center; padding-right: 30px; }
-.nav-title {
-  font-size: 17px; font-weight: 600;
-  display: flex; align-items: center; justify-content: center;
-  letter-spacing: -0.41px;
+.bb-back .icon { width: 20px; height: 20px; fill: currentColor; }
+.bb-header__brand {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.nav-sub {
-  font-size: 11px; color: var(--apple-text3);
-  margin-top: 2px; letter-spacing: 0.02em;
+.bb-header__mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: rgba(0, 82, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.bb-analytics-ic {
+  width: 22px;
+  height: 22px;
+  fill: var(--bb-cta);
+}
+.bb-header__title {
+  margin: 0;
+  font-family: 'Manrope', 'PingFang SC', sans-serif;
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.bb-header__sub {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--bb-muted);
+  line-height: 1.3;
+}
+.bb-header__tools { flex-shrink: 0; }
+.bb-ghost-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--bb-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 8px 6px;
+  border-radius: 12px;
+}
+.bb-ghost-btn .icon { width: 20px; height: 20px; fill: currentColor; }
+.bb-ghost-btn__txt { display: none; }
+@media (min-width: 480px) {
+  .bb-ghost-btn__txt { display: inline; }
 }
 
-.container { padding: 16px; }
+.bb-main {
+  padding: 16px;
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
 
-/* 参数卡片 */
-.param-card {
-  background: var(--apple-card);
-  border-radius: 16px; padding: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+/* —— 扫描配置 —— */
+.bb-config {
+  background: var(--bb-card);
+  border-radius: 24px;
+  padding: 22px 20px 24px;
+  box-shadow: 0 8px 24px rgba(26, 28, 31, 0.06);
 }
-.param-card-title {
-  font-size: 13px; font-weight: 600; color: var(--apple-text3);
-  letter-spacing: 0.5px; margin-bottom: 16px;
-  display: flex; align-items: center; gap: 6px;
+.bb-config__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
 }
-.param-item { margin-bottom: 20px; }
-.param-item:last-child { margin-bottom: 0; }
-.param-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.param-name { font-size: 15px; font-weight: 500; }
-.param-value { font-size: 15px; font-weight: 600; color: var(--apple-blue); }
-.param-slider {
+.bb-config__title {
+  margin: 0;
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.bb-config__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--bb-muted);
+  opacity: 0.85;
+}
+.bb-primary-pill {
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 10px 22px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--bb-primary), var(--bb-cta));
+  box-shadow: 0 4px 16px rgba(0, 62, 199, 0.25);
+  transition: transform 0.15s, opacity 0.15s;
+}
+.bb-primary-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.bb-primary-pill:active:not(:disabled) { transform: scale(0.98); }
+
+.bb-sliders {
+  display: grid;
+  gap: 22px;
+}
+@media (min-width: 768px) {
+  .bb-sliders { grid-template-columns: repeat(3, 1fr); gap: 28px; }
+}
+.bb-slider-block__row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.bb-slider-block__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bb-muted);
+}
+.bb-slider-block__val {
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.125rem;
+  font-weight: 800;
+  color: var(--bb-primary);
+}
+.bb-slider-block__ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--bb-outline);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bb-range {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 22px;
+  height: 24px;
   background: transparent;
   outline: none;
 }
-.param-slider::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--apple-gray5);
+.bb-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--bb-cta) 0%,
+    var(--bb-cta) var(--range-fill, 0%),
+    var(--bb-track) var(--range-fill, 0%),
+    var(--bb-track) 100%
+  );
 }
-.param-slider::-webkit-slider-thumb {
+.bb-range::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   margin-top: -7px;
   border-radius: 50%;
-  background: var(--apple-blue);
-  border: 2px solid var(--apple-card);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  background: #fff;
+  border: 2px solid var(--bb-primary);
+  box-shadow: 0 2px 8px rgba(26, 28, 31, 0.12);
   cursor: pointer;
 }
-.param-slider::-moz-range-track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--apple-gray5);
+.bb-range::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--bb-track);
   border: none;
 }
-.param-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+.bb-range::-moz-range-progress {
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--bb-cta);
+}
+.bb-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  background: var(--apple-blue);
-  border: 2px solid var(--apple-card);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  background: #fff;
+  border: 2px solid var(--bb-primary);
+  box-shadow: 0 2px 8px rgba(26, 28, 31, 0.12);
   cursor: pointer;
 }
-.param-desc { font-size: 12px; color: var(--apple-text3); margin-top: 6px; }
 
-/* 按钮 */
-.scan-btn {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+.bb-cancel {
   width: 100%;
-  background: var(--apple-blue);
+  border: none;
+  border-radius: 16px;
+  padding: 14px;
+  font-size: 15px;
+  font-weight: 700;
   color: #fff;
+  background: var(--bb-down);
+  cursor: pointer;
+}
+
+.bb-progress {
+  display: none;
+  background: var(--bb-card);
+  border-radius: 24px;
+  padding: 18px 20px;
+  box-shadow: 0 8px 24px rgba(26, 28, 31, 0.06);
+}
+.bb-progress--on { display: block; }
+.bb-progress__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bb-progress__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bb-cta);
+  flex-shrink: 0;
+  animation: bb-pulse 1.4s ease-in-out infinite;
+}
+.bb-progress__dot--err {
+  background: var(--bb-down);
+  animation: none;
+}
+@keyframes bb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.bb-progress__head > div { flex: 1; min-width: 0; }
+.bb-progress__label { font-size: 15px; font-weight: 700; }
+.bb-progress__sector { font-size: 13px; color: var(--bb-muted); margin-top: 4px; }
+.bb-progress__pct {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bb-muted);
+}
+.bb-progress__bar {
+  margin-top: 14px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--bb-track);
+  overflow: hidden;
+}
+.bb-progress__fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--bb-primary), var(--bb-cta));
+  transition: width 0.35s ease;
+}
+
+/* —— 扫描结果区 —— */
+.bb-results-wrap { display: flex; flex-direction: column; gap: 12px; }
+.bb-results-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+.bb-results-meta__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bb-muted);
+}
+.bb-check-ic { width: 18px; height: 18px; fill: var(--bb-up); }
+.bb-results-meta__time { font-size: 11px; color: var(--bb-outline); }
+.bb-results-live {
+  margin: 0;
+  font-size: 12px;
+  color: var(--bb-muted);
+  background: var(--bb-surface-low);
+  padding: 10px 14px;
+  border-radius: 16px;
+}
+.bb-loading { text-align: center; padding: 48px 20px; }
+.bb-spinner {
+  width: 32px;
+  height: 32px;
+  margin: 0 auto;
+  border: 3px solid var(--bb-track);
+  border-top-color: var(--bb-cta);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+.bb-error {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--bb-down);
+  font-size: 14px;
+}
+.bb-empty-page {
+  text-align: center;
+  padding: 40px 16px;
+  color: var(--bb-muted);
+  font-size: 14px;
+}
+.bb-empty-page__ic {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 12px;
+  display: block;
+  opacity: 0.35;
+  fill: var(--bb-outline);
+}
+
+.bb-sector-pills {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin: 0 -4px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bb-track) transparent;
+}
+.bb-sector-pills::-webkit-scrollbar { height: 3px; }
+.bb-sector-pills::-webkit-scrollbar-thumb {
+  background: var(--bb-track);
+  border-radius: 10px;
+}
+.bb-pill {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 9999px;
+  border: 1px solid rgba(195, 197, 217, 0.35);
+  background: var(--bb-card);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(26, 28, 31, 0.04);
+  transition: background 0.15s, border-color 0.15s;
+}
+.bb-pill--on {
+  background: #0f172a;
+  border-color: #0f172a;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.2);
+}
+.bb-pill__name {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--bb-muted);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bb-pill--on .bb-pill__name { color: #fff; }
+.bb-pill__chg { font-size: 12px; font-weight: 800; }
+.bb-pill__chg--up { color: #34d399; }
+.bb-pill__chg--down { color: #f87171; }
+.bb-pill--on .bb-pill__chg--up { color: #4ade80; }
+.bb-pill--on .bb-pill__chg--down { color: #fca5a5; }
+
+.bb-results-block { padding-top: 20px; }
+
+.bb-results-block__head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+@media (min-width: 640px) {
+  .bb-results-block__head {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+.bb-results-block__title {
+  margin: 0;
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.bb-seg {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 18px;
+  background: var(--bb-surface-low);
+  overflow-x: auto;
+  max-width: 100%;
+}
+.bb-seg__btn {
+  flex: 1 0 auto;
   border: none;
   border-radius: 14px;
-  padding: 16px;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.41px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bb-muted);
+  background: transparent;
   cursor: pointer;
-  transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
-  margin-bottom: 12px;
-  box-shadow: 0 2px 8px rgba(41, 98, 255, 0.35);
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
-.scan-btn:disabled {
-  background: var(--apple-gray3);
-  color: rgba(255, 255, 255, 0.92);
-  box-shadow: none;
-  cursor: not-allowed;
-  opacity: 0.85;
-}
-.scan-btn:active:not(:disabled) { transform: scale(0.98); }
-.scan-btn .icon { fill: #fff; }
-.spinning { animation: spin 0.8s linear infinite; }
-.cancel-btn {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; background: var(--apple-red); color: #fff; border: none;
-  border-radius: 14px; padding: 14px; font-size: 15px; font-weight: 600;
-  cursor: pointer; transition: all 0.2s; margin-bottom: 12px;
-}
-.cancel-btn .icon { fill: #fff; }
-
-/* 扫描进度 */
-.scan-status-card {
-  background: var(--apple-card);
-  border-radius: 16px; padding: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-  display: none;
-}
-.scan-status-card.active { display: block; }
-.scan-status-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-.scan-status-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--apple-blue);
-  animation: pulse 1.5s infinite; flex-shrink: 0;
-}
-.scan-status-dot.error { background: var(--apple-red); animation: none; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-.scan-status-label { font-size: 15px; font-weight: 600; }
-.scan-sector { font-size: 13px; color: var(--apple-text3); margin-top: 4px; }
-.progress-bar {
-  width: 100%; height: 6px; border-radius: 3px;
-  background: var(--apple-gray5); overflow: hidden; margin-top: 10px;
-}
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--apple-blue), var(--apple-indigo));
-  border-radius: 3px; transition: width 0.3s ease;
-}
-.progress-text { font-size: 13px; color: var(--apple-text3); margin-top: 6px; text-align: right; }
-
-/* 结果卡片 */
-.results-card {
-  background: var(--apple-card);
-  border-radius: 16px; padding: 18px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-  display: none;
-}
-.results-card.active { display: block; }
-.results-header {
-  font-size: 13px; font-weight: 600; color: var(--apple-text3);
-  letter-spacing: 0.5px; margin-bottom: 8px;
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-}
-.results-time { margin-left: auto; font-size: 12px; font-weight: 400; }
-.results-hint {
-  width: 100%; font-size: 12px; color: var(--apple-text3);
-  background: var(--apple-gray6); padding: 8px 10px; border-radius: 8px;
-  display: none; margin: -4px 0 12px;
-}
-.results-hint.show { display: block; }
-
-/* 视图切换 + 筛选条 */
-.results-toolbar {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 14px; flex-wrap: wrap;
-}
-.filter-chips {
-  flex: 1; min-width: 0;
-  display: flex; flex-wrap: nowrap; gap: 8px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
-  padding-bottom: 2px;
-  scrollbar-width: none;
-}
-.filter-chips::-webkit-scrollbar { display: none; }
-.filter-chip {
-  flex-shrink: 0; border: none; cursor: pointer;
-  padding: 6px 12px; border-radius: 20px;
-  font-size: 13px; font-weight: 500;
-  background: var(--apple-gray6); color: var(--apple-text2);
-  transition: background 0.15s, color 0.15s;
-}
-.filter-chip.active {
-  background: #FFEBEE; color: var(--apple-red); font-weight: 600;
-}
-.empty-inner {
-  text-align: center; padding: 24px 12px; font-size: 14px; color: var(--apple-text3);
+.bb-seg__btn--on {
+  background: var(--bb-card);
+  color: var(--bb-cta);
+  box-shadow: 0 2px 8px rgba(26, 28, 31, 0.08);
 }
 
-/* 收缩结果大卡 */
-.squeeze-list { display: flex; flex-direction: column; gap: 12px; }
-.squeeze-card {
-  border-radius: 14px; padding: 14px 14px 12px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-  cursor: pointer; transition: transform 0.12s, box-shadow 0.12s;
-  border: 0.5px solid rgba(0,0,0,0.04);
+.bb-empty-list {
+  text-align: center;
+  padding: 36px 16px;
+  font-size: 14px;
+  color: var(--bb-muted);
 }
-.squeeze-card:active { transform: scale(0.99); }
-.squeeze-card.tone-s { background: linear-gradient(180deg, #FFFBF0 0%, #FFF8E7 100%); }
-.squeeze-card.tone-a { background: linear-gradient(180deg, #F8FAFC 0%, #F1F5F9 100%); }
-.squeeze-card.tone-default { background: var(--apple-card); }
 
-.squeeze-card-top {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 8px; margin-bottom: 12px;
-}
-.squeeze-left { flex: 1; min-width: 0; }
-.squeeze-name-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.squeeze-name { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
-.squeeze-code { font-size: 13px; color: var(--apple-text3); font-weight: 500; }
-.squeeze-sector {
-  font-size: 11px; color: var(--apple-orange); margin-top: 4px;
-  display: inline-block; padding: 2px 8px; border-radius: 6px;
-  background: rgba(255,149,0,0.12); font-weight: 600;
-}
-.squeeze-price-block {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
-  flex-shrink: 0;
-}
-.squeeze-price { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; }
-.squeeze-pct-pill {
-  font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
-  background: var(--apple-gray6);
-}
-.squeeze-pct-pill.up { background: #FFEBEE; color: var(--apple-red); }
-.squeeze-pct-pill.down { background: #E8F5E9; color: var(--apple-green); }
-.star-btn {
-  width: 36px; height: 36px; border: none; border-radius: 10px;
-  background: transparent; color: var(--apple-gray3);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; flex-shrink: 0;
-}
-.star-btn:active { background: var(--apple-gray6); }
-.star-icon { width: 22px; height: 22px; }
+.bb-stock-list { display: flex; flex-direction: column; gap: 12px; }
 
-/* 四格指标 */
-.metric-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
-  margin-bottom: 12px;
+.bb-stock {
+  position: relative;
+  background: var(--bb-card);
+  border-radius: 24px;
+  padding: 20px 18px 18px;
+  box-shadow: 0 8px 24px rgba(26, 28, 31, 0.06);
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.15s;
 }
-.metric-cell {
-  background: rgba(255,255,255,0.72);
-  border-radius: 10px; padding: 8px 4px; text-align: center;
-  border: 0.5px solid rgba(0,0,0,0.04);
+.bb-stock:active { transform: scale(0.995); }
+.bb-stock:hover { box-shadow: 0 12px 32px rgba(0, 62, 199, 0.08); }
+.bb-stock--leader {
+  border: 1.5px solid #d4a574;
+  box-shadow: 0 8px 24px rgba(180, 120, 40, 0.1), inset 0 0 0 1px rgba(212, 165, 116, 0.12);
 }
-.tone-default .metric-cell { background: var(--apple-gray6); }
-.metric-val {
-  display: flex; align-items: baseline; justify-content: center; gap: 2px;
-  flex-wrap: wrap; min-height: 36px; align-content: center;
-}
-.metric-num { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; }
-.metric-grade { font-size: 11px; font-weight: 700; color: var(--apple-blue); }
-.metric-label { font-size: 10px; color: var(--apple-text3); margin-top: 2px; font-weight: 500; }
 
-/* 底部标签 pill */
-.squeeze-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.pill-tag {
-  font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 10px;
+.bb-stock__star {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--bb-outline);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
-.pill-default { background: var(--apple-gray6); color: var(--apple-text2); }
-.pill-leader { background: #FFF3E0; color: var(--apple-orange); }
-.pill-grade-s { background: #FFE082; color: #6D4C00; }
-.pill-grade-a { background: #E3F2FD; color: #1565C0; }
-.pill-cmf { background: #E8F5E9; color: #2E7D32; }
-.pill-ind { background: #F3E5F5; color: #7B1FA2; }
-.pill-trend { background: #E3F2FD; color: #0277BD; }
-.pill-vol { background: #FFEBEE; color: #C62828; }
-.pill-pioneer { background: #FCE4EC; color: #AD1457; }
+.bb-stock__star .icon { width: 22px; height: 22px; }
+.bb-stock__star--on { color: #f59e0b; }
+.bb-stock__star--on .icon { fill: #fbbf24; stroke: none; }
 
-/* 历史记录 */
-.history-section { margin-top: 4px; }
-.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.section-title { font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.section-title .icon { fill: var(--apple-gray); }
-.refresh-btn {
-  border: none; background: none; color: var(--apple-blue); font-size: 13px;
-  cursor: pointer; display: flex; align-items: center; gap: 4px;
+.bb-stock__main { padding-right: 40px; margin-bottom: 16px; }
+.bb-stock__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.refresh-btn .icon { fill: var(--apple-blue); }
-.history-list { display: flex; flex-direction: column; gap: 10px; }
-.history-card {
-  background: var(--apple-card); border-radius: 14px; padding: 14px 16px;
-  display: flex; align-items: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-  cursor: pointer; transition: all 0.2s;
+.bb-stock__name {
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
-.history-card:active { background: var(--apple-gray6); transform: scale(0.98); }
-.history-info { flex: 1; min-width: 0; }
-.history-date {
-  font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px;
+.bb-stock__code {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bb-outline);
+  letter-spacing: 0.04em;
 }
-.history-date .icon { fill: var(--apple-blue); }
-.history-meta {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  font-size: 12px; color: var(--apple-text3); margin-top: 4px;
+.bb-stock__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
-.history-status {
-  padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+.bb-tag {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 9999px;
 }
-.history-status.completed { background: #E8F5E9; color: var(--apple-green); }
-.history-status.scanning { background: var(--apple-blue-light); color: var(--apple-blue); }
-.history-status.error { background: #FFEBEE; color: var(--apple-red); }
-.history-status.cancelled { background: var(--apple-gray6); color: var(--apple-gray); }
-.history-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.delete-btn {
-  width: 32px; height: 32px; border-radius: 8px;
-  border: none; background: #FFEBEE; color: var(--apple-red);
-  display: flex; align-items: center; justify-content: center; cursor: pointer;
-  transition: all 0.2s;
-}
-.delete-btn:active { transform: scale(0.9); background: #FFCDD2; }
-.delete-btn .icon { fill: var(--apple-red); width: 16px; height: 16px; }
+.bb-tag--s { background: #952200; color: #fff; }
+.bb-tag--a { background: #dde1ff; color: #0038b6; }
 
-/* 通用 */
-.loading { text-align: center; padding: 60px 20px; color: var(--apple-gray); }
-.spinner {
-  width: 28px; height: 28px; border: 2.5px solid var(--apple-gray5);
-  border-top-color: var(--apple-blue); border-radius: 50%;
-  animation: spin 0.7s linear infinite; margin: 0 auto 14px;
+.bb-stock-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 9999px;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
-.error-msg { text-align: center; padding: 30px 20px; color: var(--apple-red); font-size: 14px; }
-.empty {
-  text-align: center; padding: 40px 20px; color: var(--apple-gray); font-size: 14px;
-}
-.empty-icon { font-size: 36px; margin-bottom: 10px; display: block; opacity: 0.4; }
+.bb-stock-pill.pill-default { background: var(--bb-surface-low); color: var(--bb-on); }
+.bb-stock-pill.pill-leader { background: #fff3e0; color: #e65100; }
+.bb-stock-pill.pill-grade-s { background: #ffe082; color: #6d4c00; }
+.bb-stock-pill.pill-grade-a { background: #e3f2fd; color: #1565c0; }
+.bb-stock-pill.pill-cmf { background: #e8f5e9; color: #2e7d32; }
+.bb-stock-pill.pill-ind { background: #f3e5f5; color: #7b1fa2; }
+.bb-stock-pill.pill-trend { background: #e3f2fd; color: #0277bd; }
+.bb-stock-pill.pill-vol { background: #ffebee; color: #c62828; }
+.bb-stock-pill.pill-pioneer { background: #fce4ec; color: #ad1457; }
+.bb-stock-pill.pill-ma5 { background: #fef3c7; color: #b45309; }
 
-/* 板块 Tab 行 */
-.sector-tabs-scroll {
-  display: flex; gap: 8px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
-  padding-bottom: 2px; margin-bottom: 12px;
-  scrollbar-width: none;
+/* 参考稿：左侧价格+涨跌（左对齐）| 竖线 | 右侧三列指标（标签在上、数值在下） */
+.bb-stock__stats {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
 }
-.sector-tabs-scroll::-webkit-scrollbar { display: none; }
-.sector-tab {
-  flex-shrink: 0; border: none; cursor: pointer;
-  background: var(--apple-gray6); border-radius: 10px;
-  padding: 8px 14px; min-width: 80px; text-align: center;
-  transition: all 0.15s;
+.bb-stock__price-block {
+  flex: 0 0 auto;
+  text-align: left;
+  min-width: 5.5rem;
 }
-.sector-tab.active { background: #1a1a2e; }
-.sector-tab-name { font-size: 13px; font-weight: 700; color: var(--apple-text2); }
-.sector-tab.active .sector-tab-name { color: #fff; }
-.sector-tab-change { font-size: 11px; font-weight: 600; margin-top: 2px; }
-.sector-tab-change.up { color: var(--apple-red); }
-.sector-tab-change.down { color: var(--apple-green); }
-.sector-tab.active .sector-tab-change.up { color: var(--apple-red); }
-.sector-tab.active .sector-tab-change.down { color: #86e6a0; }
+.bb-stock__price {
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.625rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--bb-on);
+}
+.bb-stock__pct {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.bb-stock__pct-arrow {
+  font-size: 11px;
+  line-height: 1;
+  transform: scale(0.95);
+}
+.bb-stock__pct.up { color: #16a34a; }
+.bb-stock__pct.down { color: var(--bb-down); }
+
+.bb-stock__metrics {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding-left: 16px;
+  border-left: 1px solid #ededf2;
+  align-self: stretch;
+  align-items: center;
+}
+.bb-metric {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bb-metric__lbl {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #787b86;
+  line-height: 1.2;
+}
+.bb-metric__val {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--bb-on);
+  line-height: 1.2;
+}
+
+/* —— FAB —— */
+.bb-fab {
+  position: fixed;
+  right: 20px;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, var(--bb-primary), var(--bb-cta));
+  box-shadow: 0 10px 28px rgba(0, 62, 199, 0.35);
+  transition: transform 0.15s;
+}
+.bb-fab:active { transform: scale(0.95); }
+.bb-fab .icon { width: 26px; height: 26px; fill: currentColor; }
+
+/* —— 历史 —— */
+.bb-history { margin-top: 8px; scroll-margin-top: 70px; }
+.bb-history .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.bb-history .section-title {
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.125rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bb-history .section-title .icon { fill: var(--bb-muted); }
+.bb-history .refresh-btn {
+  border: none;
+  background: none;
+  color: var(--bb-cta);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.bb-history .refresh-btn .icon { fill: var(--bb-cta); }
+.bb-history .history-list { display: flex; flex-direction: column; gap: 12px; }
+.bb-history .history-card {
+  background: var(--bb-card);
+  border-radius: 20px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 8px 24px rgba(26, 28, 31, 0.06);
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.bb-history .history-card:active { transform: scale(0.99); }
+.bb-history .history-info { flex: 1; min-width: 0; }
+.bb-history .history-date {
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bb-history .history-date .icon { fill: var(--bb-cta); }
+.bb-history .history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--bb-muted);
+  margin-top: 6px;
+}
+.bb-history .history-status {
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.bb-history .history-status.completed { background: rgba(5, 150, 105, 0.12); color: var(--bb-up); }
+.bb-history .history-status.scanning { background: rgba(0, 82, 255, 0.12); color: var(--bb-cta); }
+.bb-history .history-status.error { background: rgba(220, 38, 38, 0.1); color: var(--bb-down); }
+.bb-history .history-status.cancelled { background: var(--bb-surface-low); color: var(--bb-muted); }
+.bb-history .history-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.bb-history .delete-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: none;
+  background: rgba(220, 38, 38, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.bb-history .delete-btn .icon { fill: var(--bb-down); width: 18px; height: 18px; }
+
+.bb-history .loading { text-align: center; padding: 48px 20px; color: var(--bb-muted); }
+.bb-history .spinner {
+  width: 28px;
+  height: 28px;
+  border: 2.5px solid var(--bb-track);
+  border-top-color: var(--bb-cta);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin: 0 auto 12px;
+}
+.bb-history .error-msg { text-align: center; padding: 28px 16px; color: var(--bb-down); font-size: 14px; }
+.bb-history .empty {
+  text-align: center;
+  padding: 36px 16px;
+  color: var(--bb-muted);
+  font-size: 14px;
+}
+.bb-history .empty-icon { width: 36px; height: 36px; margin: 0 auto 10px; display: block; opacity: 0.35; fill: var(--bb-outline); }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 /* Toast */
 .toast {
@@ -1297,6 +1778,13 @@ onUnmounted(stopPolling)
 }
 .detail-section-label { font-size: 12px; color: var(--apple-text3); font-weight: 600; margin-bottom: 10px; letter-spacing: 0.5px; }
 .detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-tags .pill-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 10px;
+}
+.detail-tags .pill-ma5 { background: #fef3c7; color: #b45309; }
 
 .detail-indicators-card {
   background: var(--apple-card); border-radius: 16px; padding: 14px 18px;
