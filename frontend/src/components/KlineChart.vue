@@ -109,21 +109,21 @@ const TOOLTIP_H = 138
 const CH = 248
 
 const C = {
-  up:    '#a00024',
-  down:  '#006d41',
+  up:    '#f23645',
+  down:  '#089981',
   /* 布林带：灰系虚线，与下方均线（橙/蓝/紫）明显区分 */
   bbU:   'rgba(100, 116, 139, 0.55)',
   bbM:   'rgba(71, 85, 105, 0.88)',
   bbL:   'rgba(100, 116, 139, 0.55)',
-  volU:  'rgba(160, 0, 36, 0.72)',
-  volD:  'rgba(0, 109, 65, 0.72)',
-  cmfP:  'rgba(160, 0, 36, 0.85)',
-  cmfN:  'rgba(0, 109, 65, 0.85)',
+  volU:  'rgba(242, 54, 69, 0.72)',
+  volD:  'rgba(8, 153, 129, 0.72)',
+  cmfP:  'rgba(242, 54, 69, 0.85)',
+  cmfN:  'rgba(8, 153, 129, 0.85)',
   bwMain: 'rgba(156,136,255,0.95)',
   bwMa5:  'rgba(255,193,7,0.90)',
   bwMa10: 'rgba(33,150,243,0.90)',
-  sigU:  '#4caf50',
-  sigD:  '#f44336',
+  sigU:  '#f23645',
+  sigD:  '#089981',
   ma5:   '#E65100',
   ma10:  '#1565C0',
   ma20:  '#6A1B9A',
@@ -557,7 +557,7 @@ onUnmounted(() => clearAll())
   border-radius: 50%;
   flex-shrink: 0;
 }
-.legend-dot--rise { background: #a00024; }
+.legend-dot--rise { background: #f23645; }
 .legend-dot--ma5 { background: #e65100; }
 .legend-dot--ma10 { background: #1565c0; }
 .legend-dot--ma20 { background: #6a1b9a; }
@@ -696,12 +696,12 @@ onUnmounted(() => clearAll())
 }
 
 .kline-tooltip-num.is-up {
-  color: #a00024;
+  color: #f23645;
   font-weight: 600;
 }
 
 .kline-tooltip-num.is-down {
-  color: #006d41;
+  color: #089981;
   font-weight: 600;
 }
 

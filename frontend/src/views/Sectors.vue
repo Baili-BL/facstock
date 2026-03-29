@@ -93,30 +93,19 @@
         >{{ t.label }}</button>
       </div>
       <div v-if="loadingFlow" class="sec-flow-skel" aria-busy="true">
-        <div v-for="i in 6" :key="i" class="sec-flow-skel__col">
-          <div class="sk sk-flow" />
-        </div>
+        <div v-for="i in 6" :key="i" class="sec-flow-skel__bar" />
       </div>
-      <div v-else class="sec-flow-chart">
-        <div
-          v-for="(item, idx) in fundFlowList"
-          :key="item.name + '-' + idx"
-          class="sec-flow-col"
-        >
-          <span
-            class="sec-flow-val tabular-nums"
-            :class="netYiClass(item.net_yi)"
-          >{{ formatNetYi(item.net_yi) }}</span>
-          <div class="sec-flow-bar-wrap">
-            <div
-              class="sec-flow-bar"
-              :class="netYiClass(item.net_yi)"
-              :style="{ height: barHeightPct(item) + '%' }"
-            />
-          </div>
-          <span class="sec-flow-name">{{ item.name }}</span>
+      <div v-else-if="!fundFlowList.length" class="sec-flow-empty">暂无资金流数据</div>
+      <div v-else class="sec-flow-chart-wrap">
+        <!-- 标签行 -->
+        <div class="sec-flow-chart-labels">
+          <span class="sec-flow-label sec-flow-label--up">↑ 净流入 TOP 3</span>
+          <span class="sec-flow-label sec-flow-label--dn">↓ 净流出 TOP 3</span>
         </div>
-        <div v-if="!fundFlowList.length" class="sec-empty sec-empty--flow">暂无资金流数据</div>
+        <!-- D3 渲染目标 -->
+        <div ref="fundFlowChartEl" class="sec-flow-d3" />
+        <!-- 底部说明 -->
+        <p class="sec-flow-hint">零线居中：红柱向右为净流入，绿柱向左为净流出；柱长为金额绝对值（亿）</p>
       </div>
     </section>
 
@@ -180,8 +169,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { market, macroSummary } from '../api/market.js'
+import * as d3 from 'd3'
 
 const industryList = ref([])
 const conceptList = ref([])
@@ -192,6 +182,7 @@ const hotKind = ref('industry')
 const fundFlowKind = ref('industry')
 const fundFlowList = ref([])
 const secTableEl = ref(null)
+const fundFlowChartEl = ref(null)
 
 const fundFlowTabs = [
   { id: 'industry', label: '行业' },
@@ -267,16 +258,148 @@ const hotRows = computed(() => {
     .slice(0, 6)
 })
 
-const fundFlowMaxAbs = computed(() => {
-  const list = fundFlowList.value
-  if (!list.length) return 1
-  return Math.max(...list.map(x => Math.abs(Number(x.net_yi) || 0)), 1e-9)
-})
+// ── D3 水平发散柱状图（零线居中：红向右、绿向左）────────────────
+const BAR_H = 28
+const BAR_GAP = 7
+const NAME_W = 82
+const INNER_GAP = 8
+const LABEL_PAD_R = 44   // 柱右端数值预留
+const LABEL_PAD_L = 6    // 柱左端数值相对最左点的间距
+const RADIUS = 4
 
-function barHeightPct(item) {
-  const v = Math.abs(Number(item.net_yi) || 0)
-  return Math.min(100, (v / fundFlowMaxAbs.value) * 100)
+function barColor(d) {
+  return d.net_yi >= 0 ? '#f23645' : '#089981'
 }
+
+function renderFundFlowChart() {
+  const el = fundFlowChartEl.value
+  if (!el) return
+  const list = fundFlowList.value
+  if (!list || !list.length) return
+
+  const containerW = el.clientWidth || el.parentElement?.clientWidth || 340
+  const chartW = Math.max(containerW - 8, 220)
+
+  const top3 = [...list].sort((a, b) => Number(b.net_yi) - Number(a.net_yi)).slice(0, 3)
+  const bot3 = [...list].sort((a, b) => Number(a.net_yi) - Number(b.net_yi)).slice(0, 3)
+
+  const allVals = [...top3, ...bot3].map(d => Number(d.net_yi) || 0)
+  const maxAbs = Math.max(...allVals.map(Math.abs), 1e-9)
+
+  const chartStart = NAME_W + INNER_GAP
+  const chartEnd = chartW - LABEL_PAD_R
+  const xScale = d3.scaleLinear()
+    .domain([-maxAbs, maxAbs])
+    .range([chartStart, chartEnd])
+  const xZero = xScale(0)
+
+  const COL_H = BAR_H + BAR_GAP
+  const topH = top3.length * COL_H
+  const svgH = topH + bot3.length * COL_H + 12 + 8
+
+  d3.select(el).selectAll('*').remove()
+  const svg = d3.select(el).append('svg')
+    .attr('width', '100%')
+    .attr('height', svgH)
+    .attr('viewBox', `0 0 ${chartW} ${svgH}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+
+  svg.append('line')
+    .attr('x1', xZero).attr('y1', 2)
+    .attr('x2', xZero).attr('y2', svgH - 4)
+    .attr('stroke', 'rgba(0,0,0,0.14)')
+    .attr('stroke-width', 1.5)
+
+  svg.append('line')
+    .attr('x1', 0).attr('y1', topH + 4)
+    .attr('x2', chartW).attr('y2', topH + 4)
+    .attr('stroke', 'rgba(0,0,0,0.08)')
+    .attr('stroke-width', 1)
+    .attr('stroke-dasharray', '3,3')
+
+  function drawBars(data, y0) {
+    data.forEach((d, i) => {
+      const ny = Number(d.net_yi) || 0
+      const y = y0 + i * COL_H
+      const xVal = xScale(ny)
+      const xL = Math.min(xZero, xVal)
+      const xR = Math.max(xZero, xVal)
+      const bw = Math.max(xR - xL, 4)
+
+      const g = svg.append('g').attr('class', 'bar-row').attr('cursor', 'pointer')
+
+      g.append('rect')
+        .attr('x', 0).attr('y', y)
+        .attr('width', chartW).attr('height', BAR_H)
+        .attr('rx', RADIUS)
+        .attr('fill', 'transparent')
+        .on('mouseenter', function () { d3.select(this).attr('fill', 'rgba(0,0,0,0.045)') })
+        .on('mouseleave', function () { d3.select(this).attr('fill', 'transparent') })
+        .on('click', scrollToSectorTable)
+
+      g.append('rect')
+        .attr('x', xL).attr('y', y)
+        .attr('width', bw).attr('height', BAR_H)
+        .attr('rx', RADIUS)
+        .attr('fill', barColor(d))
+        .attr('opacity', 0.9)
+        .on('mouseenter', function () { d3.select(this).attr('opacity', 1) })
+        .on('mouseleave', function () { d3.select(this).attr('opacity', 0.9) })
+        .on('click', scrollToSectorTable)
+
+      const shortName = d.name.length > 8 ? `${d.name.slice(0, 7)}…` : d.name
+      g.append('text')
+        .attr('x', NAME_W - 2)
+        .attr('y', y + BAR_H / 2)
+        .attr('text-anchor', 'end')
+        .attr('dominant-baseline', 'middle')
+        .attr('font-family', 'Manrope, sans-serif')
+        .attr('font-size', 10.5)
+        .attr('font-weight', '700')
+        .attr('fill', '#191c1d')
+        .text(shortName)
+
+      const val = formatNetYi(ny)
+      if (ny >= 0) {
+        g.append('text')
+          .attr('x', xR + 5)
+          .attr('y', y + BAR_H / 2)
+          .attr('text-anchor', 'start')
+          .attr('dominant-baseline', 'middle')
+          .attr('font-family', 'Manrope, sans-serif')
+          .attr('font-size', 10.5)
+          .attr('font-weight', '800')
+          .attr('fill', barColor(d))
+          .text(val)
+      } else {
+        g.append('text')
+          .attr('x', xL - LABEL_PAD_L)
+          .attr('y', y + BAR_H / 2)
+          .attr('text-anchor', 'end')
+          .attr('dominant-baseline', 'middle')
+          .attr('font-family', 'Manrope, sans-serif')
+          .attr('font-size', 10.5)
+          .attr('font-weight', '800')
+          .attr('fill', barColor(d))
+          .text(val)
+      }
+    })
+  }
+
+  drawBars(top3, 0)
+  drawBars(bot3, topH + 12)
+}
+
+watch(fundFlowList, async () => {
+  await nextTick()
+  renderFundFlowChart()
+}, { deep: true })
+
+onMounted(() => {
+  if (fundFlowList.value.length) {
+    nextTick(() => renderFundFlowChart())
+  }
+})
 
 function formatNetYi(v) {
   const n = Number(v)
@@ -399,8 +522,8 @@ onMounted(() => {
 .sec-page {
   --hm-primary:      #003ec7;
   --hm-primary-mid:  #0052ff;
-  --hm-up:           #a50021;
-  --hm-down:         #006d41;
+  --hm-up:           #f23645;
+  --hm-down:         #089981;
   --hm-surface:      #f8f9fa;
   --hm-low:          #f3f4f5;
   --hm-high:         #e7e8e9;
@@ -468,32 +591,32 @@ onMounted(() => {
 .hm-sentiment__seg.is-flat { background: #c3c5d9; }
 .hm-sentiment__seg.is-down { background: var(--hm-down); }
 
-/* 复用首页 .hm-rank-tabs */
+/* 与首页股票排行、sec-flow-pill 一致的胶囊 Tab */
 .hm-rank-tabs {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
   overflow-x: auto;
-  padding: 0;
-  border-bottom: 1px solid var(--hm-ghost);
+  padding: 0 0 10px;
   scrollbar-width: none;
 }
 .hm-rank-tabs::-webkit-scrollbar { display: none; }
 .hm-rank-tab {
   flex: 0 0 auto;
-  padding: 8px 0 10px;
+  padding: 6px 14px;
+  border-radius: 6px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
+  border: 1px solid var(--hm-ghost);
+  background: var(--hm-white);
   color: var(--hm-muted);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   cursor: pointer;
   font-family: inherit;
 }
 .hm-rank-tab.active {
+  background: rgba(0, 62, 199, 0.08);
+  border-color: rgba(0, 62, 199, 0.32);
   color: var(--hm-primary);
-  border-bottom-color: var(--hm-primary);
 }
 
 /* ── 宏观蓝卡（与首页宏观呼应的深蓝底） ─────────────────────── */
@@ -632,9 +755,9 @@ onMounted(() => {
   font-family: inherit;
 }
 .sec-hot-pill--on {
-  background: rgba(165, 0, 33, 0.1);
-  border-color: rgba(165, 0, 33, 0.35);
-  color: var(--hm-up);
+  background: rgba(0, 62, 199, 0.08);
+  border-color: rgba(0, 62, 199, 0.32);
+  color: var(--hm-primary);
 }
 
 .sec-flow {
@@ -673,92 +796,61 @@ onMounted(() => {
   font-family: inherit;
 }
 .sec-flow-pill--on {
-  background: rgba(165, 0, 33, 0.1);
-  border-color: rgba(165, 0, 33, 0.35);
-  color: var(--hm-up);
+  background: rgba(0, 62, 199, 0.08);
+  border-color: rgba(0, 62, 199, 0.32);
+  color: var(--hm-primary);
 }
 
-.sec-flow-chart {
+.sec-flow-chart-wrap {
+  padding: 4px 14px 10px;
+}
+.sec-flow-chart-labels {
   display: flex;
   justify-content: space-between;
-  align-items: stretch;
-  gap: 4px;
-  padding: 4px 14px 14px;
-  min-height: 168px;
-  position: relative;
-}
-.sec-flow-col {
-  flex: 1;
-  min-width: 0;
-  max-width: 18%;
-  display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  padding: 4px 0 8px;
 }
-.sec-flow-val {
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.2;
-  text-align: center;
-}
-.sec-flow-bar-wrap {
-  flex: 1;
-  width: 100%;
-  min-height: 92px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  align-items: stretch;
-}
-.sec-flow-bar {
-  width: 100%;
-  min-height: 3px;
-  border-radius: 4px 4px 0 0;
-  transition: height 0.3s ease;
-}
-.sec-flow-bar.is-up { background: var(--hm-up); }
-.sec-flow-bar.is-down { background: var(--hm-down); }
-.sec-flow-bar.is-flat { background: var(--hm-outline); }
-.sec-flow-name {
+.sec-flow-label {
+  font-family: 'Manrope', var(--font);
   font-size: 9px;
-  font-weight: 600;
-  color: var(--hm-muted);
-  text-align: center;
-  line-height: 1.25;
-  max-width: 100%;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.sec-flow-label--up { color: var(--hm-up); }
+.sec-flow-label--dn { color: var(--hm-down); }
+.sec-flow-d3 {
+  width: 100%;
   overflow: hidden;
 }
-
-.sec-flow-skel {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 12px 14px 20px;
-  min-height: 140px;
+.sec-flow-hint {
+  margin: 8px 0 4px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--hm-outline);
+  font-weight: 600;
 }
-.sec-flow-skel__col {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-}
-.sk-flow {
-  height: 72px;
-  border-radius: 6px;
-  width: 100%;
-}
-
-.sec-empty--flow {
-  position: absolute;
-  inset: 0;
+.sec-flow-empty {
+  min-height: 120px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  font-size: 12px;
+  color: var(--hm-outline);
+}
+.sec-flow-skel {
+  padding: 8px 14px 16px;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.sec-flow-skel__bar {
+  height: 28px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
 }
 
 .sec-hot-thead {

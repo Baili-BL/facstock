@@ -759,6 +759,19 @@ def enrich_snapshot_industries(out: Dict) -> None:
                 row['industry'] = ind
 
 
+def _sector_row_amount(row) -> float:
+    """行业行成交额（同花顺列名 总成交额，东方财富列名 成交额），用于前端热力图块面积。"""
+    try:
+        for k in ('总成交额', '成交额'):
+            if k in row.index and pd.notna(row.get(k)):
+                v = _safe_float(row[k])
+                if v > 0:
+                    return v
+    except Exception:
+        pass
+    return 0.0
+
+
 def get_hot_sectors() -> List:
     """
     获取热点板块（同花顺数据源，已内置降级到东方财富）
@@ -776,6 +789,7 @@ def get_hot_sectors() -> List:
 
         result = []
         for _, row in df.head(20).iterrows():
+            amt = _sector_row_amount(row)
             result.append({
                 'name': row['板块'],
                 'code': row.get('代码', ''),
@@ -783,6 +797,7 @@ def get_hot_sectors() -> List:
                 'leader': row.get('领涨股', ''),
                 'leader_change': _safe_float(row.get('领涨股-涨跌幅', 0)),
                 'heat_display': '--',
+                **({'amount': amt} if amt > 0 else {}),
             })
 
         _set_cached('hot_sectors', result)

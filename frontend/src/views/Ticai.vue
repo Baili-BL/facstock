@@ -290,7 +290,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 <style scoped>
 /*
  * 题材挖掘 — Architectural Ledger 风格（参考 Watchlist.vue）
- * 涨跌语义：正向/涨 #006d41，负向/跌 #a00024
+ * 涨跌语义：红涨绿跌（TV #f23645 / #089981）
  */
 .ticai-page {
   min-height: 100vh;
@@ -477,8 +477,8 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 }
 .stat { font-weight: 600; }
 .stat em { font-style: normal; }
-.stat--up { color: #006d41; font-weight: 800; }
-.stat--down { color: #a00024; font-weight: 800; }
+.stat--up { color: #f23645; font-weight: 800; }
+.stat--down { color: #089981; font-weight: 800; }
 
 /* ── 成分股表格（仿 Watchlist 风格）── */
 .stock-table { }
@@ -546,7 +546,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   letter-spacing: 0.02em;
   flex-shrink: 0;
 }
-.role-龙头 { background: #a00024; color: #fff; }
+.role-龙头 { background: #f23645; color: #fff; }
 .role-中军 { background: var(--brand); color: #fff; }
 .role-低吸, .role-跟风 { background: var(--text-2); color: #fff; }
 
@@ -587,7 +587,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   font-weight: 800;
   padding: 3px 8px;
   border-radius: 4px;
-  background: #a00024;
+  background: #f23645;
   color: #fff;
 }
 
@@ -604,7 +604,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   padding: 2px 7px;
   border-radius: 4px;
 }
-.feat-tag--red { background: rgba(160, 0, 36, 0.1); color: #a00024; }
+.feat-tag--red { background: rgba(242, 54, 69, 0.1); color: #f23645; }
 .feat-tag--blue { background: rgba(41, 98, 255, 0.1); color: var(--brand); }
 .feat-tag--gray { background: var(--surface-2); color: var(--text-3); }
 
@@ -617,8 +617,8 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 }
 
 /* 涨跌通用 */
-.up { color: #006d41 !important; }
-.down { color: #a00024 !important; }
+.up { color: #f23645 !important; }
+.down { color: #089981 !important; }
 em { font-style: normal; }
 
 /* ── 详情弹窗 ── */

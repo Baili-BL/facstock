@@ -26,7 +26,7 @@ from market_data import (
 )
 from utils.ths_crawler import get_ths_industry_list
 from ticai.news_fetcher import fetch_all_news
-from cache import get, set
+from cache import get, set, delete_key
 
 market_bp = Blueprint('market', __name__)
 
@@ -213,13 +213,17 @@ def api_market_summary():
 
 @market_bp.route('/api/news')
 def api_news():
-    """获取实时财经新闻（Redis 缓存 180s）"""
-    hit = get('news/all')
-    if hit is not None:
-        return jsonify({'success': True, 'data': hit})
+    """获取实时财经新闻（Redis 缓存 180s）。?force=1 跳过 Redis 并强制多源重新抓取。"""
+    force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+    if force:
+        delete_key('news/all')
+    if not force:
+        hit = get('news/all')
+        if hit is not None:
+            return jsonify({'success': True, 'data': hit})
 
     try:
-        news = fetch_all_news(limit_per_source=50)
+        news = fetch_all_news(limit_per_source=50, force=force)
         set('news/all', news, ttl=180)
         return jsonify({'success': True, 'data': news})
     except Exception as e:

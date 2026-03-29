@@ -214,6 +214,19 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
                 INDEX idx_update_time (update_time DESC)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
+
+        # 迁移：scan_records 缓存 DeepSeek 扫描小结（避免每次进入页面重复调用模型）
+        cursor.execute('''
+            SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'scan_records'
+              AND COLUMN_NAME = 'ai_summary_json'
+        ''')
+        if cursor.fetchone()['c'] == 0:
+            cursor.execute(
+                'ALTER TABLE scan_records ADD COLUMN ai_summary_json LONGTEXT NULL, '
+                'ADD COLUMN ai_summary_time DATETIME NULL'
+            )
         
         conn.commit()
 
@@ -392,6 +405,14 @@ def get_scan_detail(scan_id: int) -> Optional[Dict]:
                 record['hot_sectors'] = []
         else:
             record['hot_sectors'] = []
+
+        if row['params_json']:
+            try:
+                record['params'] = json.loads(row['params_json'])
+            except json.JSONDecodeError:
+                record['params'] = {}
+        else:
+            record['params'] = {}
         
         cursor.execute('''
             SELECT sector_name, sector_change, stocks_json
@@ -415,6 +436,44 @@ def get_scan_detail(scan_id: int) -> Optional[Dict]:
         
         record['results'] = results
         return record
+
+
+def get_scan_ai_summary(scan_id: int) -> Optional[Dict[str, Any]]:
+    """读取已保存的 DeepSeek 扫描小结 JSON；附带 stored_at（生成/保存时间）。"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT ai_summary_json, ai_summary_time FROM scan_records WHERE id = %s',
+            (scan_id,),
+        )
+        row = cursor.fetchone()
+        if not row or not row.get('ai_summary_json'):
+            return None
+        try:
+            data = json.loads(row['ai_summary_json'])
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if row.get('ai_summary_time'):
+            data['stored_at'] = row['ai_summary_time'].strftime('%Y-%m-%d %H:%M:%S')
+        return data
+
+
+def save_scan_ai_summary(scan_id: int, payload: Dict[str, Any]) -> bool:
+    """写入 DeepSeek 扫描小结（不含 stored_at 字段）。"""
+    to_save = {k: v for k, v in payload.items() if k != 'stored_at'}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE scan_records
+            SET ai_summary_json = %s, ai_summary_time = NOW()
+            WHERE id = %s
+            ''',
+            (json.dumps(to_save, ensure_ascii=False), scan_id),
+        )
+        return cursor.rowcount > 0
 
 
 def get_latest_scan() -> Optional[Dict]:

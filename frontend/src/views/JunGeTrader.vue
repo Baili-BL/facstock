@@ -428,7 +428,7 @@ const stanceLabel = computed(() => {
 })
 
 const stanceColor = computed(() => {
-  const m = { bull: '#006b1b', bear: '#ba1a1a', neutral: '#717786' }
+  const m = { bull: '#f23645', bear: '#089981', neutral: '#717786' }
   return m[structured.value?.stance] || '#717786'
 })
 
@@ -531,10 +531,10 @@ function resetScan() {
   --low: #f3f3f8;
   --high: #e8e8ed;
   --white: #ffffff;
-  --up: #006b1b;
-  --chip-bg: #70ff76;
-  --chip-on: #002204;
-  --down: #ba1a1a;
+  --up: #f23645;
+  --chip-bg: rgba(242, 54, 69, 0.16);
+  --chip-on: #7f1d1d;
+  --down: #089981;
   --track: #ededf2;
   --line: rgba(193, 198, 215, 0.15);
 
@@ -826,11 +826,11 @@ function resetScan() {
   border-radius: 999px;
 }
 .aa-condition-tag.bull {
-  background: rgba(0,107,27,0.1);
+  background: rgba(242, 54, 69, 0.1);
   color: var(--up);
 }
 .aa-condition-tag.bear {
-  background: rgba(186,26,26,0.1);
+  background: rgba(8, 153, 129, 0.1);
   color: var(--down);
 }
 
@@ -875,8 +875,8 @@ function resetScan() {
   background: var(--low);
   color: var(--on-var);
 }
-.aa-sector-chip.up { background: rgba(0,107,27,0.1); color: var(--up); }
-.aa-sector-chip.down { background: rgba(186,26,26,0.1); color: var(--down); }
+.aa-sector-chip.up { background: rgba(242, 54, 69, 0.1); color: var(--up); }
+.aa-sector-chip.down { background: rgba(8, 153, 129, 0.1); color: var(--down); }
 .aa-sector-chip__chg {
   font-size: 11px;
   opacity: 0.8;
@@ -972,8 +972,8 @@ function resetScan() {
   font-weight: 700;
   letter-spacing: 0.04em;
 }
-.aa-stance-tag--bull { background: rgba(0,107,27,0.12); color: var(--up); }
-.aa-stance-tag--bear { background: rgba(186,26,26,0.12); color: var(--down); }
+.aa-stance-tag--bull { background: rgba(242, 54, 69, 0.12); color: var(--up); }
+.aa-stance-tag--bear { background: rgba(8, 153, 129, 0.12); color: var(--down); }
 .aa-stance-tag--neutral { background: var(--low); color: var(--on-var); }
 .aa-consensus__conf-label {
   font-size: 12px;
@@ -997,9 +997,9 @@ function resetScan() {
   margin-top: 8px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: rgba(186,26,26,0.06);
+  background: rgba(242, 54, 69, 0.06);
   font-size: 12px;
-  color: var(--down);
+  color: #b91c1c;
   line-height: 1.4;
 }
 .aa-warn-ico { flex-shrink: 0; }
@@ -1081,7 +1081,7 @@ function resetScan() {
   color: var(--on-var);
 }
 .aa-grade-badge.grade-S { background: rgba(74,71,210,0.2); color: var(--primary); }
-.aa-grade-badge.grade-A { background: rgba(0,107,27,0.15); color: var(--up); }
+.aa-grade-badge.grade-A { background: rgba(242, 54, 69, 0.15); color: var(--up); }
 .aa-grade-badge.grade-B { background: rgba(255,180,0,0.15); color: #b07000; }
 .aa-rec-item__sector {
   font-size: 10px;

@@ -41,7 +41,8 @@ export const news = {
       const cached = getCache()
       if (cached) return Promise.resolve(cached)
     }
-    return apiFetch('/api/news').then(data => {
+    const q = force ? '?force=1' : ''
+    return apiFetch(`/api/news${q}`).then((data) => {
       setCache(data)
       return data
     })

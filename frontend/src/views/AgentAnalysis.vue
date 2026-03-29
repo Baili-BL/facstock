@@ -304,7 +304,7 @@ const stanceLabel = computed(() => {
 })
 
 const stanceColor = computed(() => {
-  const m = { bull: '#006b1b', bear: '#ba1a1a', neutral: '#717786' }
+  const m = { bull: '#f23645', bear: '#089981', neutral: '#717786' }
   return m[structured.value?.stance] || '#717786'
 })
 
@@ -444,10 +444,10 @@ function goBack() {
   --low: #f3f3f8;
   --high: #e8e8ed;
   --white: #ffffff;
-  --up: #006b1b;
-  --chip-bg: #70ff76;
-  --chip-on: #002204;
-  --down: #ba1a1a;
+  --up: #f23645;
+  --chip-bg: rgba(242, 54, 69, 0.16);
+  --chip-on: #7f1d1d;
+  --down: #089981;
   --track: #ededf2;
   --line: rgba(193, 198, 215, 0.15);
 
@@ -647,7 +647,7 @@ function goBack() {
   min-width: 4px;
 }
 .aa-progress__fill--done {
-  background: linear-gradient(90deg, #006b1b, #42e355);
+  background: linear-gradient(90deg, #f23645, #fb7185);
 }
 
 .aa-progress__hint {
@@ -802,8 +802,8 @@ function goBack() {
   color: var(--chip-on);
 }
 .aa-stance-tag--bear {
-  background: #ffdad6;
-  color: #93000a;
+  background: rgba(8, 153, 129, 0.14);
+  color: #047857;
 }
 .aa-stance-tag--neutral {
   background: var(--high);

@@ -51,7 +51,7 @@
                   <defs>
                     <linearGradient :id="gradId" x1="0%" y1="0%" x2="100%" y2="100%">
                       <stop offset="0%" stop-color="#4a47d2" />
-                      <stop offset="100%" stop-color="#70ff76" />
+                      <stop offset="100%" stop-color="#fb7185" />
                     </linearGradient>
                   </defs>
                   <circle class="asd-gauge__track" cx="96" cy="96" r="88" fill="none" stroke-width="12" />
@@ -283,11 +283,11 @@ function goBack() {
   --low: #f3f3f8;
   --high: #e8e8ed;
   --white: #ffffff;
-  --up: #006b1b;
-  --up-bright: #42e355;
-  --chip-bg: #70ff76;
-  --chip-on: #002204;
-  --down: #ba1a1a;
+  --up: #f23645;
+  --up-bright: #fb7185;
+  --chip-bg: rgba(242, 54, 69, 0.16);
+  --chip-on: #7f1d1d;
+  --down: #089981;
   --err-bg: #ffdad6;
   --err-on: #93000a;
   --neutral-bg: #e2dfe1;

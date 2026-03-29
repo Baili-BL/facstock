@@ -66,7 +66,7 @@ def _get_industry_list_em() -> pd.DataFrame:
     if df_em is None or df_em.empty:
         raise Exception("东方财富接口返回空数据")
     print(f"[EM] 原始数据列: {df_em.columns.tolist()}")
-    df_result = pd.DataFrame({
+    cols = {
         '序号': range(1, len(df_em) + 1),
         '板块': df_em['板块名称'],
         '代码': df_em['板块代码'],
@@ -75,7 +75,10 @@ def _get_industry_list_em() -> pd.DataFrame:
         '下跌家数': df_em['下跌家数'].astype(int),
         '领涨股': df_em['领涨股票'],
         '领涨股-涨跌幅': df_em['领涨股票-涨跌幅'].astype(float),
-    })
+    }
+    if '成交额' in df_em.columns:
+        cols['成交额'] = df_em['成交额'].astype(float)
+    df_result = pd.DataFrame(cols)
     df_result = df_result.sort_values(by='涨跌幅', ascending=False).reset_index(drop=True)
     print(f"[EM] 东方财富接口成功，{len(df_result)} 个行业")
     return df_result

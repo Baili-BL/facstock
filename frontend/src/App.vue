@@ -17,9 +17,12 @@ import BottomNav from '@/components/BottomNav.vue'
 import SvgSymbols from '@/components/SvgSymbols.vue'
 
 const route = useRoute()
-/** 题材挖掘 & AI 策略页面隐藏底部 Tab */
+/** 题材挖掘、AI 策略、布林带页隐藏底部 Tab */
 const hideBottomNav = computed(
-  () => route.path.startsWith('/ticai') || route.path.startsWith('/strategy/ai')
+  () =>
+    route.path.startsWith('/ticai') ||
+    route.path.startsWith('/strategy/ai') ||
+    route.path.startsWith('/strategy/bollinger')
 )
 
 watch(hideBottomNav, (v) => {
@@ -38,11 +41,11 @@ watch(hideBottomNav, (v) => {
   --brand:       #2962ff;   /* TV brand blue — primary CTA only */
   --brand-alpha:  rgba(41, 98, 255, 0.12);
 
-  /* Functional — financial data */
-  --up:          #089981;   /* TV functional green  (涨) */
-  --down:        #f23645;    /* TV functional red    (跌) */
-  --up-alpha:    rgba(8, 153, 129, 0.12);
-  --down-alpha:  rgba(242, 54, 69, 0.10);
+  /* Functional — A 股语义：红涨绿跌（TradingView 色值） */
+  --up:          #f23645;   /* 涨 · TV red */
+  --down:        #089981;   /* 跌 · TV teal */
+  --up-alpha:    rgba(242, 54, 69, 0.12);
+  --down-alpha:  rgba(8, 153, 129, 0.12);
 
   /* Surface — background layers */
   --bg:          #f2f2f2;    /* page background */

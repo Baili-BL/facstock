@@ -419,10 +419,10 @@ function barOpacity(i) {
   --high: #e8e8ed;
   --highest: #e2e2e7;
   --track: #ededf2;
-  --up: #006b1b;
-  --up-chip: #70ff76;
-  --on-up-chip: #002204;
-  --down: #ba1a1a;
+  --up: #f23645;
+  --up-chip: rgba(242, 54, 69, 0.2);
+  --on-up-chip: #7f1d1d;
+  --down: #089981;
   --line: rgba(193, 198, 215, 0.15);
 
   min-height: 100vh;
@@ -605,8 +605,8 @@ function barOpacity(i) {
 }
 
 .ah-pct--down {
-  background: #ffdad6;
-  color: #93000a;
+  background: rgba(8, 153, 129, 0.18);
+  color: #047857;
 }
 
 .ah-up {

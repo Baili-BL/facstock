@@ -6,18 +6,12 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
         </button>
         <div class="bb-header__brand">
-          <span class="bb-header__mark" aria-hidden="true">
-            <svg class="icon bb-analytics-ic" viewBox="0 0 24 24"><use href="#icon-analytics"/></svg>
-          </span>
-          <div>
-            <h1 class="bb-header__title">布林带收缩策略</h1>
-            <p class="bb-header__sub">调整参数以发现技术形态</p>
-          </div>
+          <h1 class="bb-header__title">布林带收缩策略</h1>
         </div>
         <div class="bb-header__tools">
-          <button type="button" class="bb-ghost-btn" @click="scrollToHistory">
+          <button type="button" class="bb-ghost-btn" @click="$router.push('/strategy/bollinger/history')">
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
-            <span class="bb-ghost-btn__txt">历史</span>
+            <span class="bb-ghost-btn__txt">历史记录</span>
           </button>
         </div>
       </div>
@@ -45,11 +39,11 @@
               class="bb-range"
               v-model.number="params.sectors"
               min="1"
-              max="30"
+              max="12"
               step="1"
               :style="{ '--range-fill': rangeFillSectors }"
             >
-            <div class="bb-slider-block__ticks"><span>1</span><span>30</span></div>
+            <div class="bb-slider-block__ticks"><span>1</span><span>12</span></div>
           </div>
           <div class="bb-slider-block">
             <div class="bb-slider-block__row">
@@ -61,11 +55,11 @@
               class="bb-range"
               v-model.number="params.minDays"
               min="0"
-              max="100"
+              max="20"
               step="1"
               :style="{ '--range-fill': rangeFillMinDays }"
             >
-            <div class="bb-slider-block__ticks"><span>0</span><span>100</span></div>
+            <div class="bb-slider-block__ticks"><span>0</span><span>20</span></div>
           </div>
           <div class="bb-slider-block">
             <div class="bb-slider-block__row">
@@ -76,12 +70,12 @@
               type="range"
               class="bb-range"
               v-model.number="params.period"
-              min="30"
-              max="365"
+              min="20"
+              max="180"
               step="5"
               :style="{ '--range-fill': rangeFillPeriod }"
             >
-            <div class="bb-slider-block__ticks"><span>30天</span><span>365天</span></div>
+            <div class="bb-slider-block__ticks"><span>20天</span><span>180天</span></div>
           </div>
         </div>
       </section>
@@ -206,6 +200,13 @@
                 </div>
               </article>
             </div>
+
+            <BollingerAiSummaryPanel
+              v-if="currentScanId"
+              variant="embed"
+              :scan-id="currentScanId"
+              :flat-stocks="flatStocks"
+            />
           </div>
         </template>
         <div v-else class="bb-empty-page">
@@ -213,60 +214,7 @@
           暂无扫描结果
         </div>
       </section>
-
-      <section id="bollinger-history" class="bb-history">
-        <div class="section-header">
-          <div class="section-title">
-            <svg class="icon" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
-            扫描历史
-          </div>
-          <button class="refresh-btn" @click="loadHistory">
-            <svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#icon-refresh"/></svg>
-            刷新
-          </button>
-        </div>
-        <div v-if="historyLoading" class="loading"><div class="spinner"></div></div>
-        <div v-else-if="historyError" class="error-msg">{{ historyError }}</div>
-        <div v-else-if="history.length === 0" class="empty">
-          <svg class="icon empty-icon" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
-          暂无扫描历史
-        </div>
-        <div v-else class="history-list">
-          <div v-for="rec in history" :key="rec.id" class="history-card" @click="viewDetail(rec.id)">
-            <div class="history-info">
-              <div class="history-date">
-                <svg class="icon icon-sm" viewBox="0 0 24 24"><use href="#icon-history"/></svg>
-                {{ fmtDate(rec.scan_time) }}
-              </div>
-              <div class="history-meta">
-                <span class="history-status" :class="rec.status">{{ statusLabel(rec.status) }}</span>
-                <span v-if="rec.sector_count > 0">{{ rec.sector_count }}板块</span>
-                <span v-if="rec.stock_count > 0">{{ rec.stock_count }}只</span>
-                <span v-if="rec.hot_sectors && rec.hot_sectors.length">
-                  {{ rec.hot_sectors.slice(0,2).map(s => s.name).join(', ') }}
-                </span>
-              </div>
-            </div>
-            <div class="history-right">
-              <button class="delete-btn" @click.stop="deleteScan(rec.id)" title="删除">
-                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-delete"/></svg>
-              </button>
-              <svg class="icon icon-sm" style="fill:var(--apple-gray3)" viewBox="0 0 24 24"><use href="#icon-chevron"/></svg>
-            </div>
-          </div>
-        </div>
-      </section>
     </main>
-
-    <button
-      v-if="!scanning"
-      type="button"
-      class="bb-fab"
-      aria-label="开始分析"
-      @click="startScan"
-    >
-      <svg class="icon" viewBox="0 0 24 24"><use href="#icon-bolt"/></svg>
-    </button>
 
     <!-- 股票详情弹窗 -->
     <div class="detail-modal" :class="{ active: stockModalVisible }" @click.self="closeDetail">
@@ -400,11 +348,16 @@
 
 <script setup>
 import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { scan, watchlist } from '@/api/strategy.js'
 import KlineChart from '@/components/KlineChart.vue'
+import BollingerAiSummaryPanel from '@/components/BollingerAiSummaryPanel.vue'
+
+const route = useRoute()
+const router = useRouter()
 
 // ─── 参数 ───
-const params = ref({ sectors: 12, minDays: 45, period: 180 })
+const params = ref({ sectors: 6, minDays: 14, period: 20 })
 
 // ─── 扫描状态 ───
 const scanning = ref(false)
@@ -419,6 +372,8 @@ const results = ref({})
 const resultsLoading = ref(false)
 const resultsError = ref('')
 const resultsTime = ref('')
+/** 当前展示的扫描记录 id（用于 DeepSeek 小结缓存与「再解读」） */
+const currentScanId = ref(null)
 
 const filterTab = ref('all')
 const selectedSector = ref('')
@@ -461,12 +416,12 @@ const flatStocks = computed(() => {
 // 滑杆左侧蓝色填充比例（与 min/max 对齐）
 const rangeFillSectors = computed(() => {
   const v = params.value.sectors
-  return `${((v - 1) / (30 - 1)) * 100}%`
+  return `${((v - 1) / (12 - 1)) * 100}%`
 })
-const rangeFillMinDays = computed(() => `${(params.value.minDays / 100) * 100}%`)
+const rangeFillMinDays = computed(() => `${(params.value.minDays / 20) * 100}%`)
 const rangeFillPeriod = computed(() => {
   const v = params.value.period
-  return `${((v - 30) / (365 - 30)) * 100}%`
+  return `${((v - 20) / (180 - 20)) * 100}%`
 })
 
 // 当前选中板块的股票：受 Tab 筛选；板块胶囊切换当前板块
@@ -530,11 +485,6 @@ const groupedResults = computed(() => {
     })
 })
 
-// ─── 历史 ───
-const history = ref([])
-const historyLoading = ref(false)
-const historyError = ref('')
-
 // ─── Toast ───
 const toastMsg = ref('')
 const toastType = ref('')
@@ -588,13 +538,6 @@ async function toggleRowStar(s) {
   }
 }
 
-function scrollToHistory() {
-  const el = document.getElementById('bollinger-history')
-  if (!el) return
-  const top = el.getBoundingClientRect().top + window.scrollY - 80
-  window.scrollTo({ top, behavior: 'smooth' })
-}
-
 function stockTagsForCard(s) {
   return resolveStockTags(s).filter(t => !/^(S|A)级$/.test(String(t)))
 }
@@ -618,7 +561,6 @@ async function pollStatus() {
       stopPolling()
       scanning.value = false
       await loadResults()
-      await loadHistory()
     } else {
       scanning.value = !!json.is_scanning
       progress.value = json.progress || 0
@@ -672,9 +614,11 @@ async function loadResults() {
     const json = await scan.results()
     if (!json.success || !json.results || Object.keys(json.results).length === 0) {
       results.value = {}
+      currentScanId.value = null
       return
     }
     results.value = json.results
+    currentScanId.value = json.scan_id ?? null
     resultsTime.value = json.last_update ? '更新于 ' + fmtDate(json.last_update) : ''
     filterTab.value = 'all'
     await refreshWatchlistCodes()
@@ -685,30 +629,17 @@ async function loadResults() {
   }
 }
 
-async function loadHistory() {
-  historyLoading.value = true
-  historyError.value = ''
-  try {
-    const json = await scan.history()
-    history.value = (json.data || json || []).slice(0, 20)
-  } catch (e) {
-    historyError.value = e.message || '加载失败'
-  } finally {
-    historyLoading.value = false
-  }
-}
-
 async function viewDetail(id) {
   resultsLoading.value = true
   resultsError.value = ''
   try {
-    const json = await scan.detail(id)
-    if (!json.success || !json.data) {
-      showToast('该扫描暂无结果', 'error')
+    const data = await scan.detail(id)
+    if (!data) {
+      showToast('该扫描不存在或暂无结果', 'error')
       return
     }
-    const data = json.data
     results.value = data.results || {}
+    currentScanId.value = data.id ?? null
     resultsTime.value = data.scan_time ? '历史扫描 · ' + fmtDate(data.scan_time) : '历史扫描'
     filterTab.value = 'all'
     await refreshWatchlistCodes()
@@ -717,17 +648,6 @@ async function viewDetail(id) {
     showToast('加载失败', 'error')
   } finally {
     resultsLoading.value = false
-  }
-}
-
-async function deleteScan(id) {
-  if (!confirm('确定删除这条扫描记录？')) return
-  try {
-    await scan.delete(id)
-    showToast('删除成功', 'success')
-    await loadHistory()
-  } catch (e) {
-    showToast(e.message || '删除失败', 'error')
   }
 }
 
@@ -877,13 +797,12 @@ function fmtDate(dt) {
   return `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function statusLabel(s) {
-  const map = { completed: '已完成', scanning: '扫描中', error: '出错', cancelled: '已取消' }
-  return map[s] || s || '未知'
-}
-
 // ─── 初始化 ───
 async function init() {
+  const qid = route.query.scan_id
+  const openHistoryId =
+    qid != null && String(qid).trim() !== '' ? Number(qid) : NaN
+
   try {
     const statusJson = await scan.status()
     if (statusJson.is_scanning) {
@@ -892,11 +811,23 @@ async function init() {
       progress.value = statusJson.progress || 0
       currentSector.value = statusJson.current_sector || ''
       await startPolling()
+    } else if (Number.isFinite(openHistoryId)) {
+      await viewDetail(openHistoryId)
+      router.replace({ path: '/strategy/bollinger', query: {} })
     } else {
-      await Promise.all([loadResults(), loadHistory(), refreshWatchlistCodes()])
+      await Promise.all([loadResults(), refreshWatchlistCodes()])
     }
   } catch {
-    await Promise.all([loadResults(), loadHistory(), refreshWatchlistCodes()])
+    if (Number.isFinite(openHistoryId)) {
+      try {
+        await viewDetail(openHistoryId)
+      } catch {
+        /* 忽略详情加载失败，仍进入主界面 */
+      }
+      router.replace({ path: '/strategy/bollinger', query: {} })
+    } else {
+      await Promise.all([loadResults(), refreshWatchlistCodes()])
+    }
   }
 }
 
@@ -907,7 +838,7 @@ onUnmounted(stopPolling)
 <style scoped>
 .bollinger-page {
   min-height: 100vh;
-  padding-bottom: calc(100px + env(safe-area-inset-bottom));
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
   font-family: 'Inter', 'Manrope', 'PingFang SC', var(--font), system-ui, sans-serif;
   --bb-primary: #003ec7;
   --bb-cta: #0052ff;
@@ -980,36 +911,16 @@ onUnmounted(stopPolling)
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-.bb-header__mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
-  background: rgba(0, 82, 255, 0.1);
-  display: flex;
-  align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-}
-.bb-analytics-ic {
-  width: 22px;
-  height: 22px;
-  fill: var(--bb-cta);
 }
 .bb-header__title {
   margin: 0;
   font-family: 'Manrope', 'PingFang SC', sans-serif;
-  font-size: 1.125rem;
+  font-size: 1.5rem;
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.2;
-}
-.bb-header__sub {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--bb-muted);
-  line-height: 1.3;
+  text-align: center;
 }
 .bb-header__tools { flex-shrink: 0; }
 .bb-ghost-btn {
@@ -1337,10 +1248,10 @@ onUnmounted(stopPolling)
 }
 .bb-pill--on .bb-pill__name { color: #fff; }
 .bb-pill__chg { font-size: 12px; font-weight: 800; }
-.bb-pill__chg--up { color: #34d399; }
-.bb-pill__chg--down { color: #f87171; }
-.bb-pill--on .bb-pill__chg--up { color: #4ade80; }
-.bb-pill--on .bb-pill__chg--down { color: #fca5a5; }
+.bb-pill__chg--up { color: #f23645; }
+.bb-pill__chg--down { color: #089981; }
+.bb-pill--on .bb-pill__chg--up { color: #fb7185; }
+.bb-pill--on .bb-pill__chg--down { color: #34d399; }
 
 .bb-results-block { padding-top: 20px; }
 
@@ -1554,124 +1465,6 @@ onUnmounted(stopPolling)
   color: var(--bb-on);
   line-height: 1.2;
 }
-
-/* —— FAB —— */
-.bb-fab {
-  position: fixed;
-  right: 20px;
-  bottom: calc(24px + env(safe-area-inset-bottom));
-  width: 56px;
-  height: 56px;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  background: linear-gradient(135deg, var(--bb-primary), var(--bb-cta));
-  box-shadow: 0 10px 28px rgba(0, 62, 199, 0.35);
-  transition: transform 0.15s;
-}
-.bb-fab:active { transform: scale(0.95); }
-.bb-fab .icon { width: 26px; height: 26px; fill: currentColor; }
-
-/* —— 历史 —— */
-.bb-history { margin-top: 8px; scroll-margin-top: 70px; }
-.bb-history .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-.bb-history .section-title {
-  font-family: 'Manrope', sans-serif;
-  font-size: 1.125rem;
-  font-weight: 800;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.bb-history .section-title .icon { fill: var(--bb-muted); }
-.bb-history .refresh-btn {
-  border: none;
-  background: none;
-  color: var(--bb-cta);
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.bb-history .refresh-btn .icon { fill: var(--bb-cta); }
-.bb-history .history-list { display: flex; flex-direction: column; gap: 12px; }
-.bb-history .history-card {
-  background: var(--bb-card);
-  border-radius: 20px;
-  padding: 16px 18px;
-  display: flex;
-  align-items: center;
-  box-shadow: 0 8px 24px rgba(26, 28, 31, 0.06);
-  cursor: pointer;
-  transition: transform 0.15s;
-}
-.bb-history .history-card:active { transform: scale(0.99); }
-.bb-history .history-info { flex: 1; min-width: 0; }
-.bb-history .history-date {
-  font-size: 15px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.bb-history .history-date .icon { fill: var(--bb-cta); }
-.bb-history .history-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--bb-muted);
-  margin-top: 6px;
-}
-.bb-history .history-status {
-  padding: 2px 10px;
-  border-radius: 9999px;
-  font-size: 11px;
-  font-weight: 700;
-}
-.bb-history .history-status.completed { background: rgba(5, 150, 105, 0.12); color: var(--bb-up); }
-.bb-history .history-status.scanning { background: rgba(0, 82, 255, 0.12); color: var(--bb-cta); }
-.bb-history .history-status.error { background: rgba(220, 38, 38, 0.1); color: var(--bb-down); }
-.bb-history .history-status.cancelled { background: var(--bb-surface-low); color: var(--bb-muted); }
-.bb-history .history-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.bb-history .delete-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  border: none;
-  background: rgba(220, 38, 38, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.bb-history .delete-btn .icon { fill: var(--bb-down); width: 18px; height: 18px; }
-
-.bb-history .loading { text-align: center; padding: 48px 20px; color: var(--bb-muted); }
-.bb-history .spinner {
-  width: 28px;
-  height: 28px;
-  border: 2.5px solid var(--bb-track);
-  border-top-color: var(--bb-cta);
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  margin: 0 auto 12px;
-}
-.bb-history .error-msg { text-align: center; padding: 28px 16px; color: var(--bb-down); font-size: 14px; }
-.bb-history .empty {
-  text-align: center;
-  padding: 36px 16px;
-  color: var(--bb-muted);
-  font-size: 14px;
-}
-.bb-history .empty-icon { width: 36px; height: 36px; margin: 0 auto 10px; display: block; opacity: 0.35; fill: var(--bb-outline); }
 
 @keyframes spin {
   to { transform: rotate(360deg); }

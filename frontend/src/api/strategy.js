@@ -91,9 +91,11 @@ export const scan = {
   results: (scanId)  => scanId != null
     ? apiFetch(`/api/scan/results?scan_id=${scanId}`)
     : apiFetch('/api/scan/results'),
-  history: ()        => cached('scan/history', 60_000,
-                      () => apiFetch('/api/scan/history')),
+  history: (limit = 100) => cached(`scan/history?limit=${limit}`, 60_000,
+                      () => apiFetch(`/api/scan/history?limit=${limit}`)),
   detail:  (id)      => apiFetch(`/api/scan/${id}`),
+  /** DeepSeek：扫描小结 + CoT + 推荐（非投资建议） */
+  aiSummary: (id)   => apiFetch(`/api/scan/${id}/ai-summary`),
   delete:  (id)      => { invalidate('scan/'); return apiFetch(`/api/scan/${id}`, { method: 'DELETE' }) },
 }
 

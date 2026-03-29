@@ -479,7 +479,7 @@ def refresh_news():
     """
     try:
         from ticai.news_fetcher import fetch_all_news
-        news = fetch_all_news(limit_per_source=30)
+        news = fetch_all_news(limit_per_source=30, force=True)
         invalidate('news/')
         invalidate('ticai/')
         return jsonify({"success": True, "count": len(news)})

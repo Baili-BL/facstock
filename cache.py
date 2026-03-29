@@ -123,6 +123,17 @@ def set(key: str, value: Any, ttl: int = 60):
     _mem_set(key, value, ttl)
 
 
+def delete_key(key: str):
+    """删除单个 key（Redis 与内存降级缓存）。"""
+    _init_redis()
+    if _redis_available:
+        try:
+            _redis.delete(key)
+        except Exception as e:
+            logger.warning('[Cache] Redis DELETE %s failed: %s', key, e)
+    _mem.pop(key, None)
+
+
 def invalidate(prefix: Optional[str] = None):
     """
     清除缓存。

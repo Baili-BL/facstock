@@ -15,7 +15,7 @@ import time
 import random
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from cache import get, set, invalidate
+from cache import get, set as _cache_set, invalidate
 import logging
 
 logger = logging.getLogger(__name__)
@@ -278,7 +278,7 @@ def get_hot_sectors():
                 'leader_change': round(float(row.get('领涨股-涨跌幅', 0)), 2)
             })
 
-        set(cache_key, sectors, ttl=30)
+        _cache_set(cache_key, sectors, ttl=30)
         return jsonify({'success': True, 'data': sectors})
 
     except Exception as e:
@@ -721,24 +721,244 @@ def get_scan_history():
     limit = request.args.get('limit', 20, type=int)
     limit = max(1, min(100, limit))
     records = db.get_scan_list(limit=limit)
-    set(cache_key, records, ttl=60)
+    _cache_set(cache_key, records, ttl=60)
     return jsonify({
         'success': True,
         'data': records
     })
 
 
+# ── AI 摘要辅助函数（必须在路由前定义）──────────────────────────────────────
+
+def _scan_valid_stock_codes(detail: dict) -> set:
+    """扫描结果中出现的 6 位股票代码集合，用于过滤模型幻觉推荐。"""
+    import builtins
+    from agent_prompts import normalize_agent_stock_code
+    valid = builtins.set()
+    for _, block in (detail.get('results') or {}).items():
+        for s in block.get('stocks') or []:
+            c = normalize_agent_stock_code(s.get('code'))
+            if c:
+                valid.add(c)
+    return valid
+
+
+def _build_scan_llm_payload(detail: dict) -> tuple:
+    """(板块概要文本, 股票行列表)"""
+    sector_lines = []
+    for name, block in (detail.get('results') or {}).items():
+        try:
+            ch = float(block.get('change') or 0)
+        except (TypeError, ValueError):
+            ch = 0.0
+        sector_lines.append(f"- {name}：板块涨跌 {ch:+.2f}%")
+    stock_rows = []
+    for sec_name, block in (detail.get('results') or {}).items():
+        for s in block.get('stocks') or []:
+            code = s.get('code', '')
+            nm = s.get('name', '')
+            gr = s.get('grade', '')
+            pct = s.get('pct_change', '')
+            sq = s.get('squeeze_days', '')
+            bw = s.get('bandwidth_pct', s.get('bandwidth', ''))
+            sc = s.get('total_score', s.get('score', ''))
+            stock_rows.append(
+                f"{code}\t{nm}\t{sec_name}\tgrade={gr}\tpct={pct}\tsqueeze={sq}\tbw={bw}\tscore={sc}"
+            )
+    return '\n'.join(sector_lines), stock_rows
+
+
+@strategy_bp.route('/api/scan/<int:scan_id>/ai-summary', methods=['GET'])
+def scan_ai_summary(scan_id: int):
+    """
+    DeepSeek：单次扫描小结 + Chain-of-Thought 推理 + 至多 3 只跟踪建议（非投资建议）。
+    结果写入 scan_records.ai_summary_json，GET 默认返回缓存；?refresh=1 强制重新调用模型。
+    无缓存且非 refresh 时返回 data: null，由前端「生成 / 再解读」触发 refresh。
+    """
+    from agent_prompts import extract_json_from_response, normalize_agent_stock_code
+
+    refresh = request.args.get('refresh', default=0, type=int) == 1
+
+    detail = db.get_scan_detail(scan_id)
+    if not detail:
+        return jsonify({'success': False, 'error': '扫描记录不存在'}), 404
+
+    stock_rows_all = []
+    for _, block in (detail.get('results') or {}).items():
+        stock_rows_all.extend(block.get('stocks') or [])
+
+    # 无成分股：写入静态 empty 小结，不调用模型
+    if not stock_rows_all:
+        empty_out = {
+            'cot_steps': [
+                {'title': '数据', 'content': '本次扫描暂无成分股结果，无法生成模型推理与推荐。'}
+            ],
+            'recommendations': [],
+            'closing_note': '',
+            'source': 'empty',
+        }
+        if not refresh:
+            cached = db.get_scan_ai_summary(scan_id)
+            if cached is not None:
+                return jsonify({'success': True, 'data': cached, 'cached': True})
+        db.save_scan_ai_summary(scan_id, empty_out)
+        data = db.get_scan_ai_summary(scan_id)
+        return jsonify({'success': True, 'data': data, 'cached': False})
+
+    # 有成分股：默认只读库；无缓存则返回 null（不自动打模型）
+    if not refresh:
+        cached = db.get_scan_ai_summary(scan_id)
+        if cached is not None:
+            return jsonify({'success': True, 'data': cached, 'cached': True})
+        return jsonify({'success': True, 'data': None, 'cached': False})
+
+    api_key = os.environ.get('DEEPSEEK_API_KEY', '').strip()
+    if not api_key:
+        logger.warning('scan_ai_summary: DEEPSEEK_API_KEY 未配置')
+        return jsonify({
+            'success': False,
+            'error': '未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek 生成小结',
+            'data': {'fallback': True},
+        }), 503
+
+    sector_text, stock_rows = _build_scan_llm_payload(detail)
+    stock_rows = stock_rows[:120]
+    stock_text = '\n'.join(stock_rows)
+    params = detail.get('params') or {}
+
+    user_prompt = f"""扫描时间：{detail.get('scan_time')}
+扫描参数：{json.dumps(params, ensure_ascii=False)}
+
+【板块概要】
+{sector_text}
+
+【股票明细】（制表符分隔：代码、名称、所属板块、grade、pct、squeeze、bw、score）
+{stock_text}
+
+请作为资深 A 股量化与技术面分析师，基于本次「布林带收缩策略」扫描结果完成：
+
+1. 用 Chain-of-Thought 方式分步写出推理（至少 3 步）：先概括样本与数据质量 → 再解读板块轮动与布林带/收缩含义 → 再讨论风险与不确定性。
+2. 仅在上述股票明细中出现过的标的里，选出至多 3 只「相对更值得持续跟踪」的标的（必须使用该表中的 6 位数字代码），每只需说明理由与单独的风险提示。
+3. 输出**仅一段合法 JSON**（不要用 markdown 代码围栏），格式如下：
+{{"cot_steps":[{{"title":"string","content":"string"}}],"recommendations":[{{"code":"6位数字","name":"","sector":"","reason":"","risk":""}}],"closing_note":"string"}}
+若你认为不宜推荐任何标的，可将 recommendations 设为 []，并在 closing_note 中说明。"""
+
+    system_msg = (
+        '你只输出 JSON，不要输出 JSON 以外的任何文字。'
+        '分析仅供研究参考，不构成投资建议，禁止给出具体买卖价位。'
+    )
+
+    try:
+        resp = requests.post(
+            'https://api.deepseek.com/chat/completions',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': 'deepseek-chat',
+                'messages': [
+                    {'role': 'system', 'content': system_msg},
+                    {'role': 'user', 'content': user_prompt},
+                ],
+                'temperature': 0.35,
+                'max_tokens': 3800,
+                'stream': False,
+            },
+            timeout=120,
+        )
+        result = resp.json()
+        logger.info("[scan_ai_summary] deepseek raw_response_len=%d keys=%s usage=%s",
+                    len(resp.text), list(result.keys()), result.get('usage', {}))
+
+        if resp.status_code >= 400 or result.get('error'):
+            err = result.get('error') or {}
+            msg = err.get('message', resp.text[:200] if resp.text else 'DeepSeek 请求失败')
+            logger.warning('scan_ai_summary API error: %s', msg)
+            return jsonify({'success': False, 'error': msg}), 502
+
+        msg_data = result['choices'][0]['message']
+        reasoning = msg_data.get('reasoning_content') or ''
+        content = msg_data.get('content') or ''
+
+        if reasoning:
+            logger.info("[scan_ai_summary] reasoning_content length=%d preview=%.80s",
+                         len(reasoning), reasoning[:80])
+
+        raw_for_parse = reasoning if reasoning else content
+        parsed = extract_json_from_response(raw_for_parse)
+        if not parsed:
+            parsed = extract_json_from_response(content)
+
+        valid_codes = _scan_valid_stock_codes(detail)
+
+        if not parsed:
+            combined_raw = '\n'.join(x for x in [reasoning, content] if x)
+            out = {
+                'cot_steps': [
+                    {'title': '思考过程', 'content': reasoning[:4000] if reasoning else content[:4000]}
+                ],
+                'recommendations': [],
+                'closing_note': content[:1200] if content else '',
+                'raw_text': combined_raw[:8000],
+                'source': 'deepseek_raw',
+            }
+            db.save_scan_ai_summary(scan_id, out)
+            data = db.get_scan_ai_summary(scan_id)
+            return jsonify({'success': True, 'data': data, 'cached': False})
+
+        recs_in = parsed.get('recommendations') or []
+        filtered = []
+        for r in recs_in:
+            if len(filtered) >= 3:
+                break
+            c = normalize_agent_stock_code(r.get('code'))
+            if c in valid_codes:
+                filtered.append({
+                    'code': c,
+                    'name': (r.get('name') or '')[:32],
+                    'sector': (r.get('sector') or '')[:64],
+                    'reason': (r.get('reason') or '')[:800],
+                    'risk': (r.get('risk') or '')[:500],
+                })
+
+        cot = parsed.get('cot_steps') or []
+        if not isinstance(cot, list):
+            cot = []
+        cot_clean = []
+        for step in cot[:12]:
+            if not isinstance(step, dict):
+                continue
+            tit = str(step.get('title') or '步骤')[:80]
+            con = str(step.get('content') or '')[:2000]
+            cot_clean.append({'title': tit, 'content': con})
+
+        out = {
+            'cot_steps': cot_clean,
+            'recommendations': filtered,
+            'closing_note': str(parsed.get('closing_note') or '')[:1200],
+            'raw_text': None,
+            'source': 'deepseek',
+        }
+        db.save_scan_ai_summary(scan_id, out)
+        data = db.get_scan_ai_summary(scan_id)
+        return jsonify({'success': True, 'data': data, 'cached': False})
+    except Exception as e:
+        logger.exception('scan_ai_summary failed: %s', e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @strategy_bp.route('/api/scan/<int:scan_id>', methods=['GET'])
 def get_scan_detail(scan_id: int):
     """获取指定扫描的详细结果"""
     scan_detail = db.get_scan_detail(scan_id)
-    
+
     if not scan_detail:
         return jsonify({
             'success': False,
             'error': '扫描记录不存在'
         }), 404
-    
+
     return jsonify({
         'success': True,
         'data': scan_detail
@@ -989,7 +1209,7 @@ def get_watchlist_enriched():
                 'mini_kline':   mk,
             })
 
-        set(cache_key, result, ttl=15)
+        _cache_set(cache_key, result, ttl=15)
         return jsonify({'success': True, 'data': result})
     except Exception as e:
         logger.error(f"自选股 enriched 加载失败: {e}")

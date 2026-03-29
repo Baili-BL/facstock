@@ -414,10 +414,10 @@ function goToAnalysis(a) {
   --surface-high: #e8e8ed;
   --surface-highest: #e2e2e7;
   --outline-variant: rgba(193, 198, 215, 0.15);
-  --tertiary: #006b1b;
-  --tertiary-fixed: #70ff76;
-  --on-tertiary-fixed: #002204;
-  --error: #ba1a1a;
+  --tertiary: #089981;
+  --tertiary-fixed: #f23645;
+  --on-tertiary-fixed: #ffffff;
+  --error: #f23645;
   --error-container: #ffdad6;
   --on-error-container: #93000a;
   --outline-soft: #717786;

@@ -1008,8 +1008,8 @@ onUnmounted(() => {
 .wl {
   --wl-primary: #003ec7;
   --wl-primary-mid: #0052ff;
-  --wl-rise: #a00024;
-  --wl-fall: #006d41;
+  --wl-rise: #f23645;
+  --wl-fall: #089981;
   --wl-surface: #f8f9fa;
   --wl-surface-low: #f3f4f5;
   --wl-surface-high: #e7e8e9;
@@ -1338,7 +1338,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .wl-triple-bar__up {
-  background: #006837;
+  background: var(--wl-rise);
   color: #fff;
 }
 .wl-triple-bar__flat {
@@ -1346,7 +1346,7 @@ onUnmounted(() => {
   color: #434656;
 }
 .wl-triple-bar__down {
-  background: #a50021;
+  background: var(--wl-fall);
   color: #fff;
 }
 
@@ -1365,7 +1365,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   min-width: 0;
-  background: #0040c6;
+  background: var(--wl-rise);
   color: #fff;
 }
 .wl-winlos-bar__lose {
@@ -1373,8 +1373,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   min-width: 0;
-  background: #9ca3af;
-  color: #111;
+  background: var(--wl-fall);
+  color: #fff;
 }
 .wl-winlos-empty {
   height: 40px;
@@ -1413,10 +1413,10 @@ onUnmounted(() => {
   letter-spacing: -0.02em;
 }
 .wl-adcard__ext-v--gain {
-  color: #006837;
+  color: var(--wl-rise);
 }
 .wl-adcard__ext-v--loss {
-  color: #a50021;
+  color: var(--wl-fall);
 }
 
 .wl-toolbar {
