@@ -200,23 +200,16 @@
           <div class="hm-macro__stat-skel" />
           <div class="hm-macro__divider-skel" />
           <div class="hm-macro__stat-skel" />
-          <div class="hm-macro__divider-skel" />
-          <div class="hm-macro__stat-skel" />
         </div>
         <div v-else class="hm-macro__foot">
-          <div>
+          <div class="hm-macro__stat-col">
             <span class="hm-macro__stat-l">SENTIMENT SCORE</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroScore }} / 100</span>
           </div>
           <div class="hm-macro__divider" aria-hidden="true" />
-          <div>
+          <div class="hm-macro__stat-col">
             <span class="hm-macro__stat-l">RISK LEVEL</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroRiskLevel }}</span>
-          </div>
-          <div class="hm-macro__divider" aria-hidden="true" />
-          <div>
-            <span class="hm-macro__stat-l">涨跌停对比</span>
-            <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroLimitUp }} / {{ macroLimitDown }}</span>
           </div>
         </div>
       </section>
@@ -288,7 +281,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { market } from '@/api/market.js'
+import { market, macroSummary } from '@/api/market.js'
 import { layoutBinaryTreemap, fillForSectorChange, textColorForChange } from '@/utils/sectorTreemap.js'
 
 const router = useRouter()
@@ -503,9 +496,11 @@ const capPair = computed(() => {
 
 const macroScore = computed(() => macroRaw.value?.sentiment_score ?? 50)
 const macroRiskLevel = computed(() => macroRaw.value?.risk_level ?? 'MEDIUM')
-const macroSummaryText = computed(() => macroRaw.value?.summary_text ?? '数据加载中，请稍后刷新…')
-const macroLimitUp = computed(() => macroRaw.value?.limit?.up ?? 0)
-const macroLimitDown = computed(() => macroRaw.value?.limit?.down ?? 0)
+const macroSummaryText = computed(() => {
+  const t = macroRaw.value?.summary_text
+  if (t != null && String(t).trim()) return String(t).trim()
+  return '摘要暂不可用，请稍后重试'
+})
 const macroScoreColor = computed(() => {
   const s = macroScore.value
   if (s >= 62) return 'is-up'     // 红涨 → 多头
@@ -681,7 +676,7 @@ async function loadTurnover() {
 
 async function loadMacro() {
   try {
-    const data = await market.macroSummary()
+    const data = await macroSummary()
     if (data && typeof data === 'object') {
       macroRaw.value = data
     }
@@ -1397,6 +1392,10 @@ onUnmounted(() => {
   gap: 14px;
   position: relative;
   z-index: 1;
+}
+.hm-macro__stat-col {
+  flex: 1;
+  min-width: 0;
 }
 .hm-macro__stat-l {
   display: block;

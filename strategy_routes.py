@@ -17,6 +17,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from cache import get, set as _cache_set, invalidate
 import logging
+from utils.feishu_notifier import send_feishu_scan_alert, send_feishu_test
 
 logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
@@ -658,7 +659,26 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         scan_status['current_sector'] = '扫描完成'
         db.update_scan_status(scan_id, 'completed')
         print(f"\n✅ 扫描完成! 耗时: {elapsed:.1f}秒")
-        
+
+        # ── 飞书通知推送 ────────────────────────────────────────────────
+        try:
+            from utils.feishu_notifier import send_feishu_scan_alert
+            scan_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ok = send_feishu_scan_alert(
+                scan_id=scan_id,
+                scan_time=scan_time_str,
+                sector_results=sector_results,
+                hot_sectors=hot_sectors_list,
+                params={'top_sectors': top_sectors, 'min_days': min_days, 'period': period},
+            )
+            if ok:
+                print(f"📱 飞书通知推送成功")
+            else:
+                print(f"⚠️ 飞书通知推送失败（可能未启用或 Webhook 未配置）")
+        except Exception as feishu_err:
+            print(f"⚠️ 飞书通知异常: {feishu_err}")
+        # ── 飞书通知推送结束 ─────────────────────────────────────────────
+
     except Exception as e:
         scan_status['error'] = str(e)
         db.update_scan_status(scan_id, 'error', str(e))
@@ -668,6 +688,105 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
     finally:
         with scan_lock:
             scan_status['is_scanning'] = False
+
+
+@strategy_bp.route('/api/feishu/test', methods=['POST', 'GET'])
+def test_feishu():
+    """测试飞书 Webhook 连接；POST JSON 可传 webhook_url 测当前输入框地址"""
+    try:
+        from utils.feishu_notifier import send_feishu_test
+        url = None
+        if request.method == 'POST' and request.is_json:
+            body = request.json or {}
+            u = (body.get('webhook_url') or '').strip()
+            if u and u.startswith('http'):
+                url = u
+        ok = send_feishu_test(webhook_url=url)
+        if ok:
+            return jsonify({'success': True, 'message': '飞书测试消息发送成功！请检查飞书群。'})
+        return jsonify({'success': False, 'error': '飞书测试消息发送失败，请检查 Webhook 地址或飞书群设置。'})
+    except Exception as e:
+        logger.exception('飞书测试失败')
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/bollinger/alerts', methods=['GET'])
+def list_bollinger_alerts():
+    """布林带飞书告警规则列表"""
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        rows = db.list_bollinger_alert_rules(limit=limit)
+        return jsonify({'success': True, 'data': rows})
+    except Exception as e:
+        logger.exception('list_bollinger_alerts: %s', e)
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/bollinger/alerts', methods=['POST'])
+def create_bollinger_alert():
+    """新建告警规则"""
+    try:
+        payload = request.json or {}
+        scan_id = payload.get('scan_id')
+        if scan_id is not None and scan_id != '':
+            try:
+                sid = int(scan_id)
+                if not db.get_scan_detail(sid):
+                    scan_id = None
+                else:
+                    scan_id = sid
+            except (TypeError, ValueError):
+                scan_id = None
+        else:
+            scan_id = None
+        payload = {**payload, 'scan_id': scan_id}
+        new_id = db.create_bollinger_alert_rule(payload)
+        row = db.get_bollinger_alert_rule(new_id)
+        return jsonify({'success': True, 'data': row})
+    except Exception as e:
+        logger.exception('create_bollinger_alert: %s', e)
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/bollinger/alerts/<int:rule_id>', methods=['GET'])
+def get_bollinger_alert(rule_id: int):
+    """单条告警规则"""
+    row = db.get_bollinger_alert_rule(rule_id)
+    if not row:
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    return jsonify({'success': True, 'data': row})
+
+
+@strategy_bp.route('/api/bollinger/alerts/<int:rule_id>', methods=['PUT'])
+def update_bollinger_alert(rule_id: int):
+    """更新告警规则"""
+    try:
+        payload = request.json or {}
+        if 'scan_id' in payload:
+            sid = payload.get('scan_id')
+            if sid is not None and sid != '':
+                try:
+                    sid = int(sid)
+                    payload['scan_id'] = sid if db.get_scan_detail(sid) else None
+                except (TypeError, ValueError):
+                    payload['scan_id'] = None
+            else:
+                payload['scan_id'] = None
+        ok = db.update_bollinger_alert_rule(rule_id, payload)
+        if not ok:
+            return jsonify({'success': False, 'error': '规则不存在或未变更'}), 404
+        return jsonify({'success': True, 'data': db.get_bollinger_alert_rule(rule_id)})
+    except Exception as e:
+        logger.exception('update_bollinger_alert: %s', e)
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/bollinger/alerts/<int:rule_id>', methods=['DELETE'])
+def delete_bollinger_alert(rule_id: int):
+    """删除告警规则"""
+    if not db.delete_bollinger_alert_rule(rule_id):
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    return jsonify({'success': True, 'data': True})
 
 
 @strategy_bp.route('/api/scan/status')
@@ -878,15 +997,17 @@ def scan_ai_summary(scan_id: int):
             return jsonify({'success': False, 'error': msg}), 502
 
         msg_data = result['choices'][0]['message']
-        reasoning = msg_data.get('reasoning_content') or ''
-        content = msg_data.get('content') or ''
+        reasoning = (msg_data.get('reasoning_content') or '').strip()
+        content = (msg_data.get('content') or '').strip()
+        combined = '\n'.join(x for x in [reasoning, content] if x)
 
         if reasoning:
             logger.info("[scan_ai_summary] reasoning_content length=%d preview=%.80s",
                          len(reasoning), reasoning[:80])
 
-        raw_for_parse = reasoning if reasoning else content
-        parsed = extract_json_from_response(raw_for_parse)
+        parsed = extract_json_from_response(combined)
+        if not parsed and reasoning:
+            parsed = extract_json_from_response(reasoning)
         if not parsed:
             parsed = extract_json_from_response(content)
 
@@ -945,6 +1066,194 @@ def scan_ai_summary(scan_id: int):
         return jsonify({'success': True, 'data': data, 'cached': False})
     except Exception as e:
         logger.exception('scan_ai_summary failed: %s', e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _find_stock_in_scan_detail(detail: dict, code: str):
+    """在单次扫描结果中查找股票；(stock_row, sector_name, sector_change) 或 None。"""
+    from agent_prompts import normalize_agent_stock_code
+
+    target = normalize_agent_stock_code(code)
+    if not target:
+        return None
+    for sec_name, block in (detail.get('results') or {}).items():
+        try:
+            sec_chg = float(block.get('change') or 0)
+        except (TypeError, ValueError):
+            sec_chg = 0.0
+        for s in block.get('stocks') or []:
+            c = normalize_agent_stock_code(s.get('code'))
+            if c == target:
+                return (dict(s), sec_name, sec_chg)
+    return None
+
+
+def _normalize_stock_ai_parsed(parsed: dict) -> dict:
+    """
+    模型偶发把整段 JSON 当作字符串写进 summary，或仅 content 为合法 JSON 而外层错位。
+    """
+    from agent_prompts import extract_json_object_from_text
+
+    if not isinstance(parsed, dict):
+        return {}
+    sm = parsed.get('summary')
+    if isinstance(sm, str) and sm.strip().startswith('{'):
+        inner = extract_json_object_from_text(sm)
+        if isinstance(inner, dict):
+            has_cot = isinstance(inner.get('cot_steps'), list) and len(inner.get('cot_steps') or []) > 0
+            has_sum = bool(str(inner.get('summary') or '').strip())
+            has_risk = bool(str(inner.get('risk_note') or '').strip())
+            if has_cot or has_sum or has_risk:
+                return inner
+    return parsed
+
+
+@strategy_bp.route('/api/scan/<int:scan_id>/stock-ai-analysis', methods=['POST'])
+def scan_stock_ai_analysis(scan_id: int):
+    """
+    DeepSeek：针对扫描内单只标的，结合布林带收缩相关指标与标签做简析（非投资建议）。
+    不入库缓存，每次请求现算。
+    """
+    from agent_prompts import (
+        extract_json_from_response,
+        extract_json_object_from_text,
+        normalize_agent_stock_code,
+    )
+
+    detail = db.get_scan_detail(scan_id)
+    if not detail:
+        return jsonify({'success': False, 'error': '扫描记录不存在'}), 404
+
+    body = request.get_json(silent=True) or {}
+    raw_code = (body.get('code') or '').strip()
+    if not raw_code:
+        return jsonify({'success': False, 'error': '缺少股票代码'}), 400
+
+    found = _find_stock_in_scan_detail(detail, raw_code)
+    if not found:
+        return jsonify({'success': False, 'error': '该股票不在本次扫描结果中'}), 404
+
+    stock, sector_name, sector_change = found
+    norm_code = normalize_agent_stock_code(stock.get('code')) or raw_code
+
+    api_key = os.environ.get('DEEPSEEK_API_KEY', '').strip()
+    if not api_key:
+        return jsonify({
+            'success': False,
+            'error': '未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek',
+        }), 503
+
+    tags = stock.get('tags')
+    if isinstance(tags, list):
+        tag_str = '、'.join(str(t) for t in tags[:20] if t)
+    else:
+        tag_str = str(tags or '')
+
+    stock_payload = {
+        'code': norm_code,
+        'name': stock.get('name', ''),
+        'sector': sector_name,
+        'sector_change_pct': round(sector_change, 2),
+        'pct_change': stock.get('pct_change'),
+        'grade': stock.get('grade', ''),
+        'total_score': stock.get('total_score', stock.get('score')),
+        'squeeze_days': stock.get('squeeze_days'),
+        'bb_width_pct': stock.get('bb_width_pct', stock.get('bandwidth_pct', stock.get('bandwidth'))),
+        'volume_ratio': stock.get('volume_ratio'),
+        'is_leader': stock.get('is_leader'),
+        'leader_rank': stock.get('leader_rank'),
+        'tags': tag_str,
+    }
+
+    scan_params = detail.get('params') or {}
+    user_prompt = f"""你正在辅助解读一次「布林带收缩策略」扫描中的单只股票（仅供研究参考，不构成投资建议）。
+
+【扫描背景】
+扫描时间：{detail.get('scan_time')}
+扫描参数：{json.dumps(scan_params, ensure_ascii=False)}
+
+【标的快照】（JSON）
+{json.dumps(stock_payload, ensure_ascii=False)}
+
+请完成：
+1. 用 Chain-of-Thought 分步推理（至少 3 步）：先概括该标的在扫描中的技术位态（收缩天数、带宽、评分/等级）→ 再结合板块涨跌与标签含义 → 最后讨论风险与不确定性。
+2. 输出**仅一段合法 JSON**（不要用 markdown 代码围栏），格式严格如下：
+{{"cot_steps":[{{"title":"string","content":"string"}}],"summary":"用一段话给出非买卖价位的跟踪要点（不超过200字）","risk_note":"单独一段风险提示（不超过120字）"}}
+禁止输出 JSON 以外的任何文字。"""
+
+    system_msg = (
+        '你只输出 JSON，不要输出 JSON 以外的任何文字。'
+        '分析仅供研究参考，不构成投资建议，禁止给出具体买卖价位与仓位建议。'
+    )
+
+    try:
+        resp = requests.post(
+            'https://api.deepseek.com/chat/completions',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': 'deepseek-chat',
+                'messages': [
+                    {'role': 'system', 'content': system_msg},
+                    {'role': 'user', 'content': user_prompt},
+                ],
+                'temperature': 0.2,
+                'max_tokens': 2800,
+                'stream': False,
+            },
+            timeout=90,
+        )
+        result = resp.json()
+        if resp.status_code >= 400 or result.get('error'):
+            err = result.get('error') or {}
+            msg = err.get('message', resp.text[:200] if resp.text else 'DeepSeek 请求失败')
+            logger.warning('scan_stock_ai_analysis API error: %s', msg)
+            return jsonify({'success': False, 'error': msg}), 502
+
+        msg_data = result['choices'][0]['message']
+        reasoning = (msg_data.get('reasoning_content') or '').strip()
+        content = (msg_data.get('content') or '').strip()
+        # 合并 reasoning + content：DeepSeek 常把最终 JSON 放在 content，推理在 reasoning，只取其一会解析失败
+        combined = '\n'.join(x for x in [reasoning, content] if x)
+        parsed = extract_json_from_response(combined)
+        if not parsed:
+            parsed = extract_json_object_from_text(combined)
+        if isinstance(parsed, dict):
+            parsed = _normalize_stock_ai_parsed(parsed)
+
+        if not parsed:
+            out = {
+                'cot_steps': [
+                    {'title': '模型输出', 'content': (combined or '无内容')[:4000]}
+                ],
+                'summary': (content or reasoning or '')[:800],
+                'risk_note': '',
+                'source': 'deepseek_raw',
+            }
+            return jsonify({'success': True, 'data': out})
+
+        cot = parsed.get('cot_steps') or []
+        if not isinstance(cot, list):
+            cot = []
+        cot_clean = []
+        for step in cot[:12]:
+            if not isinstance(step, dict):
+                continue
+            tit = str(step.get('title') or '步骤')[:80]
+            con = str(step.get('content') or '')[:2000]
+            cot_clean.append({'title': tit, 'content': con})
+
+        out = {
+            'cot_steps': cot_clean,
+            'summary': str(parsed.get('summary') or '')[:600],
+            'risk_note': str(parsed.get('risk_note') or '')[:400],
+            'source': 'deepseek',
+        }
+        return jsonify({'success': True, 'data': out})
+    except Exception as e:
+        logger.exception('scan_stock_ai_analysis failed: %s', e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

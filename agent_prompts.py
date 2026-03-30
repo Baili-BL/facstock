@@ -427,11 +427,34 @@ import re
 import json
 
 
+def extract_json_object_from_text(text: str) -> Optional[dict]:
+    """
+    从任意文本中截取第一个合法 JSON 对象（用 JSONDecoder.raw_decode，可处理前后废话、字符串内的括号）。
+    仅返回 dict；若无则 None。
+    """
+    if not text or not str(text).strip():
+        return None
+    dec = json.JSONDecoder()
+    s = str(text)
+    for i, ch in enumerate(s):
+        if ch != '{':
+            continue
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def extract_json_from_response(content: str) -> Optional[dict]:
     """
     从 LLM 返回内容中提取 JSON 代码块。
     策略：找 ```json ... ``` 块，取第一个。
     """
+    if not content:
+        return None
     # 匹配 ```json\n{ ... }\n```  或  ```json\n{ ... }```
     patterns = [
         r"```json\s*\n([\s\S]+?)\n```",
@@ -442,14 +465,19 @@ def extract_json_from_response(content: str) -> Optional[dict]:
         if m:
             raw = m.group(1).strip()
             try:
-                return json.loads(raw)
+                out = json.loads(raw)
+                if isinstance(out, dict):
+                    return out
             except json.JSONDecodeError:
                 pass
     # fallback: 整个 content 尝试 JSON 解析
     try:
-        return json.loads(content.strip())
+        out = json.loads(content.strip())
+        return out if isinstance(out, dict) else None
     except json.JSONDecodeError:
-        return None
+        pass
+    # 最后：从正文中抠第一个 JSON 对象（应对模型前后加说明、或只写在 reasoning 里）
+    return extract_json_object_from_text(content)
 
 
 # ─── LLM 输出清洗（防止照抄 Prompt 示例 / 虚构代码）──────────────────────────

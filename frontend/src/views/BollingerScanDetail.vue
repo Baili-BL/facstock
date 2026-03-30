@@ -42,6 +42,31 @@
           <h2 class="bsd-sec-title">成分与表现</h2>
           <p v-if="stockTotal === 0" class="bsd-empty">该扫描暂无成分数据，可能扫描未完成或结果未写入。</p>
           <template v-else>
+            <div v-if="sectorTabs.length" class="bsd-sector-tabs" role="tablist" aria-label="按板块筛选">
+              <button
+                type="button"
+                role="tab"
+                class="bsd-sector-tab"
+                :class="{ 'bsd-sector-tab--on': activeSector === '' }"
+                :aria-selected="activeSector === ''"
+                @click="setSectorTab('')"
+              >
+                全部<span class="bsd-sector-tab__n">{{ stockTotal }}</span>
+              </button>
+              <button
+                v-for="t in sectorTabs"
+                :key="t.key"
+                type="button"
+                role="tab"
+                class="bsd-sector-tab"
+                :class="{ 'bsd-sector-tab--on': activeSector === t.key }"
+                :aria-selected="activeSector === t.key"
+                @click="setSectorTab(t.key)"
+              >
+                {{ t.key }}<span class="bsd-sector-tab__n">{{ t.count }}</span>
+              </button>
+            </div>
+
             <article
               v-for="(s, idx) in visibleStocks"
               :key="s.code + '-' + (s.sector_name || '') + '-' + idx"
@@ -68,9 +93,18 @@
                   <span class="bsd-card__k">收缩 / 带宽</span>
                   <span class="bsd-card__v">{{ fmtSq(s) }} · {{ fmtBw(s) }}</span>
                 </div>
+                <div v-if="stockTagsLine(s)" class="bsd-card__row bsd-card__row--tags">
+                  <span class="bsd-card__k">标签</span>
+                  <span class="bsd-card__v bsd-card__tags">{{ stockTagsLine(s) }}</span>
+                </div>
               </div>
-              <button type="button" class="bsd-card__link" @click="goMainStrategy">
-                在完整分析中查看
+              <button
+                type="button"
+                class="bsd-card__link"
+                :disabled="stockAiLoading && stockAiTargetCode === s.code"
+                @click="runStockAi(s)"
+              >
+                {{ stockAiLoading && stockAiTargetCode === s.code ? 'DeepSeek 分析中…' : 'DeepSeek 分析此股' }}
               </button>
             </article>
 
@@ -84,6 +118,47 @@
         </section>
       </template>
     </main>
+
+    <!-- 单股 DeepSeek 分析 -->
+    <div
+      v-if="stockAiOpen"
+      class="bsd-ai-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="bsd-ai-title"
+      @click.self="closeStockAi"
+    >
+      <div class="bsd-ai-panel">
+        <div class="bsd-ai-panel__head">
+          <h2 id="bsd-ai-title" class="bsd-ai-panel__title">
+            DeepSeek 单股解读
+            <span v-if="stockAiStock" class="bsd-ai-panel__sub">{{ stockAiStock.name }} {{ stockAiStock.code }}</span>
+          </h2>
+          <button type="button" class="bsd-ai-close" aria-label="关闭" @click="closeStockAi">×</button>
+        </div>
+        <div class="bsd-ai-panel__body">
+          <div v-if="stockAiLoading" class="bsd-ai-state">
+            <div class="bsd-spin" />
+            <p>正在结合本次扫描的收缩指标与标签推理…</p>
+          </div>
+          <div v-else-if="stockAiError" class="bsd-ai-state bsd-ai-state--err">{{ stockAiError }}</div>
+          <template v-else-if="stockAiDisplay">
+            <p v-if="stockAiDisplay.summary" class="bsd-ai-summary">{{ stockAiDisplay.summary }}</p>
+            <p v-if="stockAiDisplay.risk_note" class="bsd-ai-risk">{{ stockAiDisplay.risk_note }}</p>
+            <details v-if="stockAiDisplay.cot_steps?.length" class="bsd-ai-cot">
+              <summary>查看推理过程（Chain-of-Thought）</summary>
+              <div class="bsd-ai-cot__steps">
+                <div v-for="(step, i) in stockAiDisplay.cot_steps" :key="i" class="bsd-ai-step">
+                  <p class="bsd-ai-step__t">{{ step.title }}</p>
+                  <p class="bsd-ai-step__c">{{ step.content }}</p>
+                </div>
+              </div>
+            </details>
+            <p class="bsd-ai-foot">由 DeepSeek 生成 · 仅供参考 · 不构成投资建议</p>
+          </template>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -102,6 +177,8 @@ const detail = ref(null)
 
 const PAGE = 5
 const visibleCount = ref(PAGE)
+/** 板块筛选：空字符串 = 全部 */
+const activeSector = ref('')
 
 const scanId = computed(() => {
   const id = route.params.id
@@ -127,6 +204,24 @@ const flatStocks = computed(() => {
   return list
 })
 
+const sectorTabs = computed(() => {
+  const d = detail.value
+  if (!d?.results) return []
+  return Object.entries(d.results)
+    .map(([key, block]) => ({
+      key,
+      count: (block?.stocks || []).length,
+      change: Number(block?.change || 0),
+    }))
+    .filter(t => t.count > 0)
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
+})
+
+const filteredStocks = computed(() => {
+  if (!activeSector.value) return flatStocks.value
+  return flatStocks.value.filter(s => s.sector_name === activeSector.value)
+})
+
 const stockTotal = computed(() => flatStocks.value.length)
 
 const sectorCount = computed(() => {
@@ -135,16 +230,60 @@ const sectorCount = computed(() => {
   return Object.keys(d.results).length
 })
 
-const visibleStocks = computed(() => flatStocks.value.slice(0, visibleCount.value))
+const visibleStocks = computed(() => filteredStocks.value.slice(0, visibleCount.value))
 
-const canLoadMore = computed(() => visibleCount.value < flatStocks.value.length)
+const canLoadMore = computed(() => visibleCount.value < filteredStocks.value.length)
+
+const stockAiOpen = ref(false)
+const stockAiLoading = ref(false)
+const stockAiError = ref('')
+const stockAiStock = ref(null)
+const stockAiData = ref(null)
+const stockAiTargetCode = ref('')
+
+/** 模型偶发把合法 JSON 整段写进 summary，前端再解析一层，避免整屏 raw JSON */
+function normalizeStockAiData(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const sum = raw.summary
+  if (typeof sum !== 'string') return raw
+  const t = sum.trim()
+  if (!t.startsWith('{')) return raw
+  try {
+    const inner = JSON.parse(t)
+    if (!inner || typeof inner !== 'object') return raw
+    const steps = inner.cot_steps
+    const hasCot = Array.isArray(steps) && steps.length > 0
+    const innerSum = inner.summary
+    const hasSum = typeof innerSum === 'string' && innerSum.trim().length > 0
+    const hasRisk = typeof inner.risk_note === 'string' && inner.risk_note.trim().length > 0
+    if (hasCot || hasSum || hasRisk) {
+      return {
+        ...raw,
+        cot_steps: hasCot ? steps : (raw.cot_steps || []),
+        summary: hasSum ? innerSum.trim() : '',
+        risk_note: hasRisk ? inner.risk_note.trim() : (raw.risk_note || ''),
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return raw
+}
+
+const stockAiDisplay = computed(() => normalizeStockAiData(stockAiData.value))
 
 const summaryText = computed(() => buildSummary(detail.value, flatStocks.value))
 
 watch(scanId, () => {
   visibleCount.value = PAGE
+  activeSector.value = ''
   loadDetail()
 })
+
+function setSectorTab(key) {
+  activeSector.value = key
+  visibleCount.value = PAGE
+}
 
 function loadMore() {
   visibleCount.value += PAGE
@@ -155,10 +294,36 @@ function goBack() {
   else router.push('/strategy/bollinger/history')
 }
 
-function goMainStrategy() {
+function stockTagsLine(s) {
+  const tags = s?.tags
+  if (!Array.isArray(tags) || !tags.length) return ''
+  return tags.map(t => String(t)).filter(Boolean).join(' · ')
+}
+
+async function runStockAi(s) {
   const id = scanId.value
-  if (id == null) return
-  router.push({ path: '/strategy/bollinger', query: { scan_id: String(id) } })
+  if (id == null || !s?.code) return
+  stockAiTargetCode.value = String(s.code)
+  stockAiStock.value = s
+  stockAiOpen.value = true
+  stockAiLoading.value = true
+  stockAiError.value = ''
+  stockAiData.value = null
+  try {
+    stockAiData.value = await scan.stockAiAnalysis(id, s.code)
+  } catch (e) {
+    stockAiError.value = e.message || '分析失败'
+  } finally {
+    stockAiLoading.value = false
+    stockAiTargetCode.value = ''
+  }
+}
+
+function closeStockAi() {
+  stockAiOpen.value = false
+  stockAiStock.value = null
+  stockAiData.value = null
+  stockAiError.value = ''
 }
 
 function fmtScanTime(t) {
@@ -241,7 +406,7 @@ function buildSummary(d, stocks) {
   let t = `本次共纳入 ${stocks.length} 只标的；其中 S 级 ${sGr} 只、A 级 ${aGr} 只。`
   if (avgSq) t += ` 样本平均连续收缩约 ${avgSq} 个交易日，有利于观察布林带收窄后的变盘可能。`
   if (top) t += ` 板块层面，涨幅领先的前几位包括：${top}。`
-  t += ' 以下为该次扫描中的个股列表，可在「完整分析」中结合 K 线与标签进一步研判。'
+  t += ' 以下为该次扫描中的个股列表，可按板块筛选，并可用「DeepSeek 分析此股」结合当次收缩指标与标签解读。'
   return t
 }
 
@@ -420,6 +585,53 @@ onMounted(loadDetail)
   font-weight: 800;
   color: #1a1c1f;
 }
+
+.bsd-sector-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 16px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.bsd-sector-tabs::-webkit-scrollbar { display: none; }
+.bsd-sector-tab {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  background: #eef0f5;
+  color: #434656;
+  transition: background 0.15s, color 0.15s;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bsd-sector-tab--on {
+  background: linear-gradient(135deg, #003ec7, #0052ff);
+  color: #fff;
+}
+.bsd-sector-tab__n {
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.85;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+.bsd-sector-tab--on .bsd-sector-tab__n {
+  background: rgba(255, 255, 255, 0.22);
+}
+
 .bsd-empty {
   text-align: center;
   padding: 28px 16px;
@@ -475,6 +687,14 @@ onMounted(loadDetail)
   color: #1a1c1f;
   font-weight: 600;
 }
+.bsd-card__row--tags .bsd-card__v {
+  text-align: right;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: #5c5f6e;
+}
+.bsd-card__tags { white-space: normal; word-break: break-all; }
 .bsd-up { color: #059669 !important; }
 .bsd-down { color: #dc2626 !important; }
 
@@ -491,6 +711,10 @@ onMounted(loadDetail)
   background: linear-gradient(135deg, #003ec7, #0052ff);
 }
 .bsd-card__link:active { transform: scale(0.99); }
+.bsd-card__link:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 
 .bsd-load-more {
   display: block;
@@ -507,4 +731,137 @@ onMounted(loadDetail)
   background: rgba(0, 82, 255, 0.1);
 }
 .bsd-load-more:active { transform: scale(0.99); }
+
+/* 单股 DeepSeek 弹层 */
+.bsd-ai-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(26, 28, 31, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: env(safe-area-inset-top, 0) 0 0;
+}
+@media (min-width: 520px) {
+  .bsd-ai-overlay {
+    align-items: center;
+    padding: 24px;
+  }
+}
+.bsd-ai-panel {
+  width: 100%;
+  max-width: 520px;
+  max-height: min(88vh, 720px);
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 40px rgba(26, 28, 31, 0.12);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (min-width: 520px) {
+  .bsd-ai-panel {
+    border-radius: 20px;
+  }
+}
+.bsd-ai-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid #ededf2;
+}
+.bsd-ai-panel__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  color: #1a1c1f;
+  line-height: 1.35;
+}
+.bsd-ai-panel__sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #737688;
+}
+.bsd-ai-close {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: #f3f3f8;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: #434656;
+}
+.bsd-ai-panel__body {
+  padding: 16px 18px 22px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.bsd-ai-state {
+  text-align: center;
+  padding: 32px 12px;
+  color: #434656;
+  font-size: 14px;
+}
+.bsd-ai-state--err { color: #dc2626; }
+.bsd-ai-summary {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: #1a1c1f;
+}
+.bsd-ai-risk {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #7c2d12;
+  background: #fff7ed;
+  border-radius: 12px;
+}
+.bsd-ai-cot {
+  margin-bottom: 14px;
+  border-radius: 14px;
+  background: #f3f3f8;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+.bsd-ai-cot summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #003ec7;
+}
+.bsd-ai-cot__steps {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.bsd-ai-step__t {
+  margin: 0 0 4px;
+  font-weight: 800;
+  font-size: 12px;
+  color: #737688;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.bsd-ai-step__c {
+  margin: 0;
+  line-height: 1.55;
+  color: #434656;
+  white-space: pre-wrap;
+}
+.bsd-ai-foot {
+  margin: 0;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
+}
 </style>

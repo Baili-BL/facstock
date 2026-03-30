@@ -510,7 +510,7 @@ async function onDelete(id) {
 }
 
 function onManageAlerts() {
-  showToast('警报管理功能开发中', '')
+  router.push('/strategy/bollinger/alerts')
 }
 
 onMounted(load)

@@ -60,6 +60,7 @@
               :style="{ '--range-fill': rangeFillMinDays }"
             >
             <div class="bb-slider-block__ticks"><span>0</span><span>20</span></div>
+            <p class="bb-slider-block__hint">连续收缩天数下限，越高越严；无结果时可调低。</p>
           </div>
           <div class="bb-slider-block">
             <div class="bb-slider-block__row">
@@ -357,7 +358,7 @@ const route = useRoute()
 const router = useRouter()
 
 // ─── 参数 ───
-const params = ref({ sectors: 6, minDays: 14, period: 20 })
+const params = ref({ sectors: 6, minDays: 3, period: 20 })
 
 // ─── 扫描状态 ───
 const scanning = ref(false)
@@ -1031,6 +1032,12 @@ onUnmounted(stopPolling)
   color: var(--bb-outline);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.bb-slider-block__hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--bb-muted);
 }
 
 .bb-range {

@@ -227,6 +227,25 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
                 'ALTER TABLE scan_records ADD COLUMN ai_summary_json LONGTEXT NULL, '
                 'ADD COLUMN ai_summary_time DATETIME NULL'
             )
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bollinger_alert_rules (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                rule_name VARCHAR(200) NOT NULL DEFAULT '布林带收缩突破',
+                scan_id INT NULL COMMENT '可选：关联历史扫描记录',
+                webhook_url VARCHAR(768) NOT NULL DEFAULT '',
+                metric VARCHAR(50) NOT NULL DEFAULT 'bb_width_pct',
+                cond_op VARCHAR(30) NOT NULL DEFAULT 'gt',
+                threshold VARCHAR(64) NOT NULL DEFAULT '',
+                frequency VARCHAR(20) NOT NULL DEFAULT 'once',
+                enabled TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_scan_id (scan_id),
+                INDEX idx_enabled (enabled),
+                FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
         
         conn.commit()
 
@@ -532,6 +551,170 @@ def delete_all_scans() -> int:
         cursor.execute('DELETE FROM scan_results')
         cursor.execute('DELETE FROM scan_records')
         return cursor.rowcount
+
+
+# ==================== 布林带飞书告警规则 ====================
+
+def _alert_rule_row(row: Dict) -> Dict:
+    if not row:
+        return row
+    return {
+        'id': row['id'],
+        'rule_name': row['rule_name'],
+        'scan_id': row['scan_id'],
+        'webhook_url': row['webhook_url'] or '',
+        'metric': row['metric'],
+        'cond_op': row['cond_op'],
+        'threshold': row['threshold'] or '',
+        'frequency': row['frequency'],
+        'enabled': bool(row['enabled']),
+        'created_at': row['created_at'].strftime('%Y-%m-%d %H:%M:%S') if row.get('created_at') else None,
+        'updated_at': row['updated_at'].strftime('%Y-%m-%d %H:%M:%S') if row.get('updated_at') else None,
+    }
+
+
+def list_bollinger_alert_rules(limit: int = 100) -> List[Dict]:
+    """列出布林带告警规则（按更新时间倒序）"""
+    limit = max(1, min(500, int(limit)))
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            SELECT r.id, r.rule_name, r.scan_id, r.webhook_url, r.metric, r.cond_op,
+                   r.threshold, r.frequency, r.enabled, r.created_at, r.updated_at,
+                   s.scan_time AS linked_scan_time
+            FROM bollinger_alert_rules r
+            LEFT JOIN scan_records s ON s.id = r.scan_id
+            ORDER BY r.updated_at DESC
+            LIMIT {limit}
+            '''
+        )
+        out = []
+        for row in cursor.fetchall():
+            d = _alert_rule_row(row)
+            lt = row.get('linked_scan_time')
+            d['linked_scan_time'] = lt.strftime('%Y-%m-%d %H:%M:%S') if lt else None
+            out.append(d)
+        return out
+
+
+def get_bollinger_alert_rule(rule_id: int) -> Optional[Dict]:
+    """获取单条告警规则"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT r.id, r.rule_name, r.scan_id, r.webhook_url, r.metric, r.cond_op,
+                   r.threshold, r.frequency, r.enabled, r.created_at, r.updated_at,
+                   s.scan_time AS linked_scan_time
+            FROM bollinger_alert_rules r
+            LEFT JOIN scan_records s ON s.id = r.scan_id
+            WHERE r.id = %s
+            ''',
+            (rule_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = _alert_rule_row(row)
+        lt = row.get('linked_scan_time')
+        d['linked_scan_time'] = lt.strftime('%Y-%m-%d %H:%M:%S') if lt else None
+        return d
+
+
+def create_bollinger_alert_rule(payload: Dict[str, Any]) -> int:
+    """创建告警规则，返回新 id"""
+    name = (payload.get('rule_name') or '布林带收缩突破').strip()[:200]
+    scan_id = payload.get('scan_id')
+    if scan_id is not None:
+        try:
+            scan_id = int(scan_id)
+        except (TypeError, ValueError):
+            scan_id = None
+    webhook = (payload.get('webhook_url') or '').strip()[:768]
+    metric = (payload.get('metric') or 'bb_width_pct').strip()[:50]
+    cond_op = (payload.get('cond_op') or 'gt').strip()[:30]
+    threshold = (payload.get('threshold') or '').strip()[:64]
+    frequency = (payload.get('frequency') or 'once').strip()[:20]
+    if frequency not in ('once', 'daily', 'weekly'):
+        frequency = 'once'
+    enabled = 1 if payload.get('enabled', True) else 0
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO bollinger_alert_rules
+            (rule_name, scan_id, webhook_url, metric, cond_op, threshold, frequency, enabled)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (name, scan_id, webhook, metric, cond_op, threshold, frequency, enabled),
+        )
+        return cursor.lastrowid
+
+
+def update_bollinger_alert_rule(rule_id: int, payload: Dict[str, Any]) -> bool:
+    """更新告警规则"""
+    cur = get_bollinger_alert_rule(rule_id)
+    if not cur:
+        return False
+
+    name = payload.get('rule_name', cur['rule_name'])
+    if name is not None:
+        name = str(name).strip()[:200] or cur['rule_name']
+
+    scan_id = payload.get('scan_id', cur['scan_id'])
+    if scan_id is not None and scan_id != '':
+        try:
+            scan_id = int(scan_id)
+        except (TypeError, ValueError):
+            scan_id = cur['scan_id']
+    else:
+        scan_id = None
+
+    webhook = payload.get('webhook_url', cur['webhook_url'])
+    if webhook is not None:
+        webhook = str(webhook).strip()[:768]
+    else:
+        webhook = cur['webhook_url']
+
+    metric = (payload.get('metric') or cur['metric']).strip()[:50]
+    cond_op = (payload.get('cond_op') or cur['cond_op']).strip()[:30]
+    threshold = payload.get('threshold', cur['threshold'])
+    if threshold is not None:
+        threshold = str(threshold).strip()[:64]
+    else:
+        threshold = ''
+
+    frequency = (payload.get('frequency') or cur['frequency']).strip()[:20]
+    if frequency not in ('once', 'daily', 'weekly'):
+        frequency = cur['frequency']
+
+    if 'enabled' in payload:
+        enabled = 1 if payload.get('enabled') else 0
+    else:
+        enabled = 1 if cur['enabled'] else 0
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE bollinger_alert_rules SET
+                rule_name=%s, scan_id=%s, webhook_url=%s, metric=%s, cond_op=%s,
+                threshold=%s, frequency=%s, enabled=%s
+            WHERE id=%s
+            ''',
+            (name, scan_id, webhook, metric, cond_op, threshold, frequency, enabled, rule_id),
+        )
+        return cursor.rowcount > 0
+
+
+def delete_bollinger_alert_rule(rule_id: int) -> bool:
+    """删除告警规则"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM bollinger_alert_rules WHERE id = %s', (rule_id,))
+        return cursor.rowcount > 0
 
 
 # ==================== 板块成分股缓存 ====================

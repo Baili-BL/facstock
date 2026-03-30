@@ -96,7 +96,18 @@ export const scan = {
   detail:  (id)      => apiFetch(`/api/scan/${id}`),
   /** DeepSeek：扫描小结 + CoT + 推荐（非投资建议） */
   aiSummary: (id)   => apiFetch(`/api/scan/${id}/ai-summary`),
+  /** DeepSeek：单只股票基于扫描内指标与标签的简析（非投资建议） */
+  stockAiAnalysis: (scanId, code) =>
+    postJson(`/api/scan/${scanId}/stock-ai-analysis`, { code }),
   delete:  (id)      => { invalidate('scan/'); return apiFetch(`/api/scan/${id}`, { method: 'DELETE' }) },
+}
+
+export const alertRule = {
+  list:    ()       => cached('bollinger/alerts', 30_000, () => apiFetch('/api/bollinger/alerts')),
+  get:     (id)     => apiFetch(`/api/bollinger/alerts/${id}`),
+  create:  (data)   => { invalidate('bollinger/alerts'); return postJson('/api/bollinger/alerts', data) },
+  update:  (id, d)  => { invalidate('bollinger/alerts'); return postJson(`/api/bollinger/alerts/${id}`, d) },
+  delete:  (id)     => { invalidate('bollinger/alerts'); return apiFetch(`/api/bollinger/alerts/${id}`, { method: 'DELETE' }) },
 }
 
 export const report = {
