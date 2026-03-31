@@ -27,9 +27,11 @@ app = Flask(__name__)
 from ticai.routes import ticai_bp
 from market_routes import market_bp
 from strategy_routes import strategy_bp
+from tv_udf_routes import tv_udf_bp
 app.register_blueprint(ticai_bp)
 app.register_blueprint(market_bp)
 app.register_blueprint(strategy_bp)
+app.register_blueprint(tv_udf_bp, url_prefix='/tv_udf')
 
 # ==================== AI 分析接口（保留在 app.py，与蓝图不冲突） ====================
 
@@ -561,6 +563,23 @@ def _format_news_for_agent(news_list):
 # ==================== 静态文件服务 ====================
 
 DIST_DIR = os.path.join(os.path.dirname(__file__), 'dist')
+CHARTING_LIB_DIR = os.path.join(os.path.dirname(__file__), 'charting_library')
+
+
+@app.route('/charting_library/<path:filename>')
+def serve_charting_library(filename):
+    """TradingView Charting Library 静态资源（含 mobile_white.html）"""
+    if '..' in filename or filename.startswith(('/', '\\')):
+        abort(404)
+    full = os.path.normpath(os.path.join(CHARTING_LIB_DIR, filename))
+    if not full.startswith(os.path.normpath(CHARTING_LIB_DIR + os.sep)):
+        abort(404)
+    if not os.path.isfile(full):
+        abort(404)
+    if filename.endswith('.html'):
+        abort(403)
+    return send_from_directory(CHARTING_LIB_DIR, filename)
+
 
 @app.route('/frontend')
 @app.route('/frontend/')

@@ -10,12 +10,10 @@ const DEF_TTL = 30_000   // 30s
 function cached(key, ttl = DEF_TTL, fetchFn) {
   const hit = _cache.get(key)
   if (hit && Date.now() - hit.ts < ttl) return Promise.resolve(hit.data)
-  const prom = fetchFn().then(d => {
+  return fetchFn().then((d) => {
     _cache.set(key, { data: d, ts: Date.now() })
     return d
   })
-  _cache.set(key, { data: prom, ts: Date.now() })
-  return prom
 }
 
 export function invalidate(prefix) {
@@ -25,20 +23,81 @@ export function invalidate(prefix) {
   }
 }
 
+/**
+ * 安全解析 JSON：避免后端未启动、代理 502、空 body 时 res.json() 抛 Unexpected end of JSON input
+ */
+async function parseJsonResponse(res, pathHint = '') {
+  const text = await res.text()
+  const trimmed = (text || '').trim()
+  if (!trimmed) {
+    const tip = !res.ok ? `HTTP ${res.status}` : '空响应'
+    throw new Error(
+      `${tip}（${pathHint || '接口'}）。请确认后端已启动（默认 localhost:5002）且 Vite 代理正常。`
+    )
+  }
+  let json
+  try {
+    json = JSON.parse(trimmed)
+  } catch {
+    throw new Error(
+      `响应不是 JSON（${pathHint || 'request'}，HTTP ${res.status}）：${trimmed.slice(0, 80)}…`
+    )
+  }
+  return json
+}
+
 async function apiFetch(path, options = {}) {
   const res = await fetch(path, options)
-  const json = await res.json()
-  if (!json.success && json.error) throw new Error(json.error)
+  const json = await parseJsonResponse(res, path)
+  if (!res.ok && json && !json.success) {
+    throw new Error(json.error || `HTTP ${res.status}`)
+  }
+  if (json && json.success === false && json.error) throw new Error(json.error)
   return json.data ?? json
 }
 
 async function postJson(path, body) {
-  return apiFetch(path, {
+  const res = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  const json = await parseJsonResponse(res, path)
+  if (!res.ok && json && !json.success) {
+    throw new Error(json.error || `HTTP ${res.status}`)
+  }
+  if (json && json.success === false && json.error) throw new Error(json.error)
+  return json.data ?? json
 }
+
+/** 与后端 catalog 一致；接口不可用时下拉仍可选 */
+export const WATCHLIST_STRATEGY_FALLBACK = [
+  {
+    id: 'rsi_extreme',
+    name: 'RSI 超买超卖',
+    description: 'RSI(14)：>70 超买，<30 超卖',
+  },
+  {
+    id: 'ma_cross',
+    name: '均线金叉 / 死叉',
+    description: 'MA5 与 MA20 位置与交叉',
+  },
+  {
+    id: 'breakout_20',
+    name: '20 日区间突破',
+    description: '收盘相对近 20 日（不含当日）高低点',
+  },
+  {
+    id: 'macd_turn',
+    name: 'MACD 柱状拐点',
+    description: 'MACD 柱由负转正 / 由正转负',
+  },
+  {
+    id: 'bollinger_position',
+    name: '布林带位置',
+    description: '收盘相对布林上下轨（20,2）',
+  },
+]
 
 export const watchlist = {
   list:     ()    => apiFetch('/api/watchlist'),
@@ -51,6 +110,27 @@ export const watchlist = {
     }),
   remove:(code) => postJson('/api/watchlist/remove',{ code }),
   check: (code) => apiFetch(`/api/watchlist/check/${code}`),
+}
+
+/** 自选列表 + TA-Lib / pandas 技术指标扫描 */
+export const watchlistStrategy = {
+  catalog: () =>
+    cached('watchlist/strategy/catalog', 300_000, () =>
+      apiFetch('/api/watchlist/strategy/catalog')
+    ),
+  /** @param {string|string[]} strategyIdOrIds 单个 id 或 id 数组 */
+  run: (strategyIdOrIds) => {
+    const ids = Array.isArray(strategyIdOrIds)
+      ? strategyIdOrIds.map((x) => String(x || '').trim()).filter(Boolean)
+      : [String(strategyIdOrIds || '').trim()].filter(Boolean)
+    if (!ids.length) return Promise.reject(new Error('未选择策略'))
+    if (ids.length === 1) {
+      return postJson('/api/watchlist/strategy/run', { strategy_id: ids[0] })
+    }
+    return postJson('/api/watchlist/strategy/run', { strategy_ids: ids })
+  },
+  /** 策略列表请求失败时清缓存，便于重试 */
+  invalidateCatalog: () => invalidate('watchlist/strategy'),
 }
 
 export const stock = {

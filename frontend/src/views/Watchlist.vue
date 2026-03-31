@@ -46,7 +46,7 @@
             <div class="wl-portfolio__inner">
               <p class="wl-kicker">自选概览</p>
               <div class="wl-portfolio__hero tabular">
-                <span class="wl-portfolio__avg">{{ fmtSignedPct(watchlistStats.avgPct) }}</span>
+                <span class="wl-portfolio__avg" :class="portfolioAvgClass">{{ fmtSignedPct(watchlistStats.avgPct) }}</span>
                 <span class="wl-portfolio__unit">平均涨跌</span>
               </div>
               <div class="wl-portfolio__foot">
@@ -79,86 +79,6 @@
                 <path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
               </svg>
             </button>
-          </div>
-        </section>
-
-        <section v-if="watchlistStats && advanceBar" class="wl-adstats">
-          <div class="wl-adcard">
-            <div class="wl-adcard__head">
-              <span class="wl-adcard__title">今日 自选股涨跌比</span>
-              <span class="wl-adcard__meta tabular">
-                {{ watchlistStats.up }} 涨 / {{ watchlistStats.down }} 跌 / {{ watchlistStats.flat }} 平
-              </span>
-            </div>
-            <div class="wl-triple-bar" role="img" :aria-label="`涨${advanceBar.upP}%平${advanceBar.flatP}%跌${advanceBar.downP}%`">
-              <div
-                v-if="watchlistStats.up > 0"
-                class="wl-triple-bar__seg wl-triple-bar__up"
-                :style="{ flexGrow: watchlistStats.up }"
-              >
-                <span v-if="advanceBar.upP >= 10" class="tabular">{{ advanceBar.upP }}%</span>
-              </div>
-              <div
-                v-if="watchlistStats.flat > 0"
-                class="wl-triple-bar__seg wl-triple-bar__flat"
-                :style="{ flexGrow: watchlistStats.flat }"
-              >
-                <span v-if="advanceBar.flatP >= 10" class="tabular">{{ advanceBar.flatP }}%</span>
-              </div>
-              <div
-                v-if="watchlistStats.down > 0"
-                class="wl-triple-bar__seg wl-triple-bar__down"
-                :style="{ flexGrow: watchlistStats.down }"
-              >
-                <span v-if="advanceBar.downP >= 10" class="tabular">{{ advanceBar.downP }}%</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="wl-adcard">
-            <div class="wl-adcard__head">
-              <span class="wl-adcard__title">累计收益涨跌比（自选后）</span>
-              <span class="wl-adcard__meta tabular">{{ cumPerf.positiveRate }}% 正收益率</span>
-            </div>
-            <p class="wl-adcard__note">说明：正收益率与强弱条按「今日涨跌幅」统计；未记录加入时成本，非持仓真实累计收益。</p>
-            <div
-              v-if="cumPerf.hasQuote"
-              class="wl-winlos-bar"
-              role="img"
-              :aria-label="`上涨占比${cumPerf.positiveRate}%`"
-            >
-              <div
-                v-if="cumPerf.up > 0"
-                class="wl-winlos-bar__win"
-                :style="{ flexGrow: cumPerf.up }"
-              >
-                <span>WINNERS</span>
-              </div>
-              <div
-                v-if="cumPerf.nonUp > 0"
-                class="wl-winlos-bar__lose"
-                :style="{ flexGrow: cumPerf.nonUp }"
-              >
-                <span>LOSERS</span>
-              </div>
-            </div>
-            <div v-else class="wl-winlos-empty tabular">暂无今日涨跌幅数据</div>
-            <div class="wl-adcard__foot">
-              <div class="wl-adcard__ext">
-                <span class="wl-adcard__ext-l">最大涨幅</span>
-                <span v-if="cumPerf.maxGain" class="wl-adcard__ext-v wl-adcard__ext-v--gain tabular">
-                  {{ cumPerf.maxGain.code }} {{ fmtSignedPct(cumPerf.maxGain.p) }}
-                </span>
-                <span v-else class="wl-adcard__ext-v tabular">—</span>
-              </div>
-              <div class="wl-adcard__ext wl-adcard__ext--right">
-                <span class="wl-adcard__ext-l">最大跌幅</span>
-                <span v-if="cumPerf.maxLoss" class="wl-adcard__ext-v wl-adcard__ext-v--loss tabular">
-                  {{ cumPerf.maxLoss.code }} {{ fmtSignedPct(cumPerf.maxLoss.p) }}
-                </span>
-                <span v-else class="wl-adcard__ext-v tabular">—</span>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -208,10 +128,13 @@
                 −
               </button>
               <div class="wl-trow__sym">
-                <div class="wl-badge tabular" :style="{ background: badgeBg(stock.code) }">{{ stock.code }}</div>
                 <div class="wl-trow__meta">
                   <div class="wl-name">{{ stock.name || '—' }}</div>
-                  <div class="wl-ex">{{ exchangeLabel(stock.code) }}</div>
+                  <div class="wl-code-line">
+                    <span class="wl-code tabular">{{ stock.code }}</span>
+                    <span class="wl-code-sep" aria-hidden="true">·</span>
+                    <span class="wl-ex">{{ exchangeLabel(stock.code) }}</span>
+                  </div>
                 </div>
               </div>
               <div class="wl-trow__price">
@@ -504,6 +427,12 @@ const sortOptions = [
 
 const sortLabel = computed(() => sortOptions.find((o) => o.id === sortKey.value)?.label ?? '排序')
 
+function parseMktCapYuan(raw) {
+  if (raw == null || raw === '') return null
+  const n = typeof raw === 'string' ? parseFloat(String(raw).replace(/,/g, '')) : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 const watchlistStats = computed(() => {
   const arr = stocks.value
   if (!arr.length) return null
@@ -522,8 +451,8 @@ const watchlistStats = computed(() => {
     } else {
       flat++
     }
-    const c = Number(s.mkt_cap)
-    if (Number.isFinite(c) && c > 0) capSum += c
+    const c = parseMktCapYuan(s.mkt_cap)
+    if (c != null) capSum += c
   }
   const n = arr.length
   const avgPct = pcts.length ? pcts.reduce((a, b) => a + b, 0) / pcts.length : 0
@@ -531,7 +460,15 @@ const watchlistStats = computed(() => {
   return { up, down, flat, n, avgPct, sentimentPct, capSum }
 })
 
-/** 三色条用整数百分比，保证合计 100 */
+const portfolioAvgClass = computed(() => {
+  const s = watchlistStats.value
+  if (!s) return ''
+  if (s.avgPct > 0.05) return 'wl-portfolio__avg--up'
+  if (s.avgPct < -0.05) return 'wl-portfolio__avg--down'
+  return 'wl-portfolio__avg--mid'
+})
+
+/** 三色条用整数百分比，保证合计 100 — 保留供 sentimentWord 等使用 */
 const advanceBar = computed(() => {
   const s = watchlistStats.value
   if (!s || !s.n) return null
@@ -540,44 +477,6 @@ const advanceBar = computed(() => {
   const flatP = Math.floor((100 * s.flat) / n)
   const downP = 100 - upP - flatP
   return { upP, flatP, downP }
-})
-
-/** 第二卡：今日涨跌幅下的强弱与极值（无加入价则非真实累计收益） */
-const cumPerf = computed(() => {
-  const arr = stocks.value
-  if (!arr.length) {
-    return {
-      up: 0,
-      nonUp: 0,
-      positiveRate: 0,
-      maxGain: null,
-      maxLoss: null,
-      hasQuote: false,
-    }
-  }
-  let up = 0
-  let maxGain = null
-  let maxLoss = null
-  let hasQuote = false
-  for (const s of arr) {
-    const p = Number(s.pct_change)
-    if (!Number.isFinite(p)) continue
-    hasQuote = true
-    if (p > 0) up++
-    if (maxGain === null || p > maxGain.p) maxGain = { code: s.code, p }
-    if (maxLoss === null || p < maxLoss.p) maxLoss = { code: s.code, p }
-  }
-  const n = arr.length
-  const positiveRate = n ? Math.round((100 * up) / n) : 0
-  const nonUp = Math.max(0, n - up)
-  return {
-    up,
-    nonUp,
-    positiveRate,
-    maxGain,
-    maxLoss,
-    hasQuote,
-  }
 })
 
 const sentimentWord = computed(() => {
@@ -630,7 +529,7 @@ function goSectors() {
 }
 
 function goWatchlistSettings() {
-  router.push('/watchlist/settings')
+  router.push('/settings')
 }
 
 function pickSort(id) {
@@ -1147,11 +1046,20 @@ onUnmounted(() => {
 
 .wl-portfolio {
   position: relative;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
-  background: linear-gradient(135deg, var(--wl-primary) 0%, #1a4a9e 50%, var(--wl-primary-mid) 100%);
-  color: #fff;
-  box-shadow: var(--wl-ambient);
+  background: linear-gradient(
+    145deg,
+    #f7e7b4 0%,
+    #e8c86a 28%,
+    #d4a84b 55%,
+    #c9953a 78%,
+    #b8862b 100%
+  );
+  color: #2a2318;
+  box-shadow:
+    0 4px 20px rgba(180, 130, 40, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 .wl-portfolio__inner {
   position: relative;
@@ -1160,13 +1068,18 @@ onUnmounted(() => {
 }
 .wl-portfolio__glow {
   position: absolute;
-  right: -20px;
-  top: -20px;
-  width: 100px;
-  height: 100px;
-  background: rgba(255, 255, 255, 0.14);
+  right: -24px;
+  top: -28px;
+  width: 120px;
+  height: 120px;
+  background: radial-gradient(circle, rgba(255, 248, 220, 0.75) 0%, transparent 70%);
   border-radius: 50%;
-  filter: blur(20px);
+  filter: blur(18px);
+  pointer-events: none;
+}
+.wl-portfolio .wl-kicker {
+  color: rgba(42, 35, 24, 0.55);
+  opacity: 1;
 }
 .wl-kicker {
   font-family: 'Manrope', var(--font);
@@ -1188,10 +1101,19 @@ onUnmounted(() => {
   letter-spacing: -0.03em;
   line-height: 1.1;
 }
+.wl-portfolio__avg--up {
+  color: #9f1239;
+}
+.wl-portfolio__avg--down {
+  color: #0f766e;
+}
+.wl-portfolio__avg--mid {
+  color: #3d3428;
+}
 .wl-portfolio__unit {
   display: block;
   font-size: 11px;
-  opacity: 0.85;
+  color: rgba(42, 35, 24, 0.62);
   margin-top: 4px;
 }
 .wl-portfolio__foot {
@@ -1199,17 +1121,18 @@ onUnmounted(() => {
   gap: 22px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.22);
+  border-top: 1px solid rgba(90, 70, 40, 0.2);
   font-size: 10px;
 }
 .wl-portfolio__foot-l {
   display: block;
-  opacity: 0.75;
+  color: rgba(42, 35, 24, 0.5);
   margin-bottom: 2px;
 }
 .wl-portfolio__foot-v {
   font-weight: 700;
   font-size: 12px;
+  color: #1f1a14;
 }
 
 .wl-health {
@@ -1284,141 +1207,6 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-/* 今日涨跌比 + 强弱分布（概览与列表之间） */
-.wl-adstats {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.wl-adcard {
-  background: var(--wl-surface-lowest);
-  border-radius: 8px;
-  padding: 14px 14px 16px;
-  box-shadow: inset 0 0 0 1px var(--wl-ghost);
-}
-.wl-adcard__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.wl-adcard__title {
-  font-size: 14px;
-  font-weight: 800;
-  color: var(--wl-on-surface);
-  letter-spacing: -0.02em;
-}
-.wl-adcard__meta {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--wl-on-variant);
-  white-space: nowrap;
-}
-.wl-adcard__note {
-  font-size: 10px;
-  line-height: 1.45;
-  color: var(--wl-outline);
-  margin: -6px 0 12px;
-}
-.wl-triple-bar {
-  display: flex;
-  height: 38px;
-  border-radius: 4px;
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 800;
-}
-.wl-triple-bar__seg {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  flex-shrink: 0;
-}
-.wl-triple-bar__up {
-  background: var(--wl-rise);
-  color: #fff;
-}
-.wl-triple-bar__flat {
-  background: #d1d4dc;
-  color: #434656;
-}
-.wl-triple-bar__down {
-  background: var(--wl-fall);
-  color: #fff;
-}
-
-.wl-winlos-bar {
-  display: flex;
-  height: 40px;
-  border-radius: 4px;
-  overflow: hidden;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  margin-bottom: 14px;
-}
-.wl-winlos-bar__win {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  background: var(--wl-rise);
-  color: #fff;
-}
-.wl-winlos-bar__lose {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  background: var(--wl-fall);
-  color: #fff;
-}
-.wl-winlos-empty {
-  height: 40px;
-  margin-bottom: 14px;
-  border-radius: 4px;
-  background: var(--wl-surface-low);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--wl-outline);
-}
-.wl-adcard__foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-}
-.wl-adcard__ext {
-  flex: 1;
-  min-width: 0;
-}
-.wl-adcard__ext--right {
-  text-align: right;
-}
-.wl-adcard__ext-l {
-  display: block;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--wl-outline);
-  margin-bottom: 4px;
-}
-.wl-adcard__ext-v {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-.wl-adcard__ext-v--gain {
-  color: var(--wl-rise);
-}
-.wl-adcard__ext-v--loss {
-  color: var(--wl-fall);
-}
-
 .wl-toolbar {
   display: flex;
   align-items: center;
@@ -1464,7 +1252,7 @@ onUnmounted(() => {
 }
 .wl-thead {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(64px, 0.78fr) minmax(48px, 0.42fr) minmax(82px, 0.92fr);
+  grid-template-columns: minmax(0, 1.48fr) minmax(64px, 0.78fr) minmax(48px, 0.42fr) minmax(82px, 0.92fr);
   gap: 6px;
   align-items: center;
   padding: 8px 10px;
@@ -1484,7 +1272,7 @@ onUnmounted(() => {
 }
 .wl-trow {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(64px, 0.78fr) minmax(48px, 0.42fr) minmax(82px, 0.92fr);
+  grid-template-columns: minmax(0, 1.48fr) minmax(64px, 0.78fr) minmax(48px, 0.42fr) minmax(82px, 0.92fr);
   gap: 6px;
   align-items: center;
   padding: 10px 10px 6px;
@@ -1525,43 +1313,54 @@ onUnmounted(() => {
 .wl-trow__sym {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
-}
-.wl-badge {
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 800;
-  color: #fff;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
-  text-align: center;
-  word-break: break-all;
-  padding: 2px;
 }
 .wl-trow__meta {
   min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
 }
 .wl-name {
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.15;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--wl-on-surface);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.wl-ex {
-  font-size: 11px;
+.wl-code-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  line-height: 1.25;
+}
+.wl-code {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--wl-on-variant);
+}
+.wl-code-sep {
+  font-size: 14px;
   font-weight: 600;
   color: var(--wl-outline);
-  text-transform: uppercase;
-  margin-top: 2px;
+  opacity: 0.65;
+  user-select: none;
+}
+.wl-ex {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wl-outline);
+  text-transform: none;
+  margin-top: 0;
 }
 
 .wl-trow__price {

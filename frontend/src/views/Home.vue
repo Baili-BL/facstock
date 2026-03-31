@@ -602,7 +602,8 @@ function formatTotalYi(amount) {
   return yi.toFixed(0) + '亿'
 }
 function goStock(code) {
-  if (code) router.push({ path: '/strategy', query: { code } })
+  const c = String(code || '').trim()
+  if (/^\d{6}$/.test(c)) router.push({ name: 'StockDetail', params: { code: c } })
 }
 
 // 各区块独立加载，互不阻塞

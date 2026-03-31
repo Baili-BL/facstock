@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import chartingLibraryServe from './vite-plugins/chartingLibraryServe.js'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), chartingLibraryServe()],
   root: '.',
   publicDir: '../public',
   resolve: {
@@ -31,6 +32,14 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/ticai': {
+        target: 'http://localhost:5002',
+        changeOrigin: true,
+      },
+      '/tv_udf': {
+        target: 'http://localhost:5002',
+        changeOrigin: true,
+      },
+      '/charting_library': {
         target: 'http://localhost:5002',
         changeOrigin: true,
       },

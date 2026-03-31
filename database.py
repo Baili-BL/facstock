@@ -7,10 +7,29 @@ MySQL 数据库模块 - 扫描结果存储
 
 import pymysql
 import json
+import math
 import os
+import pandas as pd
 from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+
+
+def _safe_json_dumps(obj) -> str:
+    """JSON 序列化，兼容 NaN/Infinity 及 pandas 特有类型。"""
+    def _fallback(v):
+        if isinstance(v, float):
+            if math.isnan(v) or math.isinf(v):
+                return None
+            return v
+        # pandas Timestamp / Timedelta → ISO 字符串
+        if hasattr(v, 'isoformat'):
+            return v.isoformat()
+        # np.floating / np.integer → Python 原生
+        if hasattr(v, 'item'):
+            return v.item()
+        return None
+    return json.dumps(obj, ensure_ascii=False, default=_fallback)
 
 # MySQL 数据库配置（可通过环境变量覆盖）
 DB_CONFIG = {
@@ -119,6 +138,16 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
         # K线数据缓存表（stock_code 为主键，当日有效）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS kline_cache (
+                stock_code VARCHAR(20) PRIMARY KEY,
+                cache_date DATE NOT NULL,
+                data_json LONGTEXT NOT NULL,
+                INDEX idx_cache_date (cache_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 原始K线缓存表（仅OHLCV，供TradingView图表使用，当日有效）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kline_raw_cache (
                 stock_code VARCHAR(20) PRIMARY KEY,
                 cache_date DATE NOT NULL,
                 data_json LONGTEXT NOT NULL,
@@ -265,7 +294,7 @@ def create_scan_record(params: Dict = None) -> int:
         cursor.execute('''
             INSERT INTO scan_records (scan_time, status, params_json)
             VALUES (%s, 'scanning', %s)
-        ''', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), json.dumps(params or {})))
+        ''', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), _safe_json_dumps(params or {})))
         return cursor.lastrowid
 
 
@@ -311,10 +340,10 @@ def save_hot_sectors(scan_id: int, hot_sectors: List[Dict]) -> bool:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            UPDATE scan_records 
+            UPDATE scan_records
             SET hot_sectors_json = %s
             WHERE id = %s
-        ''', (json.dumps(hot_sectors, ensure_ascii=False), scan_id))
+        ''', (_safe_json_dumps(hot_sectors), scan_id))
         return cursor.rowcount > 0
 
 
@@ -325,7 +354,7 @@ def save_sector_result(scan_id: int, sector_name: str, sector_change: float, sto
         cursor.execute('''
             INSERT INTO scan_results (scan_id, sector_name, sector_change, stocks_json)
             VALUES (%s, %s, %s, %s)
-        ''', (scan_id, sector_name, sector_change, json.dumps(stocks, ensure_ascii=False)))
+        ''', (scan_id, sector_name, sector_change, _safe_json_dumps(stocks, ensure_ascii=False)))
         return True
 
 
@@ -490,7 +519,7 @@ def save_scan_ai_summary(scan_id: int, payload: Dict[str, Any]) -> bool:
             SET ai_summary_json = %s, ai_summary_time = NOW()
             WHERE id = %s
             ''',
-            (json.dumps(to_save, ensure_ascii=False), scan_id),
+            (_safe_json_dumps(to_save), scan_id),
         )
         return cursor.rowcount > 0
 
@@ -731,7 +760,7 @@ def save_sector_stocks_cache(sector_name: str, stocks: List[Dict]) -> bool:
             cursor.execute('''
                 REPLACE INTO sector_stocks_cache (sector_name, cache_date, stocks_json)
                 VALUES (%s, %s, %s)
-            ''', (sector_name, today, json.dumps(stocks, ensure_ascii=False)))
+            ''', (sector_name, today, _safe_json_dumps(stocks, ensure_ascii=False)))
             return True
     except Exception:
         return False
@@ -808,7 +837,7 @@ def save_kline_cache(stock_code: str, data: Dict) -> bool:
             cursor.execute('''
                 REPLACE INTO kline_cache (stock_code, cache_date, data_json)
                 VALUES (%s, %s, %s)
-            ''', (stock_code, today, json.dumps(data, ensure_ascii=False)))
+            ''', (stock_code, today, _safe_json_dumps(data, ensure_ascii=False)))
             return True
     except Exception:
         return False
@@ -829,7 +858,7 @@ def save_kline_cache_batch(kline_data_list: List[tuple]) -> int:
                 cursor.execute('''
                     REPLACE INTO kline_cache (stock_code, cache_date, data_json)
                     VALUES (%s, %s, %s)
-                ''', (stock_code, today, json.dumps(data, ensure_ascii=False)))
+                ''', (stock_code, today, _safe_json_dumps(data, ensure_ascii=False)))
                 saved += 1
             except:
                 continue
@@ -910,6 +939,86 @@ def get_kline_cache_stats() -> Dict:
             'today_cache': today_count,
             'total_cache': total_count
         }
+
+
+def _cell_value(v):
+    """将 DataFrame cell 值转成 JSON 安全的 Python 原生类型。"""
+    if v is None:
+        return None
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if hasattr(v, 'item'):
+        return v.item()
+    if hasattr(v, 'isoformat'):
+        return v.isoformat()[:10]
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def save_kline_raw_cache(stock_code: str, df) -> bool:
+    """
+    保存原始K线DataFrame到缓存（当日有效，仅OHLCV）。
+    df: pandas.DataFrame 或 [{date,open,high,low,close,volume}, ...]
+    """
+    if not stock_code:
+        return False
+
+    cols = ['date', 'open', 'high', 'low', 'close', 'volume']
+
+    if isinstance(df, pd.DataFrame):
+        if df.empty:
+            return False
+        available = [c for c in cols if c in df.columns]
+        # 必须包含 volume，否则图表没有成交量数据
+        if len(available) < 6 or 'volume' not in available:
+            return False
+        out = []
+        for _, row in df.iterrows():
+            out.append({c: _cell_value(row[c]) for c in available})
+    else:
+        if not df:
+            return False
+        out = [{c: _cell_value(item.get(c)) for c in cols} for item in df]
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    payload = {'bars': out, 'cols': cols[:len(out[0])] if out else cols}
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                REPLACE INTO kline_raw_cache (stock_code, cache_date, data_json)
+                VALUES (%s, %s, %s)
+            ''', (stock_code, today, _safe_json_dumps(payload)))
+        return True
+    except Exception:
+        return False
+
+
+def get_kline_raw_cache(stock_code: str) -> Optional[Dict]:
+    """获取原始K线缓存（当日有效）。返回 {'bars': [...], 'cols': [...]}。"""
+    if not stock_code:
+        return None
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT data_json FROM kline_raw_cache
+            WHERE stock_code = %s AND cache_date = %s
+        ''', (stock_code, today))
+
+        row = cursor.fetchone()
+        if row:
+            try:
+                return json.loads(row['data_json'])
+            except Exception:
+                return None
+        return None
 
 
 # ==================== 自选股相关函数 ====================
@@ -1562,7 +1671,13 @@ def save_agent_analysis_history(
     - analysis_result：AI 返回的结构化分析结果（JSON）
     """
     import json as _json
+    import math as _math
     local_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    def _s(obj):
+        return _json.dumps(obj, ensure_ascii=False, default=lambda v: (
+            None if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)) else v
+        ))
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -1586,8 +1701,8 @@ def save_agent_analysis_history(
             agent_id,
             report_date,
             scan_id,
-            _json.dumps(holdings_snapshot, ensure_ascii=False),
-            _json.dumps(analysis_result, ensure_ascii=False),
+            __safe_json_dumps(holdings_snapshot, ensure_ascii=False),
+            __safe_json_dumps(analysis_result, ensure_ascii=False),
             raw_response,
             stance,
             confidence,

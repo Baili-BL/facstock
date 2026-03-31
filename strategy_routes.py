@@ -9,18 +9,44 @@ from flask import Blueprint, jsonify, request
 from typing import Optional
 import database as db
 import json
+import math
 import requests
 import threading
 import time
 import random
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pandas as _pd
 from cache import get, set as _cache_set, invalidate
 import logging
 from utils.feishu_notifier import send_feishu_scan_alert, send_feishu_test
 
 logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
+
+
+def _safe_json_dumps(obj):
+    """JSON 序列化，兼容 NaN/Infinity（TradingView 指标常见）。"""
+    return json.dumps(obj, ensure_ascii=False, default=lambda v: (
+        None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
+    ))
+
+
+def _eastmoney_mkt_cap_yuan(item: dict) -> Optional[float]:
+    """东财 ulist 条目：总市值优先 f20，其次 f62（单位：元）。"""
+    if not item:
+        return None
+    for k in ('f20', 'f62'):
+        v = item.get(k)
+        if v is None or v == '' or v == '-':
+            continue
+        try:
+            x = float(v)
+            if x > 0:
+                return x
+        except (TypeError, ValueError):
+            continue
+    return None
 
 # 全局变量存储当前扫描状态
 last_api_request_time = 0.0
@@ -134,7 +160,10 @@ def prepare_kline_data(df):
     import pandas as pd
     
     try:
-        df = df.dropna(subset=['bb_upper', 'bb_lower', 'bb_middle', 'width_ma_short', 'width_ma_long'])
+        # 保留所有有效行（至少要有 OHLC），不依赖指标列过滤
+        base_cols = ['open', 'high', 'low', 'close']
+        if set(base_cols).issubset(df.columns):
+            df = df.dropna(subset=base_cols)
         df = df.tail(60)
         
         if len(df) == 0:
@@ -1350,6 +1379,22 @@ def get_stock_detail(code: str):
         
         db.save_kline_cache(code, data)
         logger.info(f"[CACHE SAVE] 股票 {code} 数据已缓存")
+
+        # 同时写入 Raw 缓存（TV 图表直读，不再重抓）
+        # kline_cache 里 candles/volumes 的 time 字段就是日期字符串
+        if data.get('candles'):
+            raw_bars = []
+            for c in data['candles']:
+                raw_bars.append({
+                    'date': c.get('time', ''),
+                    'open':  c.get('open'),
+                    'high':  c.get('high'),
+                    'low':   c.get('low'),
+                    'close': c.get('close'),
+                    'volume': 0.0,
+                })
+            if raw_bars:
+                db.save_kline_raw_cache(code, _pd.DataFrame(raw_bars))
         
         return jsonify({'success': True, 'data': data, 'cached': False})
         
@@ -1405,7 +1450,7 @@ def get_watchlist_enriched():
                 params={
                     "fltt": "2",
                     "secids": ",".join(secids),
-                    "fields": "f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f62",
+                    "fields": "f2,f3,f4,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62",
                 },
                 timeout=8,
             )
@@ -1416,6 +1461,7 @@ def get_watchlist_enriched():
                 items = []
             for item in items:
                 code = str(item.get('f12', ''))
+                cap = _eastmoney_mkt_cap_yuan(item)
                 price_map[code] = {
                     'close':      item.get('f2'),
                     'pct_change': item.get('f3'),
@@ -1428,7 +1474,7 @@ def get_watchlist_enriched():
                     'prev_close': item.get('f18'),
                     'turnover':   item.get('f8'),
                     'qty_ratio':  item.get('f10'),
-                    'mkt_cap':    item.get('f62'),
+                    'mkt_cap':    cap,
                 }
         except Exception as e:
             logger.warning(f"东方财富批量行情获取失败: {e}")
@@ -1576,6 +1622,132 @@ def check_watchlist(code: str):
         return jsonify({'success': True, 'in_watchlist': in_watchlist})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/watchlist/strategy/catalog')
+def watchlist_strategy_catalog():
+    """自选技术指标策略列表（TA-Lib 优先，无则 pandas 近似）。"""
+    try:
+        from utils.watchlist_talib_strategies import get_catalog, talib_status
+        return jsonify({
+            'success': True,
+            'data': {
+                'strategies': get_catalog(),
+                'engine': talib_status(),
+            },
+        })
+    except Exception as e:
+        logger.exception('watchlist strategy catalog')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/watchlist/strategy/run', methods=['POST'])
+def watchlist_strategy_run():
+    """
+    对当前自选列表逐只拉日线并运行指定 TA 策略（仅自选）。
+    body: { "strategy_id": "rsi_extreme" } 或 { "strategy_ids": ["rsi_extreme", "macd_turn"] }
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw_ids = payload.get('strategy_ids')
+        strategy_id = payload.get('strategy_id') or payload.get('id')
+        if isinstance(raw_ids, list) and raw_ids:
+            strategy_ids = [str(x).strip() for x in raw_ids if x is not None and str(x).strip()]
+        elif strategy_id and isinstance(strategy_id, str):
+            strategy_ids = [strategy_id.strip()]
+        else:
+            return jsonify({'success': False, 'error': '缺少 strategy_id 或 strategy_ids'}), 400
+
+        if not strategy_ids:
+            return jsonify({'success': False, 'error': 'strategy_ids 为空'}), 400
+
+        stocks = db.get_watchlist()
+        if not stocks:
+            from utils.watchlist_talib_strategies import talib_status
+            return jsonify({
+                'success': True,
+                'data': {
+                    'strategy_id': strategy_ids[0],
+                    'strategy_ids': strategy_ids,
+                    'strategy_name': strategy_ids[0],
+                    'talib': talib_status(),
+                    'count': 0,
+                    'items': [],
+                    'hint': '自选为空',
+                },
+            })
+
+        codes = []
+        for s in stocks:
+            code = str(s.get('stock_code') or s.get('code') or '').strip()
+            if code.isdigit() and len(code) == 6:
+                codes.append(code)
+
+        if not codes:
+            return jsonify({
+                'success': True,
+                'data': {
+                    'strategy_id': strategy_ids[0],
+                    'strategy_ids': strategy_ids,
+                    'strategy_name': strategy_ids[0],
+                    'count': 0,
+                    'items': [],
+                    'hint': '自选代码格式无效',
+                },
+            })
+
+        # 延迟导入：避免启动时失败
+        import signal
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from utils.watchlist_talib_strategies import (
+            run_multi_strategies_on_watchlist,
+            run_strategy_on_watchlist,
+        )
+
+        # 拉 K 线（加超时，避免单只卡死）
+        from utils.ths_crawler import get_stock_kline_sina
+        _KLINE_TIMEOUT = 15  # 秒/只
+
+        def _one(c: str):
+            try:
+                def _fetch():
+                    return get_stock_kline_sina(c, days=120)
+
+                result = _fetch()
+                return c, result
+            except Exception as ex:
+                logger.warning('watchlist kline %s: %s', c, ex)
+                return c, None
+
+        dfs = {}
+        with ThreadPoolExecutor(max_workers=min(6, len(codes))) as pool:
+            futures = {pool.submit(_one, c): c for c in codes}
+            for fut in as_completed(futures):
+                try:
+                    c, df = fut.result()
+                    dfs[c] = df
+                except Exception as ex:
+                    logger.warning('watchlist thread: %s', ex)
+
+        def fetch_df(code: str):
+            return dfs.get(code)
+
+        # 在主线程执行策略，避免多线程 pickle 问题
+        try:
+            if len(strategy_ids) == 1:
+                result = run_strategy_on_watchlist(strategy_ids[0], stocks, fetch_df)
+            else:
+                result = run_multi_strategies_on_watchlist(strategy_ids, stocks, fetch_df)
+        except Exception as ex:
+            logger.exception('run_strategy_on_watchlist failed')
+            return jsonify({'success': False, 'error': f'策略计算异常: {ex}'}), 500
+
+        if result.get('error'):
+            return jsonify({'success': False, 'error': result['error']}), 400
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        logger.exception('watchlist strategy run')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ==================== 股票搜索 / 同步 / 行情 API ====================
@@ -1765,7 +1937,7 @@ def get_stock_quote(code: str):
                 params={
                     "fltt": "2",
                     "secids": secid,
-                    "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f62",
+                    "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62",
                 },
                 timeout=8,
             )
@@ -1787,7 +1959,7 @@ def get_stock_quote(code: str):
                     'low': item.get('f16'),
                     'open': item.get('f17'),
                     'prev_close': item.get('f18'),
-                    'mkt_cap': item.get('f62'),
+                    'mkt_cap': _eastmoney_mkt_cap_yuan(item),
                 })
         except Exception:
             pass

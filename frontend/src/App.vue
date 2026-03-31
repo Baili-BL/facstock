@@ -22,7 +22,8 @@ const hideBottomNav = computed(
   () =>
     route.path.startsWith('/ticai') ||
     route.path.startsWith('/strategy/ai') ||
-    route.path.startsWith('/strategy/bollinger')
+    route.path.startsWith('/strategy/bollinger') ||
+    route.path === '/watchlist/settings'
 )
 
 watch(hideBottomNav, (v) => {

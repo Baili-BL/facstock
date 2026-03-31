@@ -6,6 +6,7 @@ import Home from './views/Home.vue'
 import Sectors from './views/Sectors.vue'
 import Watchlist from './views/Watchlist.vue'
 import WatchlistSettings from './views/WatchlistSettings.vue'
+import AppSettings from './views/AppSettings.vue'
 import News from './views/News.vue'
 import Strategy from './views/Strategy.vue'
 import Bollinger from './views/Bollinger.vue'
@@ -22,11 +23,14 @@ import AgentAnalysis from './views/AgentAnalysis.vue'
 import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
+import StockDetail from './views/StockDetail.vue'
 
 const routes = [
   { path: '/', component: Home },
+  { path: '/stock/:code', name: 'StockDetail', component: StockDetail },
   { path: '/sectors', component: Sectors },
   { path: '/watchlist', component: Watchlist },
+  { path: '/settings', component: AppSettings },
   { path: '/watchlist/settings', component: WatchlistSettings },
   { path: '/news', component: News },
   { path: '/strategy', component: Strategy },

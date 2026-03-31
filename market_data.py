@@ -21,7 +21,12 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import logging
 
+from cache import set as cache_layer_set
+
 logger = logging.getLogger(__name__)
+
+# 与 market_routes.SNAPSHOT_REDIS_KEY 保持一致（东财后台线程需回写 Redis，否则一直命中「仅新浪、涨跌家数为 0」的快照）
+MARKET_SNAPSHOT_REDIS_KEY = 'market/snapshot/v2'
 
 
 def _get_ak():
@@ -84,6 +89,13 @@ def _is_proxy_related_error(exc: BaseException) -> bool:
 @contextlib.contextmanager
 def _ak_eastmoney_direct():
     """东方财富 akshare 请求：绕过无效系统代理（与板块资金流一致）。"""
+    with _no_http_proxy_env(), _requests_session_no_proxy_env():
+        yield
+
+
+@contextlib.contextmanager
+def _ak_sina_direct():
+    """新浪 akshare 请求：同样绕过无效系统代理。"""
     with _no_http_proxy_env(), _requests_session_no_proxy_env():
         yield
 
@@ -164,22 +176,20 @@ def get_market_overview() -> List[Dict]:
                 'prev_close': _safe_float(r.get('昨收')),
             })
 
-        # 获取上涨/下跌家数（从东方财富市场概况）
-        try:
-            with _ak_eastmoney_direct():
-                df_em = _get_ak().stock_zh_a_spot_em()
-            if df_em is not None and not df_em.empty:
+        # 获取上涨/下跌家数（多源兜底）
+        df_em = _fetch_spot_em_dataframe()
+        if df_em is not None and not df_em.empty:
+            ch_col = next((c for c in ('涨跌幅',) if c in df_em.columns), None)
+            if ch_col:
                 total = len(df_em)
-                up = int((df_em['涨跌幅'] > 0).sum())
-                down = int((df_em['涨跌幅'] < 0).sum())
+                up = int((pd.to_numeric(df_em[ch_col], errors='coerce') > 0).sum())
+                down = int((pd.to_numeric(df_em[ch_col], errors='coerce') < 0).sum())
                 flat = total - up - down
                 sh = next((x for x in result if x['name'] == '上证指数'), None)
                 if sh:
                     sh['up_count'] = up
                     sh['down_count'] = down
                     sh['flat_count'] = flat
-        except Exception:
-            pass
 
     except Exception as e:
         logger.warning(f"获取大盘指数失败: {e}")
@@ -318,6 +328,29 @@ def get_turnover_rate() -> List:
     return result
 
 
+def _apply_breadth_totals_from_spot_em_df(out: Dict, df: pd.DataFrame) -> bool:
+    """从东财 A 股现货 DataFrame 写入涨跌家数；仅在 total_amount 仍为 0 时写入全市场成交额。"""
+    if df is None or df.empty:
+        return False
+    ch_col = next((c for c in ('涨跌幅',) if c in df.columns), None)
+    if not ch_col:
+        return False
+    s = pd.to_numeric(df[ch_col], errors='coerce').fillna(0)
+    out['up_count'] = int((s > 0).sum())
+    out['down_count'] = int((s < 0).sum())
+    out['flat_count'] = int((s == 0).sum())
+    amt_col = next((c for c in ('成交额',) if c in df.columns), None)
+    if amt_col and not float(out.get('total_amount') or 0):
+        out['total_amount'] = float(pd.to_numeric(df[amt_col], errors='coerce').sum())
+    return True
+
+
+def peek_market_snapshot_cache() -> Optional[Dict]:
+    """返回进程内市场快照缓存（供路由层与 Redis 命中结果择优合并，不触发重新拉取）。"""
+    c = _get_cached('market_snapshot')
+    return c if isinstance(c, dict) else None
+
+
 def get_market_snapshot() -> Dict:
     """
     A 股全市场快照：涨跌家数、总成交额、涨幅/跌幅/成交额/涨速榜（含行业）。
@@ -360,6 +393,12 @@ def get_market_snapshot() -> Dict:
             enrich_snapshot_industries(out)
         except Exception as e:
             logger.warning('排行行业补全失败（不影响主流程）: %s', e)
+        # 新浪排行不带涨跌家数：若进程内已有东财现货缓存（如行业补全刚预热），同步补全
+        if out.get('up_count', 0) == 0 and out.get('down_count', 0) == 0:
+            if _spot_em_cache_warm():
+                df = _spot_em_cache.get('df')
+                if df is not None:
+                    _apply_breadth_totals_from_spot_em_df(out, df)
         _set_cached('market_snapshot', out)
 
     # ── 立即返回新浪数据 ──────────────────────────────────────────────
@@ -372,8 +411,71 @@ def get_market_snapshot() -> Dict:
     return out
 
 
+# ──────────────────────────── 全A现货多源 ────────────────────────────
+
+def _fetch_spot_push2_dataframe() -> Optional[pd.DataFrame]:
+    """东方财富 push2 快照（不同于 stock_zh_a_spot_em 的另一接口节点）。"""
+    import requests as _req
+    url = 'https://push2.eastmoney.com/api/qt/clist/get'
+    params = {
+        'pn': '1', 'pz': '5000',
+        'po': '1', 'np': '1',
+        'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+        'fltt': '2', 'invt': '2',
+        'fid': 'f3',
+        'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048',
+        'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152',
+    }
+    r = _req.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    json_data = r.json()
+    rows = (json_data.get('data', {}) or {}).get('diff', []) or []
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={
+        'f12': '代码', 'f14': '名称',
+        'f2': '最新价', 'f3': '涨跌幅',
+        'f4': '涨跌额', 'f5': '成交量',
+        'f6': '成交额', 'f15': '最高',
+        'f16': '最低', 'f17': '今开',
+        'f18': '昨收', 'f10': '换手率',
+        'f8': '振幅',
+    })
+    return df
+
+
+def _fetch_spot_em_dataframe() -> Optional[pd.DataFrame]:
+    """
+    全 A 现货（含所属行业），多源兜底：
+    1. 东方财富 stock_zh_a_spot_em
+    2. 新浪 stock_zh_a_spot
+    3. 东财 push2
+    """
+    sources = [
+        ('东方财富', _ak_eastmoney_direct, lambda: _get_ak().stock_zh_a_spot_em()),
+        ('新浪',     _ak_sina_direct,      lambda: _get_ak().stock_zh_a_spot()),
+        ('东财push2', _no_http_proxy_env,   _fetch_spot_push2_dataframe),
+    ]
+    for name, ctx_mgr, fetcher in sources:
+        try:
+            with ctx_mgr():
+                df = fetcher()
+        except Exception as e:
+            logger.warning('[%s] 获取失败: %s', name, e)
+            continue
+        if df is not None and not df.empty:
+            logger.info('[%s] 全A现货 %d 条', name, len(df))
+            _spot_em_cache['df'] = df
+            _spot_em_cache['ts'] = time.time()
+            return df
+        logger.warning('[%s] 返回空数据', name)
+    logger.error('所有现货数据源均失败')
+    return None
+
+
 def _fetch_em_snapshot():
-    """东方财富全量快照（后台异步，写入 Redis 缓存，下次生效）"""
+    """东方财富全量快照（后台异步）：写进程内缓存，并回写 Redis，避免接口长期命中「无涨跌家数」的新浪快照。"""
     out: Dict = {
         'up_count': 0,
         'down_count': 0,
@@ -389,8 +491,7 @@ def _fetch_em_snapshot():
 
     def _do_fetch():
         try:
-            with _ak_eastmoney_direct():
-                df = _get_ak().stock_zh_a_spot_em()
+            df = _fetch_spot_em_dataframe()
             if df is None or df.empty:
                 return
 
@@ -445,8 +546,12 @@ def _fetch_em_snapshot():
                 except Exception as e:
                     logger.warning('EM 快照行业补全失败: %s', e)
 
-            # 写内存缓存（EM 涨跌家数/成交额等与新浪合并展示）
+            # 写进程内缓存，并同步更新 Redis（与 Flask 路由层 SNAPSHOT key 一致）
             _set_cached('market_snapshot', out)
+            try:
+                cache_layer_set(MARKET_SNAPSHOT_REDIS_KEY, out, ttl=30)
+            except Exception as e:
+                logger.warning('市场快照写入 Redis 失败: %s', e)
         except Exception as e:
             logger.warning(f"东方财富快照后台获取失败: {e}")
 
@@ -553,20 +658,6 @@ def _infer_market_type(code6: str) -> str:
         return 'sh'
     return 'sz'
 
-
-def _fetch_spot_em_dataframe() -> Optional[pd.DataFrame]:
-    """全 A 现货（含所属行业），写入内存缓存（调用较慢，宜放后台线程）。"""
-    try:
-        with _ak_eastmoney_direct():
-            df = _get_ak().stock_zh_a_spot_em()
-    except Exception as e:
-        logger.warning('stock_zh_a_spot_em 获取失败: %s', e)
-        return None
-    if df is None or df.empty:
-        return None
-    _spot_em_cache['df'] = df
-    _spot_em_cache['ts'] = time.time()
-    return df
 
 
 def _spot_em_cache_warm() -> bool:
