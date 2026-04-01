@@ -28,6 +28,9 @@ redis>=5.0.0
 # 可选：数据分析增强
 scipy>=1.11.0
 
+# 可选：技术指标（需先安装系统 TA-Lib C 库）；未安装时自选策略自动使用 pandas 近似
+# TA-Lib>=0.4.28
+
 # HTML 解析
 beautifulsoup4>=4.12.0
 

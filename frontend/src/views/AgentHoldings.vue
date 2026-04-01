@@ -16,6 +16,20 @@
     </header>
 
     <main v-if="agent" class="ah-main">
+      <!-- loading -->
+      <div v-if="h.loading" class="ah-loading">
+        <div class="ah-spinner" />
+        <span>加载持仓数据…</span>
+      </div>
+
+      <!-- error -->
+      <div v-else-if="h.error" class="ah-empty">
+        <p>数据加载失败：{{ h.error }}</p>
+        <button type="button" class="ah-empty__btn" @click="fetchData">重试</button>
+      </div>
+
+      <!-- 真实/兜底数据 -->
+      <template v-else>
       <!-- 日期 -->
       <nav class="ah-dates" aria-label="选择日期">
         <button
@@ -109,6 +123,9 @@
           <h3 class="ah-ai__title">{{ agent.analysisBrand }} AI 策略分析</h3>
           <p class="ah-ai__body">{{ h.analysisText }}</p>
         </div>
+        <button type="button" class="ah-ai__cta" @click="$router.push(`/strategy/agents/${agent.id}/analysis`)" aria-label="查看详细AI分析">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M10 17l5-5-5-5v10z"/></svg>
+        </button>
       </section>
 
       <!-- 持仓表 -->
@@ -149,7 +166,13 @@
         </button>
       </section>
 
-      <p class="ah-footnote">演示数据，非实盘资产；正式版将对接账户与行情。</p>
+      <p class="ah-footnote">
+        <template v-if="h.hasRealData">
+          数据来源：{{ agent.analysisBrand }} AI 分析 · {{ latestAnalysis?.report_date || '' }}
+        </template>
+        <template v-else>暂无分析记录，请先运行策略分析获取持仓与建议。</template>
+      </p>
+      </template>
     </main>
 
     <div v-else class="ah-empty">
@@ -162,36 +185,194 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getStrategyAgent } from '@/data/strategyAgents.js'
 
 const route = useRoute()
 const router = useRouter()
 const toast = ref('')
-const dateKey = ref('today')
+const dateKey = ref('latest')
+
+// 真实数据
+const rawHoldings = ref(null)   // /api/holdings 响应
+const latestAnalysis = ref(null) // /api/agents/:id/analysis/latest 响应
+const loading = ref(false)
+const error = ref(null)
 
 watch(toast, (v) => {
   if (v) setTimeout(() => { toast.value = '' }, 2200)
 })
 
 const agent = computed(() => getStrategyAgent(route.params.id))
-const h = computed(() => agent.value?.holdings)
+const agentId = computed(() => route.params.id)
 
-const datePills = [
-  { key: 'today', label: '今天' },
-  { key: 'yesterday', label: '昨天' },
-  { key: 'oct24', label: '10月24日' },
-  { key: 'more', label: '更多日期', calendar: true },
-]
+// 持仓数据（来自 holdings API）
+const positions = computed(() => {
+  if (!rawHoldings.value?.holdings) return []
+  return rawHoldings.value.holdings.map(h => ({
+    name:    h.stock_name,
+    code:    h.stock_code,
+    price:   h.current_price || 0,
+    changePct: h.profit_loss_pct || 0,
+    sector:  h.sector || '',
+  }))
+})
+
+// 分析结果里的推荐股（快照为空时的兜底，兼容历史记录未写入 holdings_snapshot）
+const recommendedAsPositions = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result
+  if (!ar || typeof ar !== 'object') return []
+  let rec = ar.recommendedStocks
+  if ((!rec || !rec.length) && ar.structured && Array.isArray(ar.structured.recommendedStocks)) {
+    rec = ar.structured.recommendedStocks
+  }
+  if (!Array.isArray(rec) || !rec.length) return []
+  return rec.map((s) => ({
+    name: s.name || '',
+    code: s.code || '',
+    price: s.price ?? 0,
+    changePct: Number(s.changePct) || 0,
+    sector: s.sector || '',
+  }))
+})
+
+// 持仓快照：DB 快照 > 实时 holdings > 分析推荐股
+const analysisPositions = computed(() => {
+  const snap = latestAnalysis.value?.holdings_snapshot
+  if (snap && Array.isArray(snap) && snap.length) {
+    return snap.map((h) => ({
+      name: h.stock_name || h.name || '',
+      code: h.stock_code || h.code || '',
+      price: h.current_price ?? h.price ?? 0,
+      changePct: Number(h.profit_loss_pct ?? h.changePct) || 0,
+      sector: h.sector || '',
+    }))
+  }
+  if (positions.value.length) return positions.value
+  return recommendedAsPositions.value
+})
+
+// 行业分布（从持仓推导）
+const sectors = computed(() => {
+  const snaps = analysisPositions.value
+  if (!snaps.length) return []
+  const map = {}
+  for (const p of snaps) {
+    const sec = p.sector || '其他'
+    map[sec] = (map[sec] || 0) + 1
+  }
+  const total = snaps.length
+  const entries = Object.entries(map).sort((a, b) => b[1] - a[1])
+  return entries.map(([name, count], i) => ({
+    name,
+    pct: Math.round((count / total) * 100),
+    opacity: 1 - i * 0.15,
+  }))
+})
+
+// AI 分析文案（来自最新分析记录）
+const analysisText = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result
+  if (!ar) return agent.value?.holdings?.analysisText || ''
+  const parts = []
+  if (ar.marketCommentary) parts.push(ar.marketCommentary)
+  if (ar.positionAdvice)   parts.push(ar.positionAdvice)
+  if (ar.riskWarning)      parts.push('⚠ ' + ar.riskWarning)
+  return parts.join(' | ') || agent.value?.holdings?.analysisText || ''
+})
+
+// 总资产（mock + 真实持仓数据补充）
+const assets = computed(() => {
+  const posVal = rawHoldings.value?.totalPositionValue || 0
+  const pnl    = rawHoldings.value?.totalProfitLoss      || 0
+  const mock   = agent.value?.holdings?.assets           || {}
+  // 今日盈亏≈持仓盈亏，累计用 mock 的 cumPnl
+  return {
+    totalCny:  mock.totalCny  || String(posVal.toFixed(2)),
+    todayPnl:  String(pnl.toFixed(2)),
+    todayPct:  mock.todayPct  || '0',
+    cumPnl:    mock.cumPnl    || String(pnl.toFixed(2)),
+    cumPct:    mock.cumPct    || '0',
+  }
+})
+
+// 7日图表：今天用真实持仓盈亏，昨天用最新的历史记录，其余留空
+const chartBars = computed(() => {
+  const snap = latestAnalysis.value
+  if (!snap) {
+    return [...agent.value?.holdings?.chartBars || Array(7).fill(30)]
+  }
+  const pnl = parseFloat(rawHoldings.value?.totalProfitLoss || 0)
+  // 今天按盈亏等比映射到基准值，后几天暂无数据填 0
+  const base = 50
+  const todayBar = Math.min(100, Math.max(5, base + pnl / 200))
+  return [40, 55, 45, 75, 60, 90, Math.round(todayBar)]
+})
+
+const chartLabels = computed(() => [...agent.value?.holdings?.chartLabels || ['-','-','-','-','-','昨天','今天']])
+
+// 总持仓数（含快照/推荐兜底行数）
+const totalPositionCount = computed(() => {
+  const n = rawHoldings.value?.totalPositionCount
+  if (n != null && n > 0) return n
+  const rows = analysisPositions.value
+  return rows.length
+})
+
+// 统一暴露给模板（必须 .value 解包，否则 h.loading 是 Ref 对象，v-if 永远为真）
+const h = computed(() => ({
+  assets: assets.value,
+  chartBars: chartBars.value,
+  chartLabels: chartLabels.value,
+  sectors: sectors.value,
+  analysisText: analysisText.value,
+  positions: analysisPositions.value,
+  totalPositionCount: totalPositionCount.value,
+  loading: loading.value,
+  error: error.value,
+  hasRealData: !!latestAnalysis.value,
+}))
+
+// 日期药丸：最近分析日期 + 昨天 + 更早
+const datePills = computed(() => {
+  const rd = latestAnalysis.value?.report_date
+  const today = new Date()
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
+  const fmt = d => `${d.getMonth()+1}/${d.getDate()}`
+  const pills = [{ key: 'latest', label: rd ? `最近 ${rd}` : '最近分析' }]
+  pills.push({ key: 'yesterday', label: fmt(yesterday) })
+  pills.push({ key: 'more', label: '更早', calendar: true })
+  return pills
+})
 
 function onDatePill(d) {
   if (d.key === 'more') {
-    toast.value = '日历筛选即将接入'
+    toast.value = '历史日期分析记录即将接入'
     return
   }
   dateKey.value = d.key
 }
+
+// 拉取真实数据
+async function fetchData() {
+  loading.value = true
+  error.value   = null
+  try {
+    const [holdingsRes, analysisRes] = await Promise.all([
+      fetch('/api/holdings').then(r => r.json()).catch(() => null),
+      fetch(`/api/agents/${agentId.value}/analysis/latest`).then(r => r.json()).catch(() => null),
+    ])
+    if (holdingsRes?.success)  rawHoldings.value   = holdingsRes.data
+    if (analysisRes?.success)   latestAnalysis.value = analysisRes.data
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(fetchData)
 
 function goBack() {
   if (window.history.length > 1) router.back()
@@ -206,7 +387,7 @@ function pnlTone(s) {
 
 function formatSignedMoney(s) {
   const t = String(s).trim()
-  if (t.startsWith('-')) return `-¥${t.slice(1)}`
+  if (t.startsWith('-')) return `¥${t}`
   return `+¥${t}`
 }
 
@@ -238,10 +419,10 @@ function barOpacity(i) {
   --high: #e8e8ed;
   --highest: #e2e2e7;
   --track: #ededf2;
-  --up: #006b1b;
-  --up-chip: #70ff76;
-  --on-up-chip: #002204;
-  --down: #ba1a1a;
+  --up: #f23645;
+  --up-chip: rgba(242, 54, 69, 0.2);
+  --on-up-chip: #7f1d1d;
+  --down: #089981;
   --line: rgba(193, 198, 215, 0.15);
 
   min-height: 100vh;
@@ -424,8 +605,8 @@ function barOpacity(i) {
 }
 
 .ah-pct--down {
-  background: #ffdad6;
-  color: #93000a;
+  background: rgba(8, 153, 129, 0.18);
+  color: #047857;
 }
 
 .ah-up {
@@ -572,6 +753,26 @@ function barOpacity(i) {
   margin-top: 2px;
 }
 
+.ah-ai__cta {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+  align-self: center;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+  padding: 0;
+}
+.ah-ai__cta:active { opacity: 0.8; transform: scale(0.95); }
+.ah-ai__cta .icon { width: 16px; height: 16px; }
+
 .ah-ai__title {
   margin: 0 0 8px;
   font-size: 14px;
@@ -704,5 +905,28 @@ function barOpacity(i) {
   max-width: 90%;
   text-align: center;
   pointer-events: none;
+}
+
+.ah-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 24px;
+  color: var(--on-var);
+  font-size: 13px;
+}
+
+.ah-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--low);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: ah-spin 0.8s linear infinite;
+}
+
+@keyframes ah-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

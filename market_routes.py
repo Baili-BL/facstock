@@ -9,6 +9,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
+from a_share_session import get_a_share_session_payload
 from market_data import (
     get_market_overview,
     get_money_flow,
@@ -19,18 +20,20 @@ from market_data import (
     get_sector_main_fund_flow,
     get_ai_summary,
     get_market_snapshot,
+    peek_market_snapshot_cache,
     compute_macro_sentiment,
     enrich_snapshot_industries,
     snapshot_rankings_need_industry_enrich,
+    MARKET_SNAPSHOT_REDIS_KEY,
 )
 from utils.ths_crawler import get_ths_industry_list
 from ticai.news_fetcher import fetch_all_news
-from cache import get, set
+from cache import get, set, delete_key
 
 market_bp = Blueprint('market', __name__)
 
-# 与旧版区分：此前 Redis 里可能长期缓存了 industry 为空的快照
-SNAPSHOT_REDIS_KEY = 'market/snapshot/v2'
+# 与旧版区分：此前 Redis 里可能长期缓存了 industry 为空的快照（key 定义见 market_data.MARKET_SNAPSHOT_REDIS_KEY）
+SNAPSHOT_REDIS_KEY = MARKET_SNAPSHOT_REDIS_KEY
 
 
 @market_bp.route('/')
@@ -38,6 +41,21 @@ def index():
     """首页 - 重定向到 Vue 前端"""
     from flask import redirect
     return redirect('/frontend/')
+
+
+@market_bp.route('/api/market/session')
+def api_market_session():
+    """A 股交易时段状态（北京时间，与上证连续竞价时间一致）；纯计算、可短缓存。"""
+    hit = get('market/session')
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+    try:
+        data = get_a_share_session_payload()
+        set('market/session', data, ttl=10)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.exception('market session')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @market_bp.route('/api/market/overview')
@@ -60,6 +78,14 @@ def api_market_snapshot():
     """A 股全市场快照（Redis 缓存 30s）；命中缓存仍会对缺行业的排行做补全。"""
     hit = get(SNAPSHOT_REDIS_KEY)
     if hit is not None:
+        # Redis 可能仍是「仅新浪、涨跌家数为 0」；进程内缓存或已被东财后台线程更新，择优返回
+        mem = peek_market_snapshot_cache()
+        if isinstance(mem, dict):
+            r_breadth = int(hit.get('up_count') or 0) + int(hit.get('down_count') or 0)
+            m_breadth = int(mem.get('up_count') or 0) + int(mem.get('down_count') or 0)
+            if m_breadth > r_breadth:
+                hit = mem
+                set(SNAPSHOT_REDIS_KEY, hit, ttl=30)
         if snapshot_rankings_need_industry_enrich(hit):
             try:
                 enrich_snapshot_industries(hit)
@@ -197,13 +223,17 @@ def api_market_summary():
 
 @market_bp.route('/api/news')
 def api_news():
-    """获取实时财经新闻（Redis 缓存 180s）"""
-    hit = get('news/all')
-    if hit is not None:
-        return jsonify({'success': True, 'data': hit})
+    """获取实时财经新闻（Redis 缓存 180s）。?force=1 跳过 Redis 并强制多源重新抓取。"""
+    force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+    if force:
+        delete_key('news/all')
+    if not force:
+        hit = get('news/all')
+        if hit is not None:
+            return jsonify({'success': True, 'data': hit})
 
     try:
-        news = fetch_all_news(limit_per_source=50)
+        news = fetch_all_news(limit_per_source=50, force=force)
         set('news/all', news, ttl=180)
         return jsonify({'success': True, 'data': news})
     except Exception as e:

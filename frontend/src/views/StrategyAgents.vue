@@ -156,6 +156,14 @@
           >
             查看持仓详情
           </button>
+          <button
+            type="button"
+            class="agent-card__btn agent-card__btn--ai"
+            @click="goToAnalysis(a)"
+          >
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a9 9 0 0 1 9 9c0 3.12-1.6 5.87-4.03 7.54L17 17H7l.03-1.46C4.6 16.87 3 14.12 3 11a9 9 0 0 1 9-9zm0 2a7 7 0 1 0 0 14A7 7 0 0 0 12 4zm0 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6zm0 2a1 1 0 0 1 1 1v4l3.29 3.29a1 1 0 0 1-1.41 1.42L12 15.41l-3.29 3.3a1 1 0 1 1-1.42-1.42L11 14V11a1 1 0 0 1 1-1z"/></svg>
+            AI 分析
+          </button>
         </article>
       </div>
 
@@ -388,6 +396,10 @@ function statusLabel(s) {
 function goToHoldings(a) {
   router.push(`/strategy/agents/${a.id}`)
 }
+
+function goToAnalysis(a) {
+  router.push(`/strategy/agents/${a.id}/analysis`)
+}
 </script>
 
 <style scoped>
@@ -402,10 +414,10 @@ function goToHoldings(a) {
   --surface-high: #e8e8ed;
   --surface-highest: #e2e2e7;
   --outline-variant: rgba(193, 198, 215, 0.15);
-  --tertiary: #006b1b;
-  --tertiary-fixed: #70ff76;
-  --on-tertiary-fixed: #002204;
-  --error: #ba1a1a;
+  --tertiary: #089981;
+  --tertiary-fixed: #f23645;
+  --on-tertiary-fixed: #ffffff;
+  --error: #f23645;
   --error-container: #ffdad6;
   --on-error-container: #93000a;
   --outline-soft: #717786;
@@ -903,6 +915,19 @@ function goToHoldings(a) {
 .agent-card__btn--primary {
   background: linear-gradient(135deg, var(--primary), var(--primary-mid));
   color: #fff;
+}
+
+.agent-card__btn--ai {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 8px;
+  background: rgba(74, 71, 210, 0.08);
+  color: var(--primary);
+  padding: 10px;
 }
 
 .up {

@@ -221,6 +221,9 @@ class BollingerSqueezeStrategy:
         df['ma10'] = df['close'].rolling(window=10).mean()
         df['ma20'] = df['close'].rolling(window=20).mean()
         df['ma60'] = df['close'].rolling(window=60).mean()
+
+        # 收盘价上穿 MA5：昨收不高于昨 MA5，今收站上今 MA5
+        df['cross_above_ma5'] = (df['close'] > df['ma5']) & (df['close'].shift(1) <= df['ma5'].shift(1))
         
         # MA多头排列: MA5 > MA10 > MA20
         df['ma_bullish'] = (df['ma5'] > df['ma10']) & (df['ma10'] > df['ma20'])
@@ -770,6 +773,7 @@ class BollingerSqueezeStrategy:
                     # 趋势指标
                     'ma_bullish': bool(latest['ma_bullish']) if pd.notna(latest['ma_bullish']) else False,
                     'ma_full_bullish': bool(latest['ma_full_bullish']) if pd.notna(latest['ma_full_bullish']) else False,
+                    'cross_above_ma5': bool(latest['cross_above_ma5']) if pd.notna(latest.get('cross_above_ma5')) else False,
                     'above_ma20': bool(latest['above_ma20']) if pd.notna(latest['above_ma20']) else False,
                     'ma20_slope': round(latest['ma20_slope'], 4) if pd.notna(latest['ma20_slope']) else 0,
                     'ma20_gentle_up': bool(latest['ma20_gentle_up']) if pd.notna(latest['ma20_gentle_up']) else False,
@@ -1094,6 +1098,8 @@ class HotSectorScanner:
                         tags.append("量价齐升")
                     elif result.get('is_volume_up'):
                         tags.append("放量")
+                    if result.get('cross_above_ma5'):
+                        tags.append("上穿M5")
                     if result.get('pct_change', 0) >= 5:
                         tags.append("先锋")
                     if result.get('turnover', 0) >= 10:

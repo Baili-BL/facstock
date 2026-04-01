@@ -169,12 +169,19 @@ const FIXED_SOURCE_ORDER = [
   { id: '金十数据', label: '金十数据' },
 ]
 
+/** 上海自然日 0 点（Unix 秒），与列表里时间戳对齐，避免用本机时区误切日 */
 function shanghaiCutoffs() {
-  const now = new Date()
-  const sh = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
-  const todayStart = Math.floor(
-    new Date(sh.getFullYear(), sh.getMonth(), sh.getDate()).getTime() / 1000
-  )
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const parts = fmt.formatToParts(new Date())
+  const y = parts.find((p) => p.type === 'year')?.value
+  const m = parts.find((p) => p.type === 'month')?.value
+  const d = parts.find((p) => p.type === 'day')?.value
+  const todayStart = Math.floor(new Date(`${y}-${m}-${d}T00:00:00+08:00`).getTime() / 1000)
   return {
     todayStart,
     yesterdayStart: todayStart - 86400,
@@ -239,8 +246,13 @@ function normalizeTs(raw) {
     if (n > 1e11) return Math.floor(n / 1000)  // 毫秒 → 秒
     if (n > 1e8)  return Math.floor(n)        // 秒（Unix 时间戳）
   }
-  // 处理 '2026-03-25 15:43:00' 等字符串格式
   const s = String(raw).trim()
+  // 无时区字符串按东八区解析，避免与「昨日/今日」筛选错位
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
+  if (m) {
+    const t = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+08:00`).getTime()
+    if (!Number.isNaN(t)) return Math.floor(t / 1000)
+  }
   const d = new Date(s.replace(/-/g, '/'))
   if (!Number.isNaN(d.getTime())) return Math.floor(d.getTime() / 1000)
   return Math.floor(Date.now() / 1000)
@@ -330,6 +342,8 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
+    memCache.data = null
+    memCache.time = 0
     const raw = await fetchNews(true)
     newsList.value = (Array.isArray(raw) ? raw : []).map(enrich).filter((x) => x && x.title)
   } catch (e) {

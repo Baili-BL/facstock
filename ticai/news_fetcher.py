@@ -507,35 +507,42 @@ def fetch_cls_akshare_news(limit: int = 30) -> List[Dict]:
     return news_list
 
 
-def fetch_all_news(limit_per_source: int = 30) -> List[Dict]:
+def fetch_all_news(limit_per_source: int = 30, force: bool = False) -> List[Dict]:
     """
     并发获取多源新闻（8个平台）
     策略：
-    1. 优先从数据库缓存读取（TTL=30min），命中则直接返回
+    1. 非 force：优先从数据库读取近 7 日已入库新闻，命中则直接返回（含昨日等历史）
     2. 否则并发抓取各平台，去重后回存数据库，再返回
+    force=True：跳过 DB 短路与本条内存缓存，强制重新抓取并写库。
     """
-    # ── 1. 查数据库缓存（TTL内有效） ──────────────────────────────────
-    try:
-        import database
-        cached = database.get_cached_news(days=1)
-        if cached:
-            # 按时间排序
-            def parse_time(item):
-                t = str(item.get('time') or '')
-                if t.isdigit():
-                    return int(t)
-                try:
-                    return int(datetime.strptime(t, '%Y-%m-%d %H:%M:%S').timestamp())
-                except Exception:
-                    return 0
-            cached.sort(key=parse_time, reverse=True)
-            _set_cache(f"all_news_{limit_per_source}", cached)
-            print(f"📰 新闻聚合完成: 共{len(cached)}条 (来自数据库缓存)")
-            return cached
-    except Exception as e:
-        print(f"[WARN] 数据库缓存读取失败: {e}")
+    if force:
+        key = f"all_news_{limit_per_source}"
+        _news_cache.pop(key, None)
+        _cache_time.pop(key, None)
 
-    # ── 2. 无缓存，并发抓取 ───────────────────────────────────────────
+    # ── 1. 查数据库缓存（近 7 日，含昨日；force 时跳过以便真正拉新） ───────
+    if not force:
+        try:
+            import database
+            cached = database.get_cached_news(days=7)
+            if cached:
+                # 按时间排序
+                def parse_time(item):
+                    t = str(item.get('time') or '')
+                    if t.isdigit():
+                        return int(t)
+                    try:
+                        return int(datetime.strptime(t, '%Y-%m-%d %H:%M:%S').timestamp())
+                    except Exception:
+                        return 0
+                cached.sort(key=parse_time, reverse=True)
+                _set_cache(f"all_news_{limit_per_source}", cached)
+                print(f"📰 新闻聚合完成: 共{len(cached)}条 (来自数据库缓存)")
+                return cached
+        except Exception as e:
+            print(f"[WARN] 数据库缓存读取失败: {e}")
+
+    # ── 2. 无缓存或 force，并发抓取 ─────────────────────────────────────
     all_news = []
 
     # 并发获取8个平台（含两路财联社 + 金十数据）

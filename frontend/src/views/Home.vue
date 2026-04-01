@@ -1,22 +1,8 @@
 <template>
   <div class="market-home">
-    <header class="hm-top">
-      <div class="hm-top__brand">
-        <svg class="hm-top__ico" viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
-        </svg>
-        <h1 class="hm-top__title">MARKET OVERVIEW</h1>
-      </div>
-      <button type="button" class="hm-top__search" aria-label="搜索个股" @click="$router.push('/strategy')">
-        <svg class="hm-top__search-svg" viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-        </svg>
-      </button>
-    </header>
-
     <div class="hm-status">
-      <span class="hm-status__dot" aria-hidden="true" />
-      <span>{{ marketStatus }}</span>
+      <span class="hm-status__dot" :class="marketStatus.dot" aria-hidden="true" />
+      <span>{{ marketStatus.label }}</span>
       <span class="hm-status__sep">·</span>
       <span class="hm-status__date">{{ dateStrFull }}</span>
       <span class="hm-status__grow" />
@@ -73,23 +59,37 @@
       <section class="hm-card hm-sentiment">
         <div class="hm-sentiment__hd">
           <h2 class="hm-sentiment__title">市场情绪 <span class="hm-sentiment__en">(MARKET SENTIMENT)</span></h2>
-          <div class="hm-sentiment__tag">
+          <div v-if="loadingOverview" class="hm-sentiment__tag-skel" aria-busy="true">
+            <div class="sk-dot" />
+            <div class="sk-short" />
+          </div>
+          <div v-else class="hm-sentiment__tag">
             <span class="hm-sentiment__dot" :class="sentimentMood.moodClass" aria-hidden="true" />
             <span class="hm-sentiment__mood">{{ sentimentMood.label }}</span>
           </div>
         </div>
-        <div class="hm-sentiment__bar-wrap">
-          <div class="hm-sentiment__bar-labels">
-            <span class="is-up tabular">上涨 {{ breadth.up }}</span>
-            <span class="is-flat tabular">平盘 {{ breadth.flat }}</span>
-            <span class="is-down tabular">下跌 {{ breadth.down }}</span>
+        <div v-if="loadingOverview" class="hm-sentiment__bar-skel" aria-busy="true">
+          <div class="sk-barlabels">
+            <div class="sk-barlabel" />
+            <div class="sk-barlabel" />
+            <div class="sk-barlabel" />
           </div>
-          <div class="hm-sentiment__bar" role="img" :aria-label="`上涨${breadthPct.up}%`">
-            <div class="hm-sentiment__seg is-up" :style="{ width: breadthPct.up + '%' }" />
-            <div class="hm-sentiment__seg is-flat" :style="{ width: breadthPct.flat + '%' }" />
-            <div class="hm-sentiment__seg is-down" :style="{ width: breadthPct.down + '%' }" />
-          </div>
+          <div class="sk-bar" />
         </div>
+        <template v-else>
+          <div class="hm-sentiment__bar-wrap">
+            <div class="hm-sentiment__bar-labels">
+              <span class="is-up tabular">上涨 {{ breadth.up }}</span>
+              <span class="is-flat tabular">平盘 {{ breadth.flat }}</span>
+              <span class="is-down tabular">下跌 {{ breadth.down }}</span>
+            </div>
+            <div class="hm-sentiment__bar" role="img" :aria-label="`上涨${breadthPct.up}%`">
+              <div class="hm-sentiment__seg is-up" :style="{ width: breadthPct.up + '%' }" />
+              <div class="hm-sentiment__seg is-flat" :style="{ width: breadthPct.flat + '%' }" />
+              <div class="hm-sentiment__seg is-down" :style="{ width: breadthPct.down + '%' }" />
+            </div>
+          </div>
+        </template>
         <div class="hm-sentiment__grid">
           <div class="hm-subcard hm-subcard--limit" @click="$router.push('/sectors')">
             <p class="hm-subcard__k">涨跌停对比</p>
@@ -121,7 +121,7 @@
         <div v-else class="hm-turnover hm-turnover--skel"><div class="skeleton-line" /></div>
       </section>
 
-      <!-- 股票排行：下划线 Tab，涨跌幅仅文字着色 -->
+      <!-- 股票排行：与板块页一致的胶囊 Tab，涨跌幅仅文字着色 -->
       <section class="hm-card hm-rank">
         <div class="hm-rank__hd">
           <span class="hm-rank__title">股票排行</span>
@@ -149,22 +149,34 @@
             <span class="col-pct">{{ rankPctLabel }}</span>
             <span class="col-ind">所属板块</span>
           </div>
-          <div
-            v-for="(s, i) in currentRankList"
-            :key="s.code + '-' + i"
-            class="hm-rank-row"
-            @click="goStock(s.code)"
-          >
-            <div class="col-name">
-              <span class="hm-stock-name">{{ s.name }}</span>
-              <span class="hm-stock-code tabular">{{ s.code }}</span>
+          <div v-if="loadingRank" class="hm-rank-skel" aria-busy="true">
+            <div v-for="i in 6" :key="i" class="hm-rank-skel__row">
+              <div class="hm-rank-skel__name">
+                <div class="sk-bar-sk" style="width:60%;height:13px;border-radius:4px" />
+                <div class="sk-bar-sk" style="width:40%;height:10px;border-radius:4px;margin-top:3px" />
+              </div>
+              <div class="sk-bar-sk hm-rank-skel__px" style="width:52px;height:13px;border-radius:4px" />
+              <div class="sk-bar-sk hm-rank-skel__pct" style="width:48px;height:13px;border-radius:4px" />
+              <div class="sk-bar-sk" style="width:64px;height:10px;border-radius:4px" />
             </div>
-            <span class="col-price tabular" :class="s.change >= 0 ? 'is-up' : 'is-down'">{{ formatPrice(s.price) }}</span>
-            <span class="col-pct tabular hm-pct-text" :class="s.change >= 0 ? 'is-up' : 'is-down'">{{ formatPct(s.change) }}%</span>
-            <span class="col-ind">{{ s.industry || '—' }}</span>
           </div>
-          <div v-if="!currentRankList.length && !loadingRank" class="hm-rank-empty">暂无排行数据</div>
-          <div v-else-if="loadingRank" class="hm-rank-loading">加载中…</div>
+          <div v-else-if="!currentRankList.length" class="hm-rank-empty">暂无排行数据</div>
+          <template v-else>
+            <div
+              v-for="(s, i) in currentRankList"
+              :key="s.code + '-' + i"
+              class="hm-rank-row"
+              @click="goStock(s.code)"
+            >
+              <div class="col-name">
+                <span class="hm-stock-name">{{ s.name }}</span>
+                <span class="hm-stock-code tabular">{{ s.code }}</span>
+              </div>
+              <span class="col-price tabular" :class="s.change >= 0 ? 'is-up' : 'is-down'">{{ formatPrice(s.price) }}</span>
+              <span class="col-pct tabular hm-pct-text" :class="s.change >= 0 ? 'is-up' : 'is-down'">{{ formatPct(s.change) }}%</span>
+              <span class="col-ind">{{ s.industry || '—' }}</span>
+            </div>
+          </template>
         </div>
       </section>
 
@@ -177,23 +189,27 @@
           <h3 class="hm-macro__title">每日宏观视角 <span class="hm-macro__en">(DAILY MACRO)</span></h3>
         </div>
         <p class="hm-macro__body">
-          <span v-if="loadingMacro">{{ macroSummaryText }}</span>
+          <span v-if="loadingMacro" class="sk-body-text" aria-busy="true">
+            <span class="skeleton-line" style="width:100%;height:12px;border-radius:4px;display:block;margin-bottom:5px" />
+            <span class="skeleton-line" style="width:85%;height:12px;border-radius:4px;display:block;margin-bottom:5px" />
+            <span class="skeleton-line" style="width:70%;height:12px;border-radius:4px;display:block" />
+          </span>
           <span v-else>{{ macroSummaryText }}</span>
         </p>
-        <div class="hm-macro__foot">
-          <div>
+        <div v-if="loadingMacro" class="hm-macro__foot-skel" aria-busy="true">
+          <div class="hm-macro__stat-skel" />
+          <div class="hm-macro__divider-skel" />
+          <div class="hm-macro__stat-skel" />
+        </div>
+        <div v-else class="hm-macro__foot">
+          <div class="hm-macro__stat-col">
             <span class="hm-macro__stat-l">SENTIMENT SCORE</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroScore }} / 100</span>
           </div>
           <div class="hm-macro__divider" aria-hidden="true" />
-          <div>
+          <div class="hm-macro__stat-col">
             <span class="hm-macro__stat-l">RISK LEVEL</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroRiskLevel }}</span>
-          </div>
-          <div class="hm-macro__divider" aria-hidden="true" />
-          <div>
-            <span class="hm-macro__stat-l">涨跌停对比</span>
-            <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroLimitUp }} / {{ macroLimitDown }}</span>
           </div>
         </div>
       </section>
@@ -204,33 +220,69 @@
           <span>热门板块</span>
           <button type="button" class="hm-link" @click="$router.push('/sectors')">更多 ›</button>
         </div>
-        <div v-if="loadingSectors" class="skeleton-chip-row" aria-busy="true">
-          <div v-for="i in 6" :key="i" class="sk-chip" />
-        </div>
-        <div v-else class="hm-hot-row">
-          <div
-            v-for="s in sectors.slice(0, 6)"
-            :key="s.name"
-            class="hm-hot-chip"
-            @click="$router.push('/sectors')"
-          >
-            <span class="hm-hot-chip__n">{{ s.name }}</span>
-            <span class="tabular hm-hot-chip__pct" :class="s.change >= 0 ? 'is-up' : 'is-down'">{{ formatPct(s.change) }}%</span>
+        <div v-if="loadingSectors" class="hm-hot-treemap-sk" aria-busy="true">
+          <div class="hm-hot-treemap-sk__row hm-hot-treemap-sk__row--4">
+            <div v-for="i in 4" :key="'a' + i" class="hm-hot-treemap-sk__blk" />
           </div>
+          <div class="hm-hot-treemap-sk__row hm-hot-treemap-sk__row--2">
+            <div v-for="i in 2" :key="'b' + i" class="hm-hot-treemap-sk__blk" />
+          </div>
+        </div>
+        <div v-else-if="!sectors.length" class="hm-hot-empty">暂无板块数据</div>
+        <div v-else class="hm-hot-treemap-wrap">
+          <svg
+            class="hm-hot-treemap"
+            :viewBox="`0 0 ${hotSectorTreemap.vw} ${hotSectorTreemap.vh}`"
+            preserveAspectRatio="xMidYMid meet"
+            role="img"
+            :aria-label="hotSectorTreemapAria"
+          >
+            <g v-for="(r, idx) in hotSectorTreemap.rects" :key="r.data.name + idx">
+              <rect
+                class="hm-hot-treemap__cell"
+                :x="r.x + 0.5"
+                :y="r.y + 0.5"
+                :width="Math.max(0, r.w - 1)"
+                :height="Math.max(0, r.h - 1)"
+                :fill="r.fill"
+                rx="4"
+                stroke="rgba(255,255,255,0.65)"
+                stroke-width="1"
+                @click="$router.push('/sectors')"
+              />
+              <text
+                v-if="r.showName"
+                class="hm-hot-treemap__lbl hm-hot-treemap__lbl--name"
+                :x="r.x + r.w / 2"
+                :y="r.y + r.h / 2 - (r.showPct ? 5 : 0)"
+                text-anchor="middle"
+                dominant-baseline="middle"
+                :fill="r.tc"
+                :font-size="r.fontName"
+              >{{ ellipsisSectorName(r.name, r.w) }}</text>
+              <text
+                v-if="r.showPct"
+                class="hm-hot-treemap__lbl hm-hot-treemap__lbl--pct"
+                :x="r.x + r.w / 2"
+                :y="r.y + r.h / 2 + (r.showName ? 9 : 0)"
+                text-anchor="middle"
+                dominant-baseline="middle"
+                :fill="r.tc"
+                :font-size="r.fontPct"
+              >{{ r.pctStr }}</text>
+            </g>
+          </svg>
         </div>
       </section>
     </main>
-
-    <div v-if="allSkeletonsShown" class="page-loading" aria-busy="true">
-      <div class="spinner" />
-    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { market } from '@/api/market.js'
+import { market, macroSummary } from '@/api/market.js'
+import { layoutBinaryTreemap, fillForSectorChange, textColorForChange } from '@/utils/sectorTreemap.js'
 
 const router = useRouter()
 
@@ -278,23 +330,58 @@ const rankTabDefs = [
   { id: 'amount', label: '成交额', key: 'top_by_amount' },
 ]
 
-const now = new Date()
+// 交易时段：优先 /api/market/session（服务端北京时间）；失败时用浏览器按上海时区推算
+const sessionFromApi = ref(null)
+/** 驱动日期与本地兜底状态刷新（SPA 长时间停留时仍更新） */
+const clockTick = ref(0)
+
+const MARKET_OPEN_MORNING = 9 * 60 + 30
+const MARKET_CLOSE_MORNING = 11 * 60 + 30
+const MARKET_OPEN_AFTERNOON = 13 * 60
+const MARKET_CLOSE_AFTERNOON = 15 * 60
+
+function shanghaiMinuteOfDay() {
+  const d = new Date()
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const h = Number(parts.find(p => p.type === 'hour').value)
+  const m = Number(parts.find(p => p.type === 'minute').value)
+  return h * 60 + m
+}
+
+function isShanghaiWeekend() {
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date())
+  return wd === 'Sat' || wd === 'Sun'
+}
+
+function localFallbackMarketStatus() {
+  void clockTick.value
+  if (isShanghaiWeekend()) return { label: '非交易日', dot: 'is-off' }
+  const t = shanghaiMinuteOfDay()
+  if (t >= MARKET_OPEN_MORNING && t < MARKET_CLOSE_MORNING) return { label: '交易中', dot: 'is-up' }
+  if (t >= MARKET_OPEN_AFTERNOON && t < MARKET_CLOSE_AFTERNOON) return { label: '交易中', dot: 'is-up' }
+  if (t >= MARKET_CLOSE_MORNING && t < MARKET_OPEN_AFTERNOON) return { label: '午间休市', dot: 'is-off' }
+  return { label: '已收盘', dot: 'is-off' }
+}
 
 const marketStatus = computed(() => {
-  const h = now.getHours()
-  const m = now.getMinutes()
-  const t = h * 60 + m
-  if (t >= 9 * 60 + 30 && t < 11 * 60 + 30) return '交易中'
-  if (t >= 13 * 60 && t < 15 * 60) return '交易中'
-  return '已收盘'
+  const s = sessionFromApi.value
+  if (s && s.label && s.dot) return { label: s.label, dot: s.dot }
+  return localFallbackMarketStatus()
 })
 
 const dateStrFull = computed(() => {
-  const w = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()]
-  const y = now.getFullYear()
-  const mo = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  return `${y}-${mo}-${d} 星期${w}`
+  void clockTick.value
+  const d = new Date()
+  const w = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${mo}-${day} 星期${w}`
 })
 
 const northNet = computed(() => flow.value?.north_money?.north_net_inflow ?? 0)
@@ -409,15 +496,64 @@ const capPair = computed(() => {
 
 const macroScore = computed(() => macroRaw.value?.sentiment_score ?? 50)
 const macroRiskLevel = computed(() => macroRaw.value?.risk_level ?? 'MEDIUM')
-const macroSummaryText = computed(() => macroRaw.value?.summary_text ?? '数据加载中，请稍后刷新…')
-const macroLimitUp = computed(() => macroRaw.value?.limit?.up ?? 0)
-const macroLimitDown = computed(() => macroRaw.value?.limit?.down ?? 0)
+const macroSummaryText = computed(() => {
+  const t = macroRaw.value?.summary_text
+  if (t != null && String(t).trim()) return String(t).trim()
+  return '摘要暂不可用，请稍后重试'
+})
 const macroScoreColor = computed(() => {
   const s = macroScore.value
   if (s >= 62) return 'is-up'     // 红涨 → 多头
   if (s >= 48) return 'is-flat'
   return 'is-down'                  // 绿跌 → 空头
 })
+
+const hotSectorTreemap = computed(() => {
+  const list = sectors.value.slice(0, 6)
+  const vw = 320
+  const vh = 150
+  if (!list.length) return { rects: [], vw, vh, maxAbs: 1 }
+  const weights = list.map((s) => {
+    const a = Number(s.amount)
+    if (Number.isFinite(a) && a > 0) return a
+    return Math.abs(Number(s.change)) + 0.35
+  })
+  const items = list.map((s, i) => ({ weight: weights[i], data: s }))
+  const rects = layoutBinaryTreemap(items, 0, 0, vw, vh)
+  const changes = list.map((s) => Number(s.change) || 0)
+  const maxAbs = Math.max(...changes.map((c) => Math.abs(c)), 0.01)
+  const enriched = rects.map((r) => {
+    const ch = Number(r.data.change) || 0
+    const area = r.w * r.h
+    const tiny = area < 2000 || r.w < 36 || r.h < 24
+    const compact = area < 4200 || r.w < 52 || r.h < 34
+    const showPct = r.w >= 30 && r.h >= 20
+    const showName = showPct && !tiny && r.w >= 44
+    return {
+      ...r,
+      fill: fillForSectorChange(ch, maxAbs),
+      tc: textColorForChange(ch),
+      name: r.data.name,
+      pctStr: `${formatPct(ch)}%`,
+      showName,
+      showPct,
+      fontName: compact ? 10 : 11,
+      fontPct: compact ? 10.5 : 12.5,
+    }
+  })
+  return { rects: enriched, vw, vh, maxAbs }
+})
+
+const hotSectorTreemapAria = computed(() => {
+  const parts = hotSectorTreemap.value.rects.map((r) => `${r.data.name} ${r.pctStr}`)
+  return `热门板块热力图 ${parts.join('，')}`
+})
+
+function ellipsisSectorName(name, w) {
+  if (!name) return ''
+  const maxChars = w < 48 ? 5 : w < 70 ? 7 : w < 100 ? 10 : 12
+  return name.length > maxChars ? `${name.slice(0, maxChars - 1)}…` : name
+}
 
 const rankPctLabel = computed(() =>
   rankTab.value === 'amount' ? '涨跌' : '涨幅'
@@ -466,7 +602,8 @@ function formatTotalYi(amount) {
   return yi.toFixed(0) + '亿'
 }
 function goStock(code) {
-  if (code) router.push({ path: '/strategy', query: { code } })
+  const c = String(code || '').trim()
+  if (/^\d{6}$/.test(c)) router.push({ name: 'StockDetail', params: { code: c } })
 }
 
 // 各区块独立加载，互不阻塞
@@ -540,7 +677,7 @@ async function loadTurnover() {
 
 async function loadMacro() {
   try {
-    const data = await market.macroSummary()
+    const data = await macroSummary()
     if (data && typeof data === 'object') {
       macroRaw.value = data
     }
@@ -556,7 +693,20 @@ function setupIndexReady() {
   loadingIndex.value = false
 }
 
+async function loadSession() {
+  try {
+    const data = await market.session()
+    if (data && typeof data === 'object' && data.label && data.dot) {
+      sessionFromApi.value = data
+    }
+  } catch (e) {
+    console.error('session error', e)
+    sessionFromApi.value = null
+  }
+}
+
 let timer = null
+let sessionPollTimer = null
 onMounted(() => {
   loadFlow()
   loadOverview()
@@ -565,6 +715,7 @@ onMounted(() => {
   loadSectors()
   loadTurnover()
   loadMacro()
+  loadSession()
 
   // 指数在 overview 返回后即 ready
   const unwatch = setInterval(() => {
@@ -574,8 +725,13 @@ onMounted(() => {
     }
   }, 100)
 
+  sessionPollTimer = setInterval(() => {
+    clockTick.value += 1
+    loadSession()
+  }, 30_000)
+
   timer = setInterval(() => {
-    market.invalidate()
+    // 不清缓存，让前端 TTL 缓存自动管理，静静静后台刷新
     loadOverview()
     loadFlow()
     loadLimit()
@@ -583,20 +739,22 @@ onMounted(() => {
     loadSectors()
     loadTurnover()
     loadMacro()
+    loadSession()
   }, 120_000)
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (sessionPollTimer) clearInterval(sessionPollTimer)
 })
 </script>
 
 <style scoped>
-/* Architectural Ledger — DESIGN.md + stitch Market Overview（首页独立色：涨绿跌红） */
+/* Architectural Ledger — DESIGN.md + stitch Market Overview（红涨绿跌 · TV #f23645 / #089981） */
 .market-home {
   --hm-primary: #003ec7;
   --hm-primary-mid: #0052ff;
-  --hm-up: #a50021;
-  --hm-down: #006d41;
+  --hm-up: #f23645;
+  --hm-down: #089981;
   --hm-surface: #f8f9fa;
   --hm-low: #f3f4f5;
   --hm-high: #e7e8e9;
@@ -621,60 +779,6 @@ onUnmounted(() => {
   font-feature-settings: 'tnum' 1;
 }
 
-.hm-top {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px 6px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 1px 0 var(--hm-ghost);
-}
-.hm-top__brand {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.hm-top__ico {
-  width: 20px;
-  height: 20px;
-  color: var(--hm-primary-mid);
-  flex-shrink: 0;
-}
-.hm-top__title {
-  margin: 0;
-  font-family: 'Manrope', var(--font);
-  font-size: 0.8125rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--hm-primary);
-}
-.hm-top__search {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--hm-outline);
-  cursor: pointer;
-}
-.hm-top__search:active {
-  background: var(--hm-low);
-}
-.hm-top__search-svg {
-  width: 22px;
-  height: 22px;
-  display: block;
-}
-
 .hm-status {
   display: flex;
   align-items: center;
@@ -692,6 +796,8 @@ onUnmounted(() => {
   background: var(--hm-up);
   flex-shrink: 0;
 }
+.hm-status__dot.is-up { background: var(--hm-up); }
+.hm-status__dot.is-off { background: var(--hm-outline); }
 .hm-status__sep {
   opacity: 0.5;
 }
@@ -886,6 +992,57 @@ onUnmounted(() => {
   letter-spacing: 0.12em;
   color: var(--hm-muted);
 }
+
+/* Skeleton: sentiment mood tag */
+.hm-sentiment__tag-skel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.sk-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.sk-short {
+  height: 10px;
+  width: 52px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+}
+
+/* Skeleton: sentiment bar */
+.hm-sentiment__bar-skel {
+  margin-bottom: 14px;
+}
+.sk-barlabels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.sk-barlabel {
+  height: 10px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+}
+.sk-barlabel:nth-child(1) { width: 28px; }
+.sk-barlabel:nth-child(2) { width: 28px; }
+.sk-barlabel:nth-child(3) { width: 28px; }
+.sk-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+}
 .hm-sentiment__bar-wrap {
   margin-bottom: 14px;
 }
@@ -1017,7 +1174,7 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* 排行：下划线 Tab；涨跌幅纯文字色，无背景块 */
+/* 排行：与 Sectors 页 sec-hot-pill / sec-flow-pill 一致的胶囊 Tab；涨跌幅纯文字色 */
 .hm-rank {
   padding: 0;
 }
@@ -1044,10 +1201,10 @@ onUnmounted(() => {
 }
 .hm-rank-tabs {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
   overflow-x: auto;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--hm-ghost);
+  padding: 0 14px 10px;
   scrollbar-width: none;
 }
 .hm-rank-tabs::-webkit-scrollbar {
@@ -1055,20 +1212,20 @@ onUnmounted(() => {
 }
 .hm-rank-tab {
   flex: 0 0 auto;
-  padding: 8px 0 10px;
+  padding: 6px 14px;
+  border-radius: 6px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
+  border: 1px solid var(--hm-ghost);
+  background: var(--hm-white);
   color: var(--hm-muted);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   cursor: pointer;
   font-family: inherit;
 }
 .hm-rank-tab.active {
+  background: rgba(0, 62, 199, 0.08);
+  border-color: rgba(0, 62, 199, 0.32);
   color: var(--hm-primary);
-  border-bottom-color: var(--hm-primary);
 }
 
 .hm-rank-thead {
@@ -1091,6 +1248,30 @@ onUnmounted(() => {
 }
 .hm-rank-thead .col-ind {
   text-align: right;
+}
+
+/* Skeleton: rank rows */
+.hm-rank-skel {
+  display: flex;
+  flex-direction: column;
+}
+.hm-rank-skel__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 0.72fr 0.62fr minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  padding: 10px 12px;
+  box-shadow: 0 1px 0 var(--hm-ghost);
+  background: var(--hm-white);
+}
+.hm-rank-skel__name {
+  display: flex;
+  flex-direction: column;
+}
+.sk-bar-sk {
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
 }
 
 .hm-rank-row {
@@ -1213,6 +1394,10 @@ onUnmounted(() => {
   position: relative;
   z-index: 1;
 }
+.hm-macro__stat-col {
+  flex: 1;
+  min-width: 0;
+}
 .hm-macro__stat-l {
   display: block;
   font-size: 9px;
@@ -1238,6 +1423,49 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+/* Skeleton: macro foot */
+.hm-macro__foot-skel {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: relative;
+  z-index: 1;
+}
+.hm-macro__stat-skel {
+  flex: 1;
+  min-width: 0;
+}
+.hm-macro__stat-skel::before {
+  content: '';
+  display: block;
+  height: 9px;
+  width: 60%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+  margin-bottom: 4px;
+}
+.hm-macro__stat-skel::after {
+  content: '';
+  display: block;
+  height: 14px;
+  width: 80%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
+}
+.hm-macro__divider-skel {
+  width: 1px;
+  height: 28px;
+  background: var(--hm-ghost);
+  flex-shrink: 0;
+}
+.sk-body-text {
+  display: block;
+}
+
 /* 热门板块 */
 .hm-hot {
   padding: 12px 14px 14px;
@@ -1261,34 +1489,74 @@ onUnmounted(() => {
   cursor: pointer;
   font-family: inherit;
 }
-.hm-hot-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.hm-hot-chip {
-  display: inline-flex;
-  flex-direction: column;
-  padding: 8px 11px;
-  background: var(--hm-low);
-  border-radius: 6px;
-  cursor: pointer;
+.hm-hot-treemap-wrap {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
   box-shadow: inset 0 0 0 1px var(--hm-ghost);
-  min-width: 0;
+  background: rgba(255, 255, 255, 0.35);
 }
-.hm-hot-chip:active {
-  background: var(--hm-high);
+.hm-hot-treemap {
+  width: 100%;
+  height: auto;
+  display: block;
+  vertical-align: top;
+  min-height: 132px;
 }
-.hm-hot-chip__n {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--hm-text);
-  margin-bottom: 2px;
+.hm-hot-treemap__cell {
+  cursor: pointer;
+  transition: filter 0.12s ease;
 }
-.hm-hot-chip__pct {
-  font-size: 12px;
+.hm-hot-treemap__cell:hover {
+  filter: brightness(1.05);
+}
+.hm-hot-treemap__cell:active {
+  filter: brightness(0.96);
+}
+.hm-hot-treemap__lbl {
+  pointer-events: none;
+  font-family: 'Manrope', var(--font);
   font-weight: 800;
-  background: none;
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+.hm-hot-treemap__lbl--name {
+  font-weight: 700;
+  opacity: 0.96;
+}
+.hm-hot-treemap__lbl--pct {
+  font-weight: 800;
+}
+.hm-hot-empty {
+  font-size: 12px;
+  color: var(--hm-outline);
+  padding: 20px 8px;
+  text-align: center;
+}
+.hm-hot-treemap-sk {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 132px;
+}
+.hm-hot-treemap-sk__row {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+.hm-hot-treemap-sk__row--4 .hm-hot-treemap-sk__blk {
+  flex: 1;
+}
+.hm-hot-treemap-sk__row--2 .hm-hot-treemap-sk__blk {
+  flex: 1;
+}
+.hm-hot-treemap-sk__blk {
+  border-radius: 8px;
+  min-height: 56px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: sk-shine 1.1s ease-in-out infinite;
 }
 
 .page-loading {

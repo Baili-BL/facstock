@@ -7,23 +7,41 @@
       <span class="legend-item"><span class="legend-dot legend-dot--ma10"></span>MA10</span>
       <span class="legend-item"><span class="legend-dot legend-dot--ma20"></span>MA20</span>
     </div>
-    <div class="kline-panel">
-      <!-- Tab 紧贴图表上沿（与画布同一卡片内） -->
-      <div class="kline-tabs-row">
-        <div class="kline-tabs-shell">
-          <div class="kline-tabs" role="tablist">
-            <button
-              v-for="tab in TABS"
-              :key="tab.key"
-              type="button"
-              role="tab"
-              class="kline-tab"
-              :class="{ active: activeTab === tab.key, busy: tabBusy }"
-              :aria-selected="activeTab === tab.key"
-              :disabled="tabBusy"
-              @click="switchTab(tab.key)"
-            >{{ tab.label }}</button>
-          </div>
+    <div ref="indRootRef" class="kline-panel">
+      <div class="kline-toolbar-row">
+        <div class="kline-toolbar-shell">
+          <button
+            type="button"
+            class="kline-ind-trigger"
+            :class="{ open: indMenuOpen, busy: tabBusy }"
+            :aria-expanded="indMenuOpen"
+            aria-haspopup="listbox"
+            :disabled="tabBusy || status !== 'ready'"
+            @click.stop="onIndTriggerClick"
+          >
+            <svg class="kline-ind-trigger__ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path fill="currentColor" d="M4 19h16v-2H4v2zm0-4h10v-2H4v2zm0-8v2h16V7H4zm0 4h10v-2H4v2z" opacity=".35" />
+              <path fill="currentColor" d="M4 3v2h4l3 6v8h2v-8l3-6h4V3H4z" />
+            </svg>
+            <span class="kline-ind-trigger__text">指标</span>
+            <span class="kline-ind-trigger__chev" aria-hidden="true" />
+          </button>
+          <ul
+            v-show="indMenuOpen && status === 'ready'"
+            class="kline-ind-menu"
+            role="listbox"
+            :aria-activedescendant="'ind-opt-' + activeTab"
+          >
+            <li
+              v-for="opt in INDICATOR_OPTIONS"
+              :id="'ind-opt-' + opt.key"
+              :key="opt.key"
+              role="option"
+              class="kline-ind-item"
+              :class="{ active: activeTab === opt.key }"
+              @click.stop="pickIndicator(opt.key)"
+            >{{ opt.label }}</li>
+          </ul>
         </div>
       </div>
 
@@ -72,13 +90,16 @@ const props = defineProps({
   code: { type: String, required: true },
 })
 
-const TABS = [
-  { key: 'volume',    label: '成交量' },
-  { key: 'cmf',       label: 'CMF资金流' },
-  { key: 'bandwidth', label: '布林带宽' },
+const INDICATOR_OPTIONS = [
+  { key: 'volume', label: '成交量' },
+  { key: 'cmf', label: 'CMF' },
+  { key: 'ma', label: '均线' },
+  { key: 'bandwidth', label: '布林带' },
 ]
 const activeTab = ref('volume')
-const tabBusy   = ref(false)
+const tabBusy = ref(false)
+const indMenuOpen = ref(false)
+const indRootRef = ref(null)
 
 const chartEl = ref(null)
 const status  = ref('loading')
@@ -109,21 +130,21 @@ const TOOLTIP_H = 138
 const CH = 248
 
 const C = {
-  up:    '#a00024',
-  down:  '#006d41',
+  up:    '#f23645',
+  down:  '#089981',
   /* 布林带：灰系虚线，与下方均线（橙/蓝/紫）明显区分 */
   bbU:   'rgba(100, 116, 139, 0.55)',
   bbM:   'rgba(71, 85, 105, 0.88)',
   bbL:   'rgba(100, 116, 139, 0.55)',
-  volU:  'rgba(160, 0, 36, 0.72)',
-  volD:  'rgba(0, 109, 65, 0.72)',
-  cmfP:  'rgba(160, 0, 36, 0.85)',
-  cmfN:  'rgba(0, 109, 65, 0.85)',
+  volU:  'rgba(242, 54, 69, 0.72)',
+  volD:  'rgba(8, 153, 129, 0.72)',
+  cmfP:  'rgba(242, 54, 69, 0.85)',
+  cmfN:  'rgba(8, 153, 129, 0.85)',
   bwMain: 'rgba(156,136,255,0.95)',
   bwMa5:  'rgba(255,193,7,0.90)',
   bwMa10: 'rgba(33,150,243,0.90)',
-  sigU:  '#4caf50',
-  sigD:  '#f44336',
+  sigU:  '#f23645',
+  sigD:  '#089981',
   ma5:   '#E65100',
   ma10:  '#1565C0',
   ma20:  '#6A1B9A',
@@ -240,6 +261,10 @@ function buildChart(data, tab) {
       timeVisible: false,
       secondsVisible: false,
       barSpacing: 6,
+      tickMarkMaxCharacterLength: 10,
+    },
+    localization: {
+      dateFormat: 'yyyy-MM-dd',
     },
     handleScroll: { mouseWheel: true, pressedMouseMove: true },
     handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
@@ -283,6 +308,45 @@ function buildChart(data, tab) {
       }
       if (pts.length) s.setData(pts)
     }
+  }
+
+  if (tab === 'ma') {
+    chart.priceScale('sub').applyOptions({
+      scaleMargins: { top: 0.70, bottom: 0.02 },
+      borderVisible: false,
+    })
+    const subMa5 = chart.addSeries(LineSeries, {
+      color: C.ma5,
+      lineWidth: 1.5,
+      priceScaleId: 'sub',
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: false,
+    })
+    const subMa5Pts = zipByDates(data.dates, data.ma5)
+    if (subMa5Pts.length) subMa5.setData(subMa5Pts)
+
+    const subMa10 = chart.addSeries(LineSeries, {
+      color: C.ma10,
+      lineWidth: 1.5,
+      priceScaleId: 'sub',
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    const subMa10Pts = zipByDates(data.dates, data.ma10)
+    if (subMa10Pts.length) subMa10.setData(subMa10Pts)
+
+    const subMa20 = chart.addSeries(LineSeries, {
+      color: C.ma20,
+      lineWidth: 1.5,
+      priceScaleId: 'sub',
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    const subMa20Pts = zipByDates(data.dates, data.ma20)
+    if (subMa20Pts.length) subMa20.setData(subMa20Pts)
   }
 
   if (tab === 'bandwidth') {
@@ -480,7 +544,23 @@ function addSignalMarkers(chart, data, candleSeries) {
   })
 }
 
-// ── Tab 切换 ────────────────────────────────
+function onIndTriggerClick() {
+  if (tabBusy.value || status.value !== 'ready') return
+  indMenuOpen.value = !indMenuOpen.value
+}
+
+function onDocClickInd(e) {
+  const el = indRootRef.value
+  if (!el || !indMenuOpen.value) return
+  if (!el.contains(e.target)) indMenuOpen.value = false
+}
+
+async function pickIndicator(tab) {
+  indMenuOpen.value = false
+  await switchTab(tab)
+}
+
+// ── 副图指标切换 ────────────────────────────────
 async function switchTab(tab) {
   if (tab === activeTab.value || !rawData || tabBusy.value) return
   tabBusy.value = true
@@ -519,11 +599,18 @@ async function loadKline() {
 
 watch(() => props.code, () => {
   activeTab.value = 'volume'
+  indMenuOpen.value = false
   loadKline()
 })
 
-onMounted(() => loadKline())
-onUnmounted(() => clearAll())
+onMounted(() => {
+  document.addEventListener('click', onDocClickInd)
+  loadKline()
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClickInd)
+  clearAll()
+})
 </script>
 
 <style scoped>
@@ -557,7 +644,7 @@ onUnmounted(() => clearAll())
   border-radius: 50%;
   flex-shrink: 0;
 }
-.legend-dot--rise { background: #a00024; }
+.legend-dot--rise { background: #f23645; }
 .legend-dot--ma5 { background: #e65100; }
 .legend-dot--ma10 { background: #1565c0; }
 .legend-dot--ma20 { background: #6a1b9a; }
@@ -568,60 +655,114 @@ onUnmounted(() => clearAll())
   background: #ffffff;
 }
 
-/* Tab 行：贴在图表正上方，细线与下方 K 线区分 */
-.kline-tabs-row {
+/* 指标下拉：贴在图表正上方 */
+.kline-toolbar-row {
   flex-shrink: 0;
   border-bottom: 1px solid #ececec;
   background: #ffffff;
 }
 
-.kline-tabs-shell {
-  padding: 8px 10px 8px;
-  background: #ffffff;
-}
-
-.kline-tabs {
+.kline-toolbar-shell {
+  position: relative;
+  padding: 8px 12px;
   display: flex;
-  align-items: stretch;
-  gap: 2px;
-  padding: 4px;
+  justify-content: flex-end;
+  align-items: center;
   background: #ffffff;
-  border: 1px solid #e5e5ea;
-  border-radius: 999px;
-  box-sizing: border-box;
 }
 
-.kline-tab {
-  flex: 1;
-  min-width: 0;
-  padding: 8px 6px;
-  border: none;
-  background: transparent;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
+.kline-ind-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #e5e5ea;
+  border-radius: 10px;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
   color: #1c1c1e;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
-  text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease, opacity 0.2s ease;
   -webkit-tap-highlight-color: transparent;
-  line-height: 1.25;
 }
 
-.kline-tab:active:not(:disabled) {
-  transform: scale(0.98);
+.kline-ind-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-.kline-tab.active {
-  background: var(--brand, #2962ff);
-  color: #ffffff;
-  font-weight: 600;
+.kline-ind-trigger:not(:disabled):active {
+  background: #f5f5f7;
 }
 
-.kline-tab.busy {
+.kline-ind-trigger.open {
+  border-color: rgba(41, 98, 255, 0.45);
+  background: rgba(41, 98, 255, 0.06);
+}
+
+.kline-ind-trigger.busy {
   opacity: 0.45;
   pointer-events: none;
+}
+
+.kline-ind-trigger__ico {
+  flex-shrink: 0;
+  opacity: 0.88;
+}
+
+.kline-ind-trigger__text {
+  letter-spacing: -0.02em;
+}
+
+.kline-ind-trigger__chev {
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-right: 2px solid rgba(0, 0, 0, 0.45);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.45);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.kline-ind-trigger.open .kline-ind-trigger__chev {
+  transform: rotate(-135deg);
+  margin-top: 3px;
+}
+
+.kline-ind-menu {
+  position: absolute;
+  right: 12px;
+  top: calc(100% - 4px);
+  z-index: 40;
+  min-width: 148px;
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+}
+
+.kline-ind-item {
+  padding: 11px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #1c1c1e;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.kline-ind-item:active {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.kline-ind-item.active {
+  background: rgba(41, 98, 255, 0.1);
+  color: var(--brand, #2962ff);
+  font-weight: 700;
 }
 
 .kline-plot {
@@ -696,12 +837,12 @@ onUnmounted(() => clearAll())
 }
 
 .kline-tooltip-num.is-up {
-  color: #a00024;
+  color: #f23645;
   font-weight: 600;
 }
 
 .kline-tooltip-num.is-down {
-  color: #006d41;
+  color: #089981;
   font-weight: 600;
 }
 
