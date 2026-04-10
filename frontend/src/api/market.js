@@ -51,6 +51,8 @@ export const market = {
     () => apiFetch(`/api/market/sectors/main-fund-flow?kind=${encodeURIComponent(kind)}`, `market/sectors/main-fund-flow/${kind}`)
   ),
   summary:   () => cached('market/summary',   30_000, () => apiFetch('/api/market/summary',      'market/summary')),
+  /** 三大指数近3天分时数据 */
+  indexMini: () => cached('market/index-mini', 60_000, () => apiFetch('/api/market/index-mini', 'market/index-mini')),
   invalidate,
 }
 

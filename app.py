@@ -15,8 +15,9 @@ from flask import send_from_directory, abort
 import database as db
 from ai_service import get_ai_service
 
-os.environ.setdefault('LLM_PROVIDER', 'deepseek')
-os.environ.setdefault('DEEPSEEK_API_KEY', 'sk-f288fe90b4694dbbb841d439936b48ab')
+os.environ.setdefault('LLM_PROVIDER', 'dashscope')
+os.environ.setdefault('DASHSCOPE_API_KEY', 'sk-9bc00f8ae2d84e71b002b7ae82fd3188')
+os.environ.setdefault('DASHSCOPE_MODEL', 'qwen3.6-plus')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -157,13 +158,13 @@ def get_agent_prompts():
 @app.route('/api/agents/analyze/<agent_id>', methods=['POST'])
 def analyze_with_agent(agent_id):
     """
-    使用指定智能体的 Prompt 工程调用 LLM API（支持混元/DeepSeek）
-    POST body: { "provider": "tencent"|"deepseek", "api_key": "..." }
+    使用指定智能体的 Prompt 工程调用 LLM API（阿里云百炼通义千问 qwen3.6-plus）
+    POST body: { "provider": "dashscope", "api_key": "..." }
     返回结构化 JSON + 原始 markdown 供前端直接消费
     """
     try:
         from agent_prompts import get_agent, build_messages, extract_json_from_response, sanitize_parsed_agent_output
-        import requests
+        from openai import OpenAI
 
         agent = get_agent(agent_id)
         if not agent:
@@ -171,12 +172,13 @@ def analyze_with_agent(agent_id):
 
         # 取 Provider 和 API Key
         data = request.get_json() or {}
-        provider = data.get('provider') or os.environ.get('LLM_PROVIDER', 'deepseek')
-        api_key = data.get('api_key') or os.environ.get(
-            'HUNYUAN_API_KEY' if provider == 'tencent' else 'DEEPSEEK_API_KEY', ''
-        )
+        api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '')
+        model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'qwen3.6-plus')
         if not api_key:
-            return jsonify({"success": False, "error": f"请提供 {provider} 的 API Key"})
+            return jsonify({"success": False, "error": "请提供 API Key"})
+
+        # 阿里云百炼配置
+        DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
         # 取最新扫描数据
         latest_scan = db.get_latest_scan()
@@ -208,58 +210,38 @@ def analyze_with_agent(agent_id):
         current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
         messages = build_messages(agent, scan_data_text, news_text, holdings_text, current_time, scan_date)
 
-        # 调用 LLM（支持混元 / DeepSeek）
-        logger.info("[AgentAnalyze] agent_id=%s provider=%s model=%s temperature=%s max_tokens=%s messages_count=%d",
-                    agent_id, provider,
-                    'deepseek-chat' if provider == 'deepseek' else 'hunyuan-lite',
-                    agent['temperature'], agent['max_tokens'], len(messages))
+        # 提取 system 和 user 内容
+        system_content = ''
+        user_content = ''
+        for msg in messages:
+            if msg.get('role') == 'system':
+                system_content = msg.get('content', '')
+            elif msg.get('role') == 'user':
+                user_content = msg.get('content', '')
 
-        if provider == 'deepseek':
-            resp = requests.post(
-                'https://api.deepseek.com/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {api_key}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": messages,
-                    "temperature": agent['temperature'],
-                    "max_tokens": agent['max_tokens'],
-                    "stream": False,
-                },
-                timeout=120,
-            )
-        else:
-            resp = requests.post(
-                'https://api.hunyuan.cloud.tencent.com/v1/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {api_key}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    "model": "hunyuan-lite",
-                    "messages": messages,
-                    "temperature": agent['temperature'],
-                    "max_tokens": agent['max_tokens'],
-                    "stream": False,
-                },
-                timeout=120,
-            )
-        result = resp.json()
-        logger.info("[AgentAnalyze] agent_id=%s provider=%s raw_response_len=%d usage=%s",
-                    agent_id, provider,
-                    len(resp.text), result.get('usage', {}))
-        if 'error' in result:
-            return jsonify({"success": False, "error": result['error'].get('message', 'API 错误')})
+        # 调用阿里云百炼 API（responses.create 方式）
+        logger.info("[AgentAnalyze] agent_id=%s model=%s temperature=%s max_tokens=%s",
+                    agent_id, model, agent['temperature'], agent['max_tokens'])
 
-        content = result['choices'][0]['message']['content']
-        usage = result.get('usage', {})
+        client = OpenAI(api_key=api_key, base_url=DASHSCOPE_BASE_URL)
+        response = client.responses.create(
+            model=model,
+            instructions=system_content,
+            input=user_content,
+            temperature=agent['temperature'],
+            max_output_tokens=agent['max_tokens'],
+        )
+
+        content = response.output_text
+        usage = response.usage
+        logger.info("[AgentAnalyze] agent_id=%s response_len=%d usage=%s",
+                    agent_id, len(content) if content else 0,
+                    usage.total_tokens if usage else 0)
 
         # 解析结构化 JSON，并剔除不在扫描表中的虚构推荐 / Prompt 占位句
         logger.info("[AgentAnalyze] agent_id=%s content_preview=%.80s...",
-                    agent_id, content[:80])
-        structured = extract_json_from_response(content)
+                    agent_id, content[:80] if content else '')
+        structured = extract_json_from_response(content) if content else None
         if structured:
             logger.info("[AgentAnalyze] agent_id=%s parsed stance=%s confidence=%s recommendedStocks_count=%d",
                         agent_id, structured.get('stance'), structured.get('confidence'),
@@ -270,7 +252,7 @@ def analyze_with_agent(agent_id):
                         agent_id, len(structured.get('recommendedStocks') or []))
         else:
             logger.warning("[AgentAnalyze] agent_id=%s JSON 解析失败，raw content 前200字: %.200s",
-                           agent_id, content[:200])
+                           agent_id, content[:200] if content else '')
 
         # 持久化分析历史（Agent+日期唯一，历史锁定）
         try:
@@ -282,10 +264,10 @@ def analyze_with_agent(agent_id):
                 report_date=report_date,
                 holdings_snapshot=snap,
                 analysis_result=ar_payload,
-                raw_response=content,
+                raw_response=content or '',
                 stance=structured.get('stance', '') if structured else '',
                 confidence=int(structured.get('confidence', 0)) if structured else 0,
-                tokens_used=usage.get('total_tokens', 0),
+                tokens_used=usage.total_tokens if usage else 0,
             )
             logger.info(f"[AgentAnalyze] 历史已写入 agent_id={agent_id} date={report_date}")
         except Exception as hist_err:
@@ -297,7 +279,7 @@ def analyze_with_agent(agent_id):
             "agent_name": agent['name'],
             "structured": structured,        # 结构化数据（前端直接用）
             "analysis": content,            # 原始 markdown
-            "tokens_used": usage.get('total_tokens', 0),
+            "tokens_used": usage.total_tokens if usage else 0,
         })
     except Exception as e:
         import traceback
@@ -316,18 +298,20 @@ def batch_analyze_agents():
       - consensusOpportunities[]: TOP 3 共识股票（供核心投资机会区块）
     """
     try:
-        import concurrent.futures, requests
+        import concurrent.futures
         from agent_prompts import AGENTS, build_messages, extract_json_from_response, compute_consensus, sanitize_parsed_agent_output
         from ai_service import fetch_market_news
         from datetime import datetime
+        from openai import OpenAI
 
         data = request.get_json() or {}
-        provider = data.get('provider') or os.environ.get('LLM_PROVIDER', 'deepseek')
-        api_key = data.get('api_key') or os.environ.get(
-            'HUNYUAN_API_KEY' if provider == 'tencent' else 'DEEPSEEK_API_KEY', ''
-        )
+        api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '')
+        model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'qwen3.6-plus')
         if not api_key:
-            return jsonify({"success": False, "error": f"请提供 {provider} 的 API Key"})
+            return jsonify({"success": False, "error": "请提供 API Key"})
+
+        # 阿里云百炼配置
+        DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
         latest_scan = db.get_latest_scan()
         if not latest_scan:
@@ -355,49 +339,32 @@ def batch_analyze_agents():
             holdings_text = "【暂无历史持仓数据】"
         current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
 
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
-        }
+        client = OpenAI(api_key=api_key, base_url=DASHSCOPE_BASE_URL)
 
         def call_one(agent):
             try:
                 messages = build_messages(agent, scan_data_text, news_text, holdings_text, current_time, scan_date)
-                if provider == 'deepseek':
-                    resp = requests.post(
-                        'https://api.deepseek.com/chat/completions',
-                        headers=headers,
-                        json={
-                            "model": "deepseek-chat",
-                            "messages": messages,
-                            "temperature": agent['temperature'],
-                            "max_tokens": agent['max_tokens'],
-                            "stream": False,
-                        },
-                        timeout=120,
-                    )
-                else:
-                    resp = requests.post(
-                        'https://api.hunyuan.cloud.tencent.com/v1/chat/completions',
-                        headers=headers,
-                        json={
-                            "model": "hunyuan-lite",
-                            "messages": messages,
-                            "temperature": agent['temperature'],
-                            "max_tokens": agent['max_tokens'],
-                            "stream": False,
-                        },
-                        timeout=120,
-                    )
-                result = resp.json()
-                logger.info("[Batch] agent_id=%s provider=%s raw_response_len=%d usage=%s",
-                            agent['id'], provider, len(resp.text), result.get('usage', {}))
-                if 'error' in result:
-                    return {"agent_id": agent['id'], "success": False, "error": result['error'].get('message')}
-                content = result['choices'][0]['message']['content']
-                logger.info("[Batch] agent_id=%s content_preview=%.80s...",
-                            agent['id'], content[:80])
-                structured = extract_json_from_response(content)
+                # 提取 system 和 user 内容
+                system_content = ''
+                user_content = ''
+                for msg in messages:
+                    if msg.get('role') == 'system':
+                        system_content = msg.get('content', '')
+                    elif msg.get('role') == 'user':
+                        user_content = msg.get('content', '')
+                response = client.responses.create(
+                    model=model,
+                    instructions=system_content,
+                    input=user_content,
+                    temperature=agent['temperature'],
+                    max_output_tokens=agent['max_tokens'],
+                )
+                content = response.output_text
+                usage = response.usage
+                logger.info("[Batch] agent_id=%s model=%s response_len=%d usage=%s",
+                            agent['id'], model, len(content) if content else 0,
+                            usage.total_tokens if usage else 0)
+                structured = extract_json_from_response(content) if content else None
                 if structured:
                     logger.info("[Batch] agent_id=%s parsed stance=%s confidence=%s recommendedStocks_count=%d",
                                 agent['id'], structured.get('stance'), structured.get('confidence'),
@@ -408,14 +375,14 @@ def batch_analyze_agents():
                                 agent['id'], len(structured.get('recommendedStocks') or []))
                 else:
                     logger.warning("[Batch] agent_id=%s JSON 解析失败，raw content 前200字: %.200s",
-                                  agent['id'], content[:200])
+                                  agent['id'], content[:200] if content else '')
                 return {
                     "agent_id": agent['id'],
                     "agent_name": agent['name'],
                     "success": True,
                     "structured": structured,
-                    "analysis": content,
-                    "tokens_used": result.get('usage', {}).get('total_tokens', 0),
+                    "analysis": content or '',
+                    "tokens_used": usage.total_tokens if usage else 0,
                 }
             except Exception as e:
                 return {"agent_id": agent['id'], "success": False, "error": str(e)}
@@ -564,22 +531,29 @@ def _format_news_for_agent(news_list):
 
 DIST_DIR = os.path.join(os.path.dirname(__file__), 'dist')
 CHARTING_LIB_DIR = os.path.join(os.path.dirname(__file__), 'charting_library')
+PUBLIC_DIR = os.path.join(os.path.dirname(__file__), 'public')
 
 
 @app.route('/charting_library/<path:filename>')
 def serve_charting_library(filename):
-    """TradingView Charting Library 静态资源（含 mobile_white.html）"""
+    """TradingView Charting Library 静态资源（含 charting_library.standalone.js 在子目录 charting_library/ 下）。"""
     if '..' in filename or filename.startswith(('/', '\\')):
         abort(404)
-    full = os.path.normpath(os.path.join(CHARTING_LIB_DIR, filename))
-    if not full.startswith(os.path.normpath(CHARTING_LIB_DIR + os.sep)):
-        abort(404)
-    if not os.path.isfile(full):
-        abort(404)
-    if filename.endswith('.html'):
-        abort(403)
-    return send_from_directory(CHARTING_LIB_DIR, filename)
 
+    # 1. 优先在根目录查找（mobile_white.html、bundles 等）
+    full = os.path.normpath(os.path.join(CHARTING_LIB_DIR, filename))
+    if full.startswith(os.path.normpath(CHARTING_LIB_DIR + os.sep)) and os.path.isfile(full):
+        return send_from_directory(CHARTING_LIB_DIR, filename)
+
+    # 2. 再尝试 charting_library/ 子目录（TV 主库文件：charting_library.standalone.js 等）
+    full_sub = os.path.normpath(os.path.join(CHARTING_LIB_DIR, 'charting_library', filename))
+    if full_sub.startswith(os.path.normpath(os.path.join(CHARTING_LIB_DIR, 'charting_library') + os.sep)) and os.path.isfile(full_sub):
+        return send_from_directory(os.path.join(CHARTING_LIB_DIR, 'charting_library'), filename)
+
+    abort(404)
+
+
+# ── 前端 SPA（路由 /frontend/*） ───────────────────────────────────────────
 
 @app.route('/frontend')
 @app.route('/frontend/')
@@ -597,7 +571,34 @@ def serve_frontend():
 def serve_frontend_assets(filename):
     if not os.path.isdir(DIST_DIR):
         abort(404)
-    return send_from_directory(DIST_DIR, filename)
+    # 如果文件存在则直接返回，否则返回 index.html（SPA fallback）
+    if os.path.isfile(os.path.join(DIST_DIR, filename)):
+        return send_from_directory(DIST_DIR, filename)
+    return send_from_directory(DIST_DIR, 'index.html')
+
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    """静态资源路由（从前端构建产物）"""
+    assets_dir = os.path.join(DIST_DIR, 'assets')
+    if not os.path.isdir(assets_dir):
+        abort(404)
+    return send_from_directory(assets_dir, filename)
+
+
+@app.route('/<path:filename>')
+def serve_public(filename):
+    """public目录静态文件（如 favicon.svg）"""
+    if not os.path.isdir(PUBLIC_DIR):
+        abort(404)
+    if '..' in filename or filename.startswith(('/', '\\')):
+        abort(404)
+    full_path = os.path.normpath(os.path.join(PUBLIC_DIR, filename))
+    if not full_path.startswith(os.path.normpath(PUBLIC_DIR + os.sep)):
+        abort(404)
+    if not os.path.isfile(full_path):
+        abort(404)
+    return send_from_directory(PUBLIC_DIR, filename)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 持仓管理 API
@@ -713,4 +714,4 @@ def api_get_agent_analysis_history(agent_id):
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5002)
+    app.run(debug=False, host='0.0.0.0', port=5002, threaded=True)

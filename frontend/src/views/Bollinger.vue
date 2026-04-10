@@ -6,7 +6,7 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
         </button>
         <div class="bb-header__brand">
-          <h1 class="bb-header__title">布林带收缩策略</h1>
+          <h1 class="bb-header__title">跟着量化基金经理买股票</h1>
         </div>
         <div class="bb-header__tools">
           <button type="button" class="bb-ghost-btn" @click="$router.push('/strategy/bollinger/history')">
@@ -77,6 +77,23 @@
               :style="{ '--range-fill': rangeFillPeriod }"
             >
             <div class="bb-slider-block__ticks"><span>20天</span><span>180天</span></div>
+          </div>
+          <div class="bb-slider-block">
+            <div class="bb-slider-block__row">
+              <label class="bb-slider-block__label">窄幅区间</label>
+              <span class="bb-slider-block__val">{{ params.bbWidthMax }}%</span>
+            </div>
+            <input
+              type="range"
+              class="bb-range"
+              v-model.number="params.bbWidthMax"
+              min="5"
+              max="50"
+              step="5"
+              :style="{ '--range-fill': rangeFillBbWidth }"
+            >
+            <div class="bb-slider-block__ticks"><span>5%</span><span>50%</span></div>
+            <p class="bb-slider-block__hint">仅展示布林带宽度 ≤ 此值的股票。</p>
           </div>
         </div>
       </section>
@@ -358,7 +375,7 @@ const route = useRoute()
 const router = useRouter()
 
 // ─── 参数 ───
-const params = ref({ sectors: 6, minDays: 3, period: 20 })
+const params = ref({ sectors: 6, minDays: 3, period: 20, bbWidthMax: 20 })
 
 // ─── 扫描状态 ───
 const scanning = ref(false)
@@ -424,6 +441,10 @@ const rangeFillPeriod = computed(() => {
   const v = params.value.period
   return `${((v - 20) / (180 - 20)) * 100}%`
 })
+const rangeFillBbWidth = computed(() => {
+  const v = params.value.bbWidthMax
+  return `${((v - 5) / (50 - 5)) * 100}%`
+})
 
 // 当前选中板块的股票：受 Tab 筛选；板块胶囊切换当前板块
 const activeSectorStocks = computed(() => {
@@ -451,7 +472,14 @@ const activeSectorStocks = computed(() => {
   return stocks
 })
 
-const displayStockList = computed(() => activeSectorStocks.value)
+const displayStockList = computed(() => {
+  const stocks = activeSectorStocks.value
+  const maxW = params.value.bbWidthMax
+  return stocks.filter(s => {
+    const w = Number(s.bb_width_pct) || 0
+    return w <= maxW
+  })
+})
 // groupedResults：始终基于全量未筛选数据，分组用于板块胶囊，Tab 切换不影响
 const groupedResults = computed(() => {
   const map = {}
@@ -585,6 +613,7 @@ async function startScan() {
       sectors: params.value.sectors,
       min_days: params.value.minDays,
       period: params.value.period,
+      bb_width_max: params.value.bbWidthMax,
     })
     if (!json.success) {
       showToast(json.error || '启动失败', 'error')
@@ -1038,6 +1067,72 @@ onUnmounted(stopPolling)
   font-size: 11px;
   line-height: 1.45;
   color: var(--bb-muted);
+}
+.bb-range-dual-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bb-range-dual-slider {
+  position: relative;
+  height: 28px;
+}
+.bb-range-dual-slider__track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--bb-outline);
+  border-radius: 2px;
+  transform: translateY(-50%);
+}
+.bb-range-dual-slider__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--bb-primary);
+  border-radius: 2px;
+}
+.bb-range-dual-slider__input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+.bb-range-dual-slider__input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--bb-primary);
+  border-radius: 50%;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.bb-range-dual-slider__input::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--bb-primary);
+  border-radius: 50%;
+  cursor: pointer;
+  pointer-events: auto;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.bb-range-dual-slider__input::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+.bb-range-dual-slider__input::-moz-range-track {
+  height: 4px;
+  background: transparent;
 }
 
 .bb-range {

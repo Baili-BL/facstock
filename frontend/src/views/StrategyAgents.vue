@@ -108,7 +108,7 @@
           <div class="agent-card__head">
             <div class="agent-card__who">
               <div class="agent-card__img-wrap">
-                <img :src="a.avatar" :alt="a.name" class="agent-card__img" loading="lazy" />
+                <span class="agent-card__img agent-card__img--text" :aria-label="a.name">{{ agentCardInitial(a) }}</span>
                 <span
                   class="agent-card__dot"
                   :class="{
@@ -399,6 +399,11 @@ function goToHoldings(a) {
 
 function goToAnalysis(a) {
   router.push(`/strategy/agents/${a.id}/analysis`)
+}
+
+function agentCardInitial(a) {
+  const s = String(a?.analysisBrand || a?.name || '?').trim()
+  return s[0] || '?'
 }
 </script>
 
@@ -803,6 +808,17 @@ function goToAnalysis(a) {
   height: 56px;
   border-radius: 12px;
   object-fit: cover;
+}
+.agent-card__img--text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-mid) 100%);
+  letter-spacing: -0.02em;
+  user-select: none;
 }
 
 .agent-card__dot {

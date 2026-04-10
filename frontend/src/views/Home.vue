@@ -5,55 +5,42 @@
       <span>{{ marketStatus.label }}</span>
       <span class="hm-status__sep">·</span>
       <span class="hm-status__date">{{ dateStrFull }}</span>
-      <span class="hm-status__grow" />
-      <span class="hm-status__flow-label">北向净流入</span>
-      <span class="hm-status__flow tabular" :class="northNet >= 0 ? 'is-up' : 'is-down'">{{ formatSignedCompact(northNet) }}</span>
     </div>
 
     <main class="hm-main">
-      <!-- 三大指数网格 + 迷你走势 -->
+      <!-- 三大指数：真实数据迷你走势图 -->
       <section class="hm-card hm-idx-wrap">
         <div v-if="loadingIndex" class="hm-idx-skel">
           <div v-for="i in 3" :key="i" class="hm-idx-skel__cell" />
         </div>
         <div v-else class="hm-idx-grid">
-          <button
-            v-for="item in indexCarousel"
-            :key="item.name"
-            type="button"
+          <div
+            v-for="item in indexWidgets"
+            :key="item.symbol"
             class="hm-idx-cell"
-            :class="Number(item.change) >= 0 ? 'is-up' : 'is-down'"
-            @click="toggleIndexDetail(item.name)"
+            :class="indexCellClass(item.symbol)"
           >
             <div class="hm-idx-cell__hd">
-              <span class="hm-idx-cell__name">{{ item.short }}</span>
-              <span class="hm-idx-cell__code tabular">{{ indexTicker(item.name) }}</span>
+              <span class="hm-idx-cell__name">{{ item.name }}</span>
             </div>
             <div class="hm-idx-cell__nums">
-              <span class="hm-idx-cell__px tabular">{{ formatPrice(item.price) }}</span>
-              <span class="hm-idx-cell__pct tabular">{{ formatPct(item.change) }}%</span>
+              <span class="hm-idx-cell__px tabular">{{ indexPrice(item.symbol) }}</span>
+              <span class="hm-idx-cell__pct tabular">{{ indexChange(item.symbol) }}</span>
             </div>
             <svg class="hm-idx-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
               <path
+                :key="'idx-spark-' + item.symbol"
                 fill="none"
                 stroke-width="2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
-                :stroke="Number(item.change) >= 0 ? 'var(--hm-up)' : 'var(--hm-down)'"
-                :d="indexSparkPath(item)"
+                :stroke="indexLineColor(item.symbol)"
+                :d="indexSparkPaths[item.symbol] || ''"
               />
             </svg>
-          </button>
-        </div>
-      </section>
-
-      <transition name="fade">
-        <div v-if="detailIndexName && !loadingIndex" class="hm-card hm-idx-expand">
-          <div v-for="row in indexDetailRows" :key="row.k" class="hm-idx-expand__row">
-            <span>{{ row.k }}</span><span class="tabular">{{ row.v }}</span>
           </div>
         </div>
-      </transition>
+      </section>
 
       <!-- 市场情绪 -->
       <section class="hm-card hm-sentiment">
@@ -218,7 +205,7 @@
       <section class="hm-card hm-hot">
         <div class="hm-hot__hd">
           <span>热门板块</span>
-          <button type="button" class="hm-link" @click="$router.push('/sectors')">更多 ›</button>
+          <button type="button" class="hm-link" @click="$router.push('/sectors/heatmap')">更多 ›</button>
         </div>
         <div v-if="loadingSectors" class="hm-hot-treemap-sk" aria-busy="true">
           <div class="hm-hot-treemap-sk__row hm-hot-treemap-sk__row--4">
@@ -248,7 +235,7 @@
                 rx="4"
                 stroke="rgba(255,255,255,0.65)"
                 stroke-width="1"
-                @click="$router.push('/sectors')"
+                @click="$router.push('/sectors/heatmap')"
               />
               <text
                 v-if="r.showName"
@@ -288,6 +275,7 @@ const router = useRouter()
 
 // 各区块独立 loading 状态
 const loadingIndex   = ref(true)
+const indexMiniData = ref({})   // { symbol: { name, dates, closes } }
 const loadingTurnover = ref(true)
 const loadingLimit   = ref(true)
 const loadingOverview = ref(true)
@@ -305,7 +293,6 @@ const allSkeletonsShown = computed(() =>
 )
 
 const overview = ref([])
-const flow = ref({ north_money: {} })
 const limit = ref({})
 const sectors = ref([])
 const snapshot = ref({
@@ -321,8 +308,6 @@ const snapshot = ref({
 
 const rankTab = ref('gain')
 const rankCollapsed = ref(false)
-const detailIndexName = ref('')
-
 const rankTabDefs = [
   { id: 'gain', label: '涨幅榜', key: 'top_gainers' },
   { id: 'loss', label: '跌幅榜', key: 'top_losers' },
@@ -384,34 +369,6 @@ const dateStrFull = computed(() => {
   return `${y}-${mo}-${day} 星期${w}`
 })
 
-const northNet = computed(() => flow.value?.north_money?.north_net_inflow ?? 0)
-
-const indexCarousel = computed(() => {
-  const pick = (n, short) => {
-    const x = overview.value.find(i => i.name === n) || {}
-    return { name: n, short, ...x }
-  }
-  return [
-    pick('上证指数', '上证指数'),
-    pick('深证成指', '深证成指'),
-    pick('创业板指', '创业板指'),
-  ]
-})
-
-const indexDetailRows = computed(() => {
-  const x = overview.value.find(i => i.name === detailIndexName.value) || {}
-  return [
-    { k: '今开', v: formatPrice(x.open) },
-    { k: '最高', v: formatPrice(x.high) },
-    { k: '昨收', v: formatPrice(x.prev_close) },
-    { k: '最低', v: formatPrice(x.low) },
-  ]
-})
-
-function toggleIndexDetail(name) {
-  detailIndexName.value = detailIndexName.value === name ? '' : name
-}
-
 const breadth = computed(() => {
   const snap = snapshot.value
   const sh = overview.value.find(i => i.name === '上证指数') || {}
@@ -444,38 +401,67 @@ const sentimentMood = computed(() => {
   return { label: 'NEUTRAL', moodClass: 'is-flat' }
 })
 
-const INDEX_TICKERS = {
-  上证指数: '000001.SH',
-  深证成指: '399001.SZ',
-  创业板指: '399006.SZ',
+// TradingView 三大指数迷你图配置
+const indexWidgets = [
+  { name: '上证指数', symbol: 'SSE:000001' },
+  { name: '深证成指', symbol: 'SZSE:399001' },
+  { name: '创业板指', symbol: 'SZSE:399006' },
+]
+
+// 从后端分时 K 线 closes 生成 SVG 折线路径（按指数分别计算，避免模板内函数未建立逐键依赖）
+const VW = 100, VH = 30, PAD = 2
+function buildMiniPathForEntry(entry) {
+  if (!entry || !entry.closes || entry.closes.length < 2) return ''
+  const closes = entry.closes.map(Number)
+  const min = Math.min(...closes)
+  const max = Math.max(...closes)
+  const range = max - min || 1
+  const n = closes.length
+  const pts = closes.map((c, i) => {
+    const x = (i / (n - 1)) * VW
+    const y = VH - PAD - ((c - min) / range) * (VH - PAD * 2)
+    return [x, y]
+  })
+  return pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')
 }
 
-function indexTicker(name) {
-  return INDEX_TICKERS[name] || ''
-}
+const indexSparkPaths = computed(() => {
+  const raw = indexMiniData.value
+  const out = {}
+  for (const { symbol } of indexWidgets) {
+    out[symbol] = buildMiniPathForEntry(raw[symbol])
+  }
+  return out
+})
 
-function indexSparkPath(item) {
-  const isUp = Number(item.change) >= 0
-  const w = 100
-  const h = 30
-  const pad = 2
-  let seed = 2166136261
-  const s = String(item.name || '')
-  for (let i = 0; i < s.length; i++) {
-    seed ^= s.charCodeAt(i)
-    seed = Math.imul(seed, 16777619)
-  }
-  const parts = []
-  for (let i = 0; i <= 12; i++) {
-    const t = i / 12
-    const x = (t * w).toFixed(1)
-    const wave = Math.sin(seed * 1e-6 + t * 5) * 6
-    const drift = isUp ? (1 - t) * 12 : t * 12
-    let y = h / 2 + wave + drift * 0.35
-    y = Math.max(pad, Math.min(h - pad, y))
-    parts.push(i === 0 ? `M${x} ${y.toFixed(1)}` : `L${x} ${y.toFixed(1)}`)
-  }
-  return parts.join(' ')
+// 指数实时价格（来自 overview，实时更新）
+const INDEX_CODE_MAP = {
+  'SSE:000001': '上证指数',
+  'SZSE:399001': '深证成指',
+  'SZSE:399006': '创业板指',
+}
+function indexInfo(symbol) {
+  const name = INDEX_CODE_MAP[symbol] || ''
+  return overview.value.find(i => i.name === name) || {}
+}
+function indexPrice(symbol) {
+  const x = indexInfo(symbol)
+  return x.price != null ? (Number(x.price)).toFixed(2) : '--'
+}
+function indexChange(symbol) {
+  const x = indexInfo(symbol)
+  if (x.change == null) return '--'
+  const c = Number(x.change)
+  return `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`
+}
+function indexLineColor(symbol) {
+  const x = indexInfo(symbol)
+  const c = Number(x.change) || 0
+  return c >= 0 ? 'var(--hm-up)' : 'var(--hm-down)'
+}
+function indexCellClass(symbol) {
+  const x = indexInfo(symbol)
+  return Number(x.change) >= 0 ? 'is-up' : 'is-down'
 }
 
 const capPair = computed(() => {
@@ -513,14 +499,14 @@ const hotSectorTreemap = computed(() => {
   const vw = 320
   const vh = 150
   if (!list.length) return { rects: [], vw, vh, maxAbs: 1 }
-  const weights = list.map((s) => {
-    const a = Number(s.amount)
-    if (Number.isFinite(a) && a > 0) return a
-    return Math.abs(Number(s.change)) + 0.35
-  })
-  const items = list.map((s, i) => ({ weight: weights[i], data: s }))
+  // 按涨跌幅绝对值降序排列，确保最大涨幅的板块占据最大面积
+  const sorted = [...list].sort((a, b) =>
+    Math.abs(Number(b.change) || 0) - Math.abs(Number(a.change) || 0)
+  )
+  const weights = sorted.map((s) => Math.abs(Number(s.change) || 0) + 0.35)
+  const items = sorted.map((s, i) => ({ weight: weights[i], data: s }))
   const rects = layoutBinaryTreemap(items, 0, 0, vw, vh)
-  const changes = list.map((s) => Number(s.change) || 0)
+  const changes = sorted.map((s) => Number(s.change) || 0)
   const maxAbs = Math.max(...changes.map((c) => Math.abs(c)), 0.01)
   const enriched = rects.map((r) => {
     const ch = Number(r.data.change) || 0
@@ -618,15 +604,6 @@ async function loadOverview() {
   }
 }
 
-async function loadFlow() {
-  try {
-    const fl = await market.flow()
-    flow.value = fl || {}
-  } catch (e) {
-    console.error('flow error', e)
-  }
-}
-
 async function loadLimit() {
   try {
     const lm = await market.limit()
@@ -688,9 +665,16 @@ async function loadMacro() {
   }
 }
 
-// 指数数据在 overview 加载完成后显示
-function setupIndexReady() {
-  loadingIndex.value = false
+// 指数迷你K线数据
+async function loadIndexMini() {
+  try {
+    const data = await market.indexMini()
+    indexMiniData.value = data || {}
+  } catch (e) {
+    console.error('indexMini error', e)
+  } finally {
+    loadingIndex.value = false
+  }
 }
 
 async function loadSession() {
@@ -708,7 +692,7 @@ async function loadSession() {
 let timer = null
 let sessionPollTimer = null
 onMounted(() => {
-  loadFlow()
+  loadIndexMini()
   loadOverview()
   loadLimit()
   loadSnapshot()
@@ -716,14 +700,6 @@ onMounted(() => {
   loadTurnover()
   loadMacro()
   loadSession()
-
-  // 指数在 overview 返回后即 ready
-  const unwatch = setInterval(() => {
-    if (overview.value.length) {
-      setupIndexReady()
-      clearInterval(unwatch)
-    }
-  }, 100)
 
   sessionPollTimer = setInterval(() => {
     clockTick.value += 1
@@ -733,7 +709,6 @@ onMounted(() => {
   timer = setInterval(() => {
     // 不清缓存，让前端 TTL 缓存自动管理，静静静后台刷新
     loadOverview()
-    loadFlow()
     loadLimit()
     loadSnapshot()
     loadSectors()
@@ -749,7 +724,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* Architectural Ledger — DESIGN.md + stitch Market Overview（红涨绿跌 · TV #f23645 / #089981） */
+/* Architectural Ledger — DESIGN.md + stitch Market Overview（红涨绿跌） */
 .market-home {
   --hm-primary: #003ec7;
   --hm-primary-mid: #0052ff;
@@ -804,23 +779,6 @@ onUnmounted(() => {
 .hm-status__date {
   font-weight: 500;
 }
-.hm-status__grow {
-  flex: 1;
-  min-width: 8px;
-}
-.hm-status__flow-label {
-  color: var(--hm-outline);
-  font-weight: 600;
-}
-.hm-status__flow.is-up {
-  color: var(--hm-up);
-  font-weight: 800;
-}
-.hm-status__flow.is-down {
-  color: var(--hm-down);
-  font-weight: 800;
-}
-
 .hm-main {
   padding: 0 16px 24px;
   display: flex;
@@ -847,38 +805,30 @@ onUnmounted(() => {
   padding: 0;
 }
 .hm-idx-skel__cell {
-  min-height: 100px;
+  min-height: 140px;
   background: var(--hm-white);
   animation: sk-shine 1.1s ease-in-out infinite;
 }
 .hm-idx-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
+  display: flex;
+  gap: 2px;
   background: var(--hm-ghost);
+  padding: 0;
 }
 .hm-idx-cell {
+  flex: 1;
+  min-width: 0;
+  background: var(--hm-white);
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: 3px;
   padding: 10px 8px 8px;
-  background: var(--hm-white);
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  min-width: 0;
-}
-.hm-idx-cell:active {
-  background: var(--hm-low);
 }
 .hm-idx-cell__hd {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 4px;
 }
 .hm-idx-cell__name {
   font-family: 'Manrope', var(--font);
@@ -886,12 +836,6 @@ onUnmounted(() => {
   font-weight: 800;
   color: var(--hm-muted);
   line-height: 1.2;
-}
-.hm-idx-cell__code {
-  font-size: 9px;
-  color: var(--hm-outline);
-  opacity: 0.75;
-  white-space: nowrap;
 }
 .hm-idx-cell__nums {
   display: flex;
@@ -909,37 +853,13 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .hm-idx-cell.is-up .hm-idx-cell__px,
-.hm-idx-cell.is-up .hm-idx-cell__pct {
-  color: var(--hm-up);
-}
+.hm-idx-cell.is-up .hm-idx-cell__pct { color: var(--hm-up); }
 .hm-idx-cell.is-down .hm-idx-cell__px,
-.hm-idx-cell.is-down .hm-idx-cell__pct {
-  color: var(--hm-down);
-}
+.hm-idx-cell.is-down .hm-idx-cell__pct { color: var(--hm-down); }
 .hm-idx-spark {
   width: 100%;
   height: 28px;
   margin-top: 2px;
-}
-
-.hm-idx-expand {
-  padding: 12px 14px;
-}
-.hm-idx-expand__row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  color: var(--hm-muted);
-  padding: 5px 0;
-}
-
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.15s;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
 }
 
 /* 市场情绪 */

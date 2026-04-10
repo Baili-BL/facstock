@@ -42,7 +42,39 @@ export async function fetchAgentPrompts() {
  * @returns {Promise<{structured: object, analysis: string, tokens_used: number}>}
  */
 export async function analyzeWithAgent(agentId) {
-  return apiPost(`${BASE}/agents/analyze/${agentId}`)
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 180_000)
+  let res
+  try {
+    res = await fetch(`${BASE}/agents/analyze/${agentId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: ctrl.signal,
+    })
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('分析超时（超过 3 分钟），请稍后重试')
+    }
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+  let json
+  try {
+    json = await res.json()
+  } catch {
+    throw new Error('服务器返回非 JSON')
+  }
+  if (!json.success) throw new Error(json.error || '请求失败')
+  if (json.agent_success === false) {
+    const err = new Error(json.error || '智能体分析失败，请稍后重试')
+    err.name = 'AgentBackendError'
+    err.payload = json
+    throw err
+  }
+  const { success: _s, agent_success: _a, error: _e, ...rest } = json
+  return rest
 }
 
 // ─── 批量分析（全场共识）─────────────────────────────────────────────────

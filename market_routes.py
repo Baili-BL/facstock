@@ -38,7 +38,7 @@ SNAPSHOT_REDIS_KEY = MARKET_SNAPSHOT_REDIS_KEY
 
 @market_bp.route('/')
 def index():
-    """首页 - 重定向到 Vue 前端"""
+    """旧版首页兼容（已保留供外部书签访问）：302 到新版 SPA"""
     from flask import redirect
     return redirect('/frontend/')
 
@@ -252,4 +252,42 @@ def api_macro_summary():
         set('macro/summary', data, ttl=60)
         return jsonify({'success': True, 'data': data})
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@market_bp.route('/api/market/index-mini')
+def api_index_mini():
+    """
+    三大指数近3天分时（5分钟K线）数据，供首页展示真实分时走势。
+    返回每个指数的时间序列收盘价。
+    """
+    hit = get('market/index-mini')
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
+    try:
+        from utils.ths_crawler import get_index_intraday_em
+
+        INDEX_MAP = {
+            'SSE:000001': ('000001', '1', '上证指数'),
+            'SZSE:399001': ('399001', '0', '深证成指'),
+            'SZSE:399006': ('399006', '0', '创业板指'),
+        }
+
+        result = {}
+        for symbol, (code, market, name) in INDEX_MAP.items():
+            klines = get_index_intraday_em(code, market)
+            if klines:
+                result[symbol] = {
+                    'name': name,
+                    'times':  [k['time'] for k in klines],
+                    'closes': [k['close'] for k in klines],
+                    'high':   klines[-1].get('high') or 0,
+                    'low':    klines[-1].get('low') or 0,
+                }
+
+        set('market/index-mini', result, ttl=60)
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        logger.exception('market index mini kline')
         return jsonify({'success': False, 'error': str(e)}), 500

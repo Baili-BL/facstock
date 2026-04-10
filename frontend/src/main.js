@@ -4,6 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import Home from './views/Home.vue'
 import Sectors from './views/Sectors.vue'
+import SectorHeatmap from './views/SectorHeatmap.vue'
 import Watchlist from './views/Watchlist.vue'
 import WatchlistSettings from './views/WatchlistSettings.vue'
 import AppSettings from './views/AppSettings.vue'
@@ -24,11 +25,14 @@ import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
 import StockDetail from './views/StockDetail.vue'
+import Backtest from './views/Backtest.vue'
+import FactorPrompt from './views/FactorPrompt.vue'
 
 const routes = [
   { path: '/', component: Home },
   { path: '/stock/:code', name: 'StockDetail', component: StockDetail },
   { path: '/sectors', component: Sectors },
+  { path: '/sectors/heatmap', component: SectorHeatmap },
   { path: '/watchlist', component: Watchlist },
   { path: '/settings', component: AppSettings },
   { path: '/watchlist/settings', component: WatchlistSettings },
@@ -45,6 +49,8 @@ const routes = [
   { path: '/strategy/agents', component: StrategyAgents },
   { path: '/strategy/agents/:id', component: AgentHoldings },
   { path: '/strategy/agents/:id/analysis', component: AgentAnalysis },
+  { path: '/strategy/backtest', component: Backtest },
+  { path: '/strategy/factor-prompt', component: FactorPrompt },
   { path: '/ticai', component: Ticai },
   { path: '/ticai/history', component: TicaiHistory },
   { path: '/ticai/performance', component: TicaiPerformance },

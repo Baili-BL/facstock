@@ -354,7 +354,7 @@ def save_sector_result(scan_id: int, sector_name: str, sector_change: float, sto
         cursor.execute('''
             INSERT INTO scan_results (scan_id, sector_name, sector_change, stocks_json)
             VALUES (%s, %s, %s, %s)
-        ''', (scan_id, sector_name, sector_change, _safe_json_dumps(stocks, ensure_ascii=False)))
+        ''', (scan_id, sector_name, sector_change, _safe_json_dumps(stocks)))
         return True
 
 
@@ -760,7 +760,7 @@ def save_sector_stocks_cache(sector_name: str, stocks: List[Dict]) -> bool:
             cursor.execute('''
                 REPLACE INTO sector_stocks_cache (sector_name, cache_date, stocks_json)
                 VALUES (%s, %s, %s)
-            ''', (sector_name, today, _safe_json_dumps(stocks, ensure_ascii=False)))
+            ''', (sector_name, today, _safe_json_dumps(stocks)))
             return True
     except Exception:
         return False
@@ -821,6 +821,29 @@ def clear_sector_stocks_cache() -> int:
         return cursor.rowcount
 
 
+def clear_all_cache() -> Dict:
+    """清空所有缓存数据，返回清空的数量"""
+    results = {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        # 清空成分股缓存
+        cursor.execute('DELETE FROM sector_stocks_cache')
+        results['sector_stocks'] = cursor.rowcount
+        # 清空K线缓存
+        cursor.execute('DELETE FROM kline_cache')
+        results['kline'] = cursor.rowcount
+        # 清空K线原始缓存
+        cursor.execute('DELETE FROM kline_raw_cache')
+        results['kline_raw'] = cursor.rowcount
+        # 清空行业板块缓存（如果有的话）
+        try:
+            cursor.execute('DELETE FROM industry_board_cache')
+            results['industry_board'] = cursor.rowcount
+        except:
+            results['industry_board'] = 0
+    return results
+
+
 # ==================== K线缓存相关函数 ====================
 
 def save_kline_cache(stock_code: str, data: Dict) -> bool:
@@ -837,7 +860,7 @@ def save_kline_cache(stock_code: str, data: Dict) -> bool:
             cursor.execute('''
                 REPLACE INTO kline_cache (stock_code, cache_date, data_json)
                 VALUES (%s, %s, %s)
-            ''', (stock_code, today, _safe_json_dumps(data, ensure_ascii=False)))
+            ''', (stock_code, today, _safe_json_dumps(data)))
             return True
     except Exception:
         return False
@@ -858,7 +881,7 @@ def save_kline_cache_batch(kline_data_list: List[tuple]) -> int:
                 cursor.execute('''
                     REPLACE INTO kline_cache (stock_code, cache_date, data_json)
                     VALUES (%s, %s, %s)
-                ''', (stock_code, today, _safe_json_dumps(data, ensure_ascii=False)))
+                ''', (stock_code, today, _safe_json_dumps(data)))
                 saved += 1
             except:
                 continue
@@ -1701,8 +1724,8 @@ def save_agent_analysis_history(
             agent_id,
             report_date,
             scan_id,
-            __safe_json_dumps(holdings_snapshot, ensure_ascii=False),
-            __safe_json_dumps(analysis_result, ensure_ascii=False),
+            _s(holdings_snapshot),
+            _s(analysis_result),
             raw_response,
             stance,
             confidence,

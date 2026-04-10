@@ -6,7 +6,9 @@
         <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
       </button>
       <div class="aa-header__brand">
-        <img :src="agentAvatar" :alt="agentName" class="aa-header__avatar" loading="lazy" />
+        <div class="aa-header__avatar aa-header__avatar--text" :aria-label="agentName">
+          {{ agentInitial }}
+        </div>
         <div>
           <h1 class="aa-header__title">{{ agentName }}</h1>
           <span class="aa-header__sub">{{ roleSubtitle }}</span>
@@ -35,8 +37,7 @@
     >
       <span class="aa-demo-banner__ico" aria-hidden="true">ⓘ</span>
       <div class="aa-demo-banner__text">
-        <strong>当前为演示数据</strong>（后端接口未成功返回）。真实分析通常需数十秒，且依赖后端与
-        <code>HUNYUAN_API_KEY</code>。请打开浏览器控制台查看报错，或确认 Flask 已在 5002 端口运行。
+        <strong>当前为演示数据</strong>（后端 AI 分析失败，已自动切换到离线演示模式）。如需真实分析，请确认后端 Flask (5002) 已启动且 <code>DASHSCOPE_API_KEY</code>（通义千问）已配置。刷新页面后重试。
       </div>
     </div>
 
@@ -143,29 +144,47 @@
           <div class="aa-recs__list">
             <div
               v-for="(s, i) in recommendedStocks"
-              :key="i"
+              :key="i + '-' + (s.routeCode || s.code)"
               class="aa-rec-item"
             >
-              <div class="aa-rec-item__left">
-                <span class="aa-rec-item__rank">{{ i + 1 }}</span>
-                <div>
-                  <p class="aa-rec-item__name">{{ s.name }}</p>
-                  <p class="aa-rec-item__code">{{ s.code }}</p>
-                </div>
-              </div>
-              <div class="aa-rec-item__right">
-                <span
-                  class="aa-rec-item__role"
-                  :class="'role-' + roleColor(s.role)"
-                >{{ s.role }}</span>
-                <p class="aa-rec-item__reason">{{ s.reason }}</p>
-              </div>
-              <span
-                class="aa-rec-item__chg"
-                :class="s.chg_pct >= 0 ? 'up' : 'down'"
+              <div
+                class="aa-rec-item__main"
+                role="button"
+                tabindex="0"
+                @click="goStockDetail(s)"
+                @keydown.enter.prevent="goStockDetail(s)"
+                @keydown.space.prevent="goStockDetail(s)"
               >
-                {{ s.chg_pct >= 0 ? '+' : '' }}{{ s.chg_pct }}%
-              </span>
+                <div class="aa-rec-item__left">
+                  <span class="aa-rec-item__rank">{{ i + 1 }}</span>
+                  <div>
+                    <p class="aa-rec-item__name">{{ s.name }}</p>
+                    <p class="aa-rec-item__code">{{ s.displayCode }}</p>
+                  </div>
+                </div>
+                <div class="aa-rec-item__right">
+                  <span
+                    class="aa-rec-item__role"
+                    :class="'role-' + roleColor(s.role)"
+                  >{{ s.role }}</span>
+                  <p class="aa-rec-item__reason">{{ s.reason }}</p>
+                </div>
+                <span
+                  class="aa-rec-item__chg"
+                  :class="s.chg_pct >= 0 ? 'up' : 'down'"
+                >
+                  {{ s.chg_pct >= 0 ? '+' : '' }}{{ s.chg_pct }}%
+                </span>
+              </div>
+              <button
+                type="button"
+                class="aa-rec-item__fav"
+                :disabled="favBusy[s.routeCode]"
+                :class="{ 'aa-rec-item__fav--on': favAdded[s.routeCode] }"
+                @click.stop="favoriteStock(s)"
+              >
+                {{ favAdded[s.routeCode] ? '已自选' : '收藏' }}
+              </button>
             </div>
           </div>
         </section>
@@ -235,11 +254,8 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  demoAnalyzeAgent,
-  analyzeWithAgent,
-  batchAnalyzeAgents,
-} from '@/api/agents.js'
+import { demoAnalyzeAgent, analyzeWithAgent } from '@/api/agents.js'
+import { watchlist } from '@/api/strategy.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -247,7 +263,14 @@ const router = useRouter()
 const agentId = computed(() => route.params.id || 'jun')
 const agentName = computed(() => _nameMap[agentId.value] || agentId.value)
 const roleSubtitle = computed(() => _roleMap[agentId.value] || '')
-const agentAvatar = computed(() => _avatarMap[agentId.value] || '')
+/** 不依赖外链图床，用昵称首字做头像 */
+const agentInitial = computed(() => {
+  const n = (result.value?.name_brand || result.value?.agent_name || agentName.value || '').trim()
+  for (const ch of n) {
+    if (ch && !/\s/.test(ch)) return ch
+  }
+  return '?'
+})
 
 const _nameMap = {
   jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
@@ -259,16 +282,6 @@ const _roleMap = {
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
   deepseek: '深度推理',
 }
-const _avatarMap = {
-  jun: 'https://lh3.googleusercontent.com/aida-public/AB6AXuD97zD2NIGTCO_1tiXq1wsbA98aL5lltkwfWvGuW5ykcn7zacGqWOfQaC0Cgqq8Y70ssQbZDu4WTh34HYBodcl31NA-stzpx7g9dxTWCMuzM7s7gcIOeZVI8i8nHPZnB0F4J3ToG2bh9x5rvE7Qe3qAnETQRHznWRcVuYltPv923yduEQvww9hwsCd_YcKQjJrZK_VVNT5V0-w_9fQ5GDMZ9eGfWPxUPX4PFFDFtZaCN0EpwpuQSgMG_xOxIR3Btmz_rneBA88VIGp0',
-  qiao: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAkvzyqjBc8b9-yrIA6kgiCLQcivIp4wH7WIrTQUKwzMfdOzv2XtxUV1wNrNrhfqeTLIsfBuwrA3EAr241oN4kTt-lHWYMl71AITtxC7_wt8A4nW5MoITPdKsNLCU-voyo3kk-xnCUKV3_3FlxK00PYxoASCqVuhe9VcRsOmbddONa0gr6gZFUpH1G88RrCpk-PROMttjpPhO7TZ0ni-GVtLFYsVapWVFGzL1FCMkpV35eb1k3IDjJCoTwR7-_RArQ6FiGkkFrFe9QP',
-  jia: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCGHKOsrw9P6UWNPtwRIbhOcdxdNbEN4ox5tJN9WMKrpuIDRMSGn8J3pzyTvreLu-7teIzU07GZxcA73Tcn15zCifb-gTMNKucYIvJRRtfnD8_yb5Lkp135iwwUdn2cR7vLp37g7uccbUfYOzGdXVQo5_HBrYIZiv5TgKFSeJ8t5-j0uQAu7VZkOuNLsDBQv8zcpObbrHC3y2ydOpBCzine4Ex3E-LQvcjIDCbWGcOWcetrGAmcOSofOp6KqiV9C8SjYZZV4crcvnKb',
-  speed: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBI1vgeMlusdYkzuj2NE-ZGv7Qn0PwPB9a_8WTgd0SGuQgcffIKV3DMdqPmLrjo_tJOUEbWfFAaM7etkCiK-DL0Kapz57lZHDU_E2NrtrhRLiyYhFUv4Wjod5RP80FRuRoaI6Imm8MC3xR_Fk4UVdMODD4y766SLxZpwZ6wfesd3pjueWfMgRetsFTOBrdDiR9sO0SmJ3UVyPu0w3xeOx2YfAI8VEUP5yhV5egxcDv0BQBPOWmUPY1n6ED5gCwKVlSooRXybPuYgEVS',
-  trend: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC7iUecTzgh3H2Vfw_JF5So-Z65G9cEHtjtOH7DEpIkIAvZVHQD6hDEjwcthbiSx752DTPKTOWEo95r0Q7cwv2gz0FSSYH1TddIwzZy58u2sHd2jjQgjqv4Rz16eJOIaRUgO5y0uI_DjjZt935pLPrGECMwP4rGV9rg_9voHG4bA8bi_3seWorRDwsmUj7vNh2_FiyvN963Et2sHDidpmRnG2hntpi1oHnFFbScS5u_oIfAFIvKdj0DG6C7bTHJToK3ya0bUw5Mal3y',
-  quant: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDGooDuo4HpiasBYDo6fvclBIFA-Gh4cz1OC5oVGRLDNxZJjYYx0j2REaQm6JDUHsEoUPFF1_w4cMBqT8qOZnTA6PHhdNfLvwxOrGe-V954yPvS_z1wJsPCEe5FQCb4-3dB2HiQjFwqveRFT0dOijk0eU_XX-RYIzJuzvzF9Y3eI343MalIdAFvOwUJH0NAGG3PxoqVPtKwHoNZRpT4MKFN-TGzRm55gHx_47AYleZV04gHMAVos0Y2tUQazlvkUpk9IyoyupmByD_e',
-  deepseek: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=deepseek&backgroundColor=b6e3f4',
-}
-
 // ── 状态 ────────────────────────────────────────────────────────────────
 const steps = ref([])
 const isRunning = ref(false)
@@ -278,10 +291,16 @@ const logEl = ref(null)
 /** true = 本次结果是前端 demoAnalyzeAgent，非后端真实返回 */
 const isDemoResult = ref(false)
 
+const favBusy = ref({})
+const favAdded = ref({})
+
 // ── 计算属性 ────────────────────────────────────────────────────────────────
 const structured = computed(() => result.value?.structured)
 const confidence = computed(() => structured.value?.confidence ?? 0)
-const recommendedStocks = computed(() => structured.value?.recommendedStocks ?? [])
+const recommendedStocks = computed(() => {
+  const raw = structured.value?.recommendedStocks ?? []
+  return raw.map(normalizeRecRow).filter(Boolean)
+})
 
 const progressPct = computed(() => {
   if (!isRunning.value && !isDone.value) return 0
@@ -378,6 +397,54 @@ function roleColor(role) {
   return 'neutral'
 }
 
+/** 六位数字路由码，供 /stock/:code */
+function stockRouteCode6(code) {
+  const s = String(code || '').trim()
+  const m = s.match(/^(\d{6})/)
+  if (m) return m[1]
+  const digits = s.replace(/\D/g, '')
+  return digits.length >= 6 ? digits.slice(0, 6) : digits
+}
+
+function normalizeRecRow(s) {
+  if (!s || typeof s !== 'object') return null
+  const codeRaw = String(s.code || '').trim()
+  const routeCode = stockRouteCode6(codeRaw)
+  const chgRaw = s.chg_pct ?? s.change_pct ?? s.changePct
+  const chg = Number(chgRaw)
+  const chg_pct = Number.isFinite(chg) ? Math.round(chg * 100) / 100 : 0
+  const role = String(s.role || s.adviseType || s.grade || '关注').trim() || '关注'
+  const reason = String(s.reason || s.signal || s.meta || '').trim()
+  const name = String(s.name || '').trim()
+  const sector = String(s.sector || '').trim()
+  const displayCode = codeRaw || routeCode || '--'
+  return { ...s, name, role, reason, chg_pct, routeCode, displayCode, sector }
+}
+
+function goStockDetail(s) {
+  const c = s.routeCode
+  if (!c || !/^\d{6}$/.test(c)) return
+  router.push({ name: 'StockDetail', params: { code: c } })
+}
+
+async function favoriteStock(s) {
+  const code = s.routeCode
+  if (!code || !/^\d{6}$/.test(code)) return
+  if (favAdded.value[code]) return
+  favBusy.value = { ...favBusy.value, [code]: true }
+  try {
+    await watchlist.add(code, s.name || '', s.sector || '')
+    favAdded.value = { ...favAdded.value, [code]: true }
+  } catch (e) {
+    console.warn('[AgentAnalysis] 加自选失败', e)
+    window.alert?.('加入自选失败，请检查网络或稍后重试')
+  } finally {
+    const next = { ...favBusy.value }
+    delete next[code]
+    favBusy.value = next
+  }
+}
+
 // ── 分析执行 ────────────────────────────────────────────────────────────────
 async function runAnalysis() {
   if (isRunning.value) return
@@ -391,27 +458,57 @@ async function runAnalysis() {
     // 初始化步骤
     addStep(1, _stepMessages[1], 'active')
 
-    // 调用分析（优先后端，失败则降级演示）
     let res
+    let backendErrorHandled = false
     try {
       addStep(2, _stepMessages[2], 'done')
       addStep(3, `正在调用 AI 模型分析「${agentName.value}」...`, 'active')
       res = await analyzeWithAgent(agentId.value)
       isDemoResult.value = false
     } catch (e) {
-      console.warn('[AgentAnalysis] 后端调用失败，降级到演示模式:', e)
-      isDemoResult.value = true
-      // 降级到演示模式（固定文案 + 约 3s 动画，易被误认为真 AI）
-      res = await demoAnalyzeAgent(agentId.value, (stepInfo) => {
-        if (stepInfo.step) addStep(stepInfo.step, stepInfo.message, 'done')
-      })
+      if (e?.name === 'AgentBackendError') {
+        isDemoResult.value = false
+        backendErrorHandled = true
+        const p = e.payload || {}
+        result.value = {
+          agent_id: p.agent_id,
+          agent_name: p.agent_name,
+          name_brand: p.name_brand,
+          role_subtitle: p.role_subtitle,
+          structured: p.structured || {
+            agentId: agentId.value,
+            agentName: p.agent_name || agentName.value,
+            stance: 'neutral',
+            confidence: 0,
+            marketCommentary: String(p.error || e.message || '分析未完成'),
+            positionAdvice: '',
+            riskWarning: '',
+            recommendedStocks: [],
+          },
+          analysis: p.analysis || p.error || e.message || '',
+          tokens_used: p.tokens_used ?? 0,
+        }
+        addStep(3, e.message || '分析失败', 'error')
+        addStep(4, _stepMessages[4], 'done')
+        addStep(5, _stepMessages[5], 'done')
+        addStep(6, '分析结束（服务异常）', 'done')
+        isDone.value = true
+      } else {
+        console.warn('[AgentAnalysis] 后端调用失败，降级到演示模式:', e)
+        isDemoResult.value = true
+        res = await demoAnalyzeAgent(agentId.value, (stepInfo) => {
+          if (stepInfo.step) addStep(stepInfo.step, stepInfo.message, 'done')
+        })
+      }
     }
 
-    addStep(4, '正在解析结构化分析结果...', 'done')
-    addStep(5, '正在生成分析报告...', 'done')
-    result.value = res
-    addStep(6, '分析完成！', 'done')
-    isDone.value = true
+    if (!backendErrorHandled) {
+      addStep(4, '正在解析结构化分析结果...', 'done')
+      addStep(5, '正在生成分析报告...', 'done')
+      result.value = res
+      addStep(6, '分析完成！', 'done')
+      isDone.value = true
+    }
   } catch (err) {
     console.error('[AgentAnalysis] 分析失败:', err)
     addStep(0, `分析失败: ${err.message}`, 'error')
@@ -426,6 +523,8 @@ function resetAnalysis() {
   isDone.value = false
   result.value = null
   isDemoResult.value = false
+  favAdded.value = {}
+  favBusy.value = {}
 }
 
 function goBack() {
@@ -528,9 +627,19 @@ function goBack() {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  object-fit: cover;
   flex-shrink: 0;
   background: var(--low);
+}
+.aa-header__avatar--text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-mid) 100%);
+  letter-spacing: -0.02em;
+  user-select: none;
 }
 
 .aa-header__title {
@@ -867,12 +976,51 @@ function goBack() {
 
 .aa-rec-item {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
+  align-items: stretch;
   background: var(--low);
   border-radius: 12px;
+  overflow: hidden;
+  outline: 1px solid rgba(193, 198, 215, 0.12);
+}
+.aa-rec-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px 14px 14px;
   flex-wrap: wrap;
+  text-align: left;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.aa-rec-item__main:active {
+  background: rgba(74, 71, 210, 0.06);
+}
+.aa-rec-item__fav {
+  flex-shrink: 0;
+  align-self: stretch;
+  min-width: 52px;
+  max-width: 64px;
+  border: none;
+  border-left: 1px solid rgba(193, 198, 215, 0.35);
+  background: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--primary);
+  padding: 0 8px;
+  line-height: 1.2;
+}
+.aa-rec-item__fav:disabled {
+  opacity: 0.45;
+}
+.aa-rec-item__fav--on {
+  color: var(--on-var);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 .aa-rec-item__left {

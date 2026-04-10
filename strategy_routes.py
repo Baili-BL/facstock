@@ -15,7 +15,7 @@ import threading
 import time
 import random
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import pandas as _pd
 from cache import get, set as _cache_set, invalidate
 import logging
@@ -23,6 +23,49 @@ from utils.feishu_notifier import send_feishu_scan_alert, send_feishu_test
 
 logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
+
+# 自定义因子 Prompt 工程 — 与前端 factor_template 对齐
+FACTOR_TEMPLATE_VERSION = '2.4.1'
+FACTOR_CODE_TEMPLATE = """\
+class CustomFactor(BaseAlphaFactor):
+    \"\"\"
+    自定义量化 alpha 因子生成的基类模板。
+    \"\"\"
+    def __init__(self, universe, params):
+        super().__init__(universe)
+        self.params = params
+
+    def compute_factor(self, data):
+        # 在此处插入您的逻辑
+        # DeepSeek 将在下方提供具体实现
+
+        close_prices = data.get('close')
+        volume = data.get('volume')
+
+        # 开始逻辑注入
+
+        # 结束逻辑注入
+        return factor_values
+"""
+FACTOR_MARKER_START = '# 开始逻辑注入'
+FACTOR_MARKER_END = '# 结束逻辑注入'
+
+
+def _merge_factor_injected_code(injected_raw: str) -> str:
+    """将模型返回的注入段合并进因子模板（8 空格缩进）。"""
+    from textwrap import dedent
+
+    body = dedent(injected_raw or '').strip('\n')
+    prefix = '        '
+    if not body:
+        return FACTOR_CODE_TEMPLATE
+    lines = body.splitlines()
+    indented = '\n'.join(prefix + line for line in lines)
+    needle = f"        {FACTOR_MARKER_START}\n\n        {FACTOR_MARKER_END}"
+    replacement = f"        {FACTOR_MARKER_START}\n{indented}\n\n        {FACTOR_MARKER_END}"
+    if needle not in FACTOR_CODE_TEMPLATE:
+        return FACTOR_CODE_TEMPLATE
+    return FACTOR_CODE_TEMPLATE.replace(needle, replacement, 1)
 
 
 def _safe_json_dumps(obj):
@@ -329,17 +372,20 @@ def start_scan():
     top_sectors = data.get('sectors', 5)
     min_days = data.get('min_days', 3)
     period = data.get('period', 20)
-    
+    bb_width_max = data.get('bb_width_max', 20)
+
     top_sectors = max(1, min(30, int(top_sectors)))
     min_days = max(0, min(100, int(min_days)))
     period = max(10, min(365, int(period)))
-    
-    logger.info(f"开始扫描: sectors={top_sectors}, min_days={min_days}, period={period}")
-    
+    bb_width_max = max(5, min(50, int(bb_width_max)))
+
+    logger.info(f"开始扫描: sectors={top_sectors}, min_days={min_days}, period={period}, bb_width_max={bb_width_max}%")
+
     params = {
         'sectors': top_sectors,
         'min_days': min_days,
-        'period': period
+        'period': period,
+        'bb_width_max': bb_width_max,
     }
     scan_id = db.create_scan_record(params)
     invalidate('scan/history')
@@ -357,7 +403,7 @@ def start_scan():
     import sys
     thread = threading.Thread(
         target=run_scan,
-        args=(scan_id, top_sectors, min_days, period)
+        args=(scan_id, top_sectors, min_days, period, bb_width_max)
     )
     thread.daemon = True
     thread.start()
@@ -389,7 +435,22 @@ def fetch_with_rate_limit(func, delay=0.3):
         return func()
 
 
-def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
+def _fetch_kline_worker(code: str, fetch_days: int, period: int):
+    """
+    进程级 K 线抓取 worker（必须在模块顶层，以支持 ProcessPoolExecutor）。
+    每只股票独立进程，天然隔离 mini_racer，避免多线程崩溃。
+    """
+    try:
+        from utils.ths_crawler import get_stock_kline_sina
+        kline_df = get_stock_kline_sina(code, days=min(fetch_days, 800))
+        if kline_df is not None and len(kline_df) >= period + 10:
+            return (code, kline_df)
+        return (code, None)
+    except Exception:
+        return (code, None)
+
+
+def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int, bb_width_max: int = 20):
     """高效扫描任务"""
     global scan_status
     
@@ -403,7 +464,7 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
     
     try:
         start_time = time.time()
-        print(f"🚀 开始扫描: scan_id={scan_id}, sectors={top_sectors}, min_days={min_days}, period={period}")
+        print(f"🚀 开始扫描: scan_id={scan_id}, sectors={top_sectors}, min_days={min_days}, period={period}, bb_width_max={bb_width_max}%")
         
         strategy = BollingerSqueezeStrategy(
             period=period,
@@ -495,33 +556,20 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         scan_status['progress'] = 25
         
         kline_data = {}
-        
+
         if stock_codes:
             print(f"  🌐 需要获取: {len(stock_codes)} 只股票K线")
-            
+
             fetch_days = max(120, int(period) + 40)
 
-            def fetch_kline(code):
-                try:
-                    kline_df = get_stock_kline_sina(code, days=min(fetch_days, 800))
-                    if kline_df is not None and len(kline_df) >= period + 10:
-                        return (code, kline_df)
-                    return (code, None)
-                except:
-                    return (code, None)
-            
             fetched_count = 0
-            
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = []
-                for code in stock_codes:
-                    future = executor.submit(
-                        fetch_with_rate_limit,
-                        lambda c=code: fetch_kline(c),
-                        delay=0.2
-                    )
-                    futures.append(future)
-                
+
+            with ProcessPoolExecutor(max_workers=5) as executor:
+                futures = {
+                    executor.submit(_fetch_kline_worker, code, fetch_days, period): code
+                    for code in stock_codes
+                }
+
                 for future in as_completed(futures):
                     if scan_status.get('cancelled'):
                         break
@@ -533,7 +581,7 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                             progress = 25 + int(fetched_count / len(stock_codes) * 30)
                             scan_status['progress'] = min(55, progress)
                             print(f"  📊 K线进度: {fetched_count}/{len(stock_codes)}")
-            
+
             print(f"  ✅ K线获取完成: {fetched_count}/{len(stock_codes)}")
         
         # 计算指标并筛选
@@ -561,8 +609,10 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                 df = strategy.calculate_composite_score(df)
                 
                 latest = df.iloc[-1]
+                bb_width_pct = float(latest.get('bb_width_pct', 0) or 0)
                 
-                if latest['squeeze_streak'] >= min_days:
+                # 窄幅筛选：bb_width_pct <= bb_width_max
+                if latest['squeeze_streak'] >= min_days and bb_width_pct <= bb_width_max:
                     info = stock_info_map.get(code, {})
                     result = {
                         'code': code,
@@ -666,10 +716,96 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
         
         print(f"📈 分析完成，符合条件: {len(analyzed_results)} 只")
         
+        # 兜底逻辑：如果收口股票太少，按涨跌幅补充
+        min_fallback_count = 10  # 最少需要展示的股票数量
+        if len(analyzed_results) < min_fallback_count and kline_data:
+            print(f"📈 收口股票不足，按涨跌幅补充...")
+            # 按涨跌幅排序所有股票
+            fallback_results = []
+            for code, df in kline_data.items():
+                if df is None or len(df) < period + 10:
+                    continue
+                if any(r['code'] == code for r in analyzed_results):
+                    continue  # 已在收口列表中
+                
+                latest = df.iloc[-1]
+                bb_w = float(latest.get('bb_width_pct', 0) or 0)
+                pct = float(latest.get('pct_change', 0) or 0)
+                
+                # 只取窄幅 ≤ bb_width_max 的
+                if bb_w <= bb_width_max:
+                    info = stock_info_map.get(code, {})
+                    result = {
+                        'code': code,
+                        'name': info.get('name', ''),
+                        'sector_name': info.get('sector_name', ''),
+                        'sector_change': info.get('sector_change', 0),
+                        'is_leader': info.get('is_leader', False),
+                        'leader_rank': info.get('leader_rank', 0),
+                        'market_cap': info.get('market_cap', 0),
+                        'close': round(float(latest['close']), 2),
+                        'pct_change': round(pct, 2),
+                        'turnover': round(float(latest.get('turnover', 0) or 0), 2),
+                        'squeeze_days': 0,
+                        'total_score': 0,
+                        'grade': 'C',
+                        'bb_width_pct': round(float(latest.get('bb_width_pct', 0) or 0), 2),
+                        'ma_bullish': False,
+                        'cross_above_ma5': False,
+                        'macd_golden': False,
+                        'cmf_bullish': False,
+                        'is_volume_up': False,
+                        'is_volume_price_up': False,
+                        'low_volatility': False,
+                        'volume_ratio': 0.0,
+                        'tags': ['窄幅股'],
+                    }
+                    fallback_results.append(result)
+            
+            # 按涨跌幅排序，取前几名
+            fallback_results.sort(key=lambda x: x['pct_change'], reverse=True)
+            needed = min_fallback_count - len(analyzed_results)
+            analyzed_results.extend(fallback_results[:needed])
+            print(f"📈 补充涨幅股 {len(fallback_results[:needed])} 只")
+        
+        # ── 实时行情：统一替换为当日最新涨跌幅 ──────────────────────────────
+        # 板块涨幅来自 THS/EM（实时），个股涨幅来自 K 线（可能落后）
+        # 这里统一用东财实时接口拉当日的涨跌幅，确保板块和个股同时间源
+        all_codes = [r['code'] for r in analyzed_results if r.get('code')]
+        if all_codes:
+            try:
+                secids = [
+                    f"{'1' if c.startswith(('6','9')) else '0'}.{c}"
+                    for c in all_codes
+                ]
+                live_resp = requests.get(
+                    "http://push2.eastmoney.com/api/qt/ulist/get",
+                    params={
+                        "fltt": "2",
+                        "secids": ",".join(secids),
+                        "fields": "f2,f3,f12",
+                    },
+                    timeout=10,
+                )
+                live_map = {}
+                live_items = json.loads(live_resp.text).get('data', {}).get('diff', [])
+                for it in live_items:
+                    live_map[str(it.get('f12', ''))] = it
+                updated = 0
+                for r in analyzed_results:
+                    live = live_map.get(r['code'])
+                    if live:
+                        r['pct_change'] = round(float(live.get('f3') or 0), 2)
+                        r['close'] = round(float(live.get('f2') or r.get('close')), 2)
+                        updated += 1
+                print(f"  📡 实时行情更新: {updated}/{len(all_codes)} 只")
+            except Exception as e:
+                print(f"  [WARN] 实时行情获取失败，沿用K线数据: {e}")
+
         # 保存结果
         scan_status['current_sector'] = '保存结果...'
         scan_status['progress'] = 95
-        
+
         sector_results = {}
         for r in analyzed_results:
             sector = r.get('sector_name', '未知')
@@ -698,7 +834,7 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int):
                 scan_time=scan_time_str,
                 sector_results=sector_results,
                 hot_sectors=hot_sectors_list,
-                params={'top_sectors': top_sectors, 'min_days': min_days, 'period': period},
+                params={'top_sectors': top_sectors, 'min_days': min_days, 'period': period, 'bb_width_max': f'{bb_width_max}%'},
             )
             if ok:
                 print(f"📱 飞书通知推送成功")
@@ -923,7 +1059,7 @@ def scan_ai_summary(scan_id: int):
     结果写入 scan_records.ai_summary_json，GET 默认返回缓存；?refresh=1 强制重新调用模型。
     无缓存且非 refresh 时返回 data: null，由前端「生成 / 再解读」触发 refresh。
     """
-    from agent_prompts import extract_json_from_response, normalize_agent_stock_code
+    from agent_prompts import normalize_agent_stock_code
 
     refresh = request.args.get('refresh', default=0, type=int) == 1
 
@@ -960,12 +1096,11 @@ def scan_ai_summary(scan_id: int):
             return jsonify({'success': True, 'data': cached, 'cached': True})
         return jsonify({'success': True, 'data': None, 'cached': False})
 
-    api_key = os.environ.get('DEEPSEEK_API_KEY', '').strip()
-    if not api_key:
-        logger.warning('scan_ai_summary: DEEPSEEK_API_KEY 未配置')
+    if not get_client().is_configured():
+        logger.warning('scan_ai_summary: LLM 未配置')
         return jsonify({
             'success': False,
-            'error': '未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek 生成小结',
+            'error': 'LLM 服务未配置',
             'data': {'fallback': True},
         }), 503
 
@@ -997,61 +1132,27 @@ def scan_ai_summary(scan_id: int):
     )
 
     try:
-        resp = requests.post(
-            'https://api.deepseek.com/chat/completions',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'model': 'deepseek-chat',
-                'messages': [
-                    {'role': 'system', 'content': system_msg},
-                    {'role': 'user', 'content': user_prompt},
-                ],
-                'temperature': 0.35,
-                'max_tokens': 3800,
-                'stream': False,
-            },
-            timeout=120,
-        )
-        result = resp.json()
-        logger.info("[scan_ai_summary] deepseek raw_response_len=%d keys=%s usage=%s",
-                    len(resp.text), list(result.keys()), result.get('usage', {}))
+        options = CallOptions(temperature=0.35, max_tokens=3800)
+        resp = get_client().call(user_prompt, system=system_msg, options=options)
+        if not resp.success:
+            return jsonify({'success': False, 'error': resp.error or 'LLM 调用失败'}), 500
 
-        if resp.status_code >= 400 or result.get('error'):
-            err = result.get('error') or {}
-            msg = err.get('message', resp.text[:200] if resp.text else 'DeepSeek 请求失败')
-            logger.warning('scan_ai_summary API error: %s', msg)
-            return jsonify({'success': False, 'error': msg}), 502
+        content = resp.content
+        logger.info("[scan_ai_summary] provider=%s model=%s response_len=%d tokens=%d",
+                    resp.provider, resp.model, len(content) if content else 0, resp.tokens_used)
 
-        msg_data = result['choices'][0]['message']
-        reasoning = (msg_data.get('reasoning_content') or '').strip()
-        content = (msg_data.get('content') or '').strip()
-        combined = '\n'.join(x for x in [reasoning, content] if x)
-
-        if reasoning:
-            logger.info("[scan_ai_summary] reasoning_content length=%d preview=%.80s",
-                         len(reasoning), reasoning[:80])
-
-        parsed = extract_json_from_response(combined)
-        if not parsed and reasoning:
-            parsed = extract_json_from_response(reasoning)
-        if not parsed:
-            parsed = extract_json_from_response(content)
-
+        parsed = get_agent_registry().extract_json(content) if content else None
         valid_codes = _scan_valid_stock_codes(detail)
 
         if not parsed:
-            combined_raw = '\n'.join(x for x in [reasoning, content] if x)
             out = {
                 'cot_steps': [
-                    {'title': '思考过程', 'content': reasoning[:4000] if reasoning else content[:4000]}
+                    {'title': '思考过程', 'content': (content or '')[:4000]}
                 ],
                 'recommendations': [],
-                'closing_note': content[:1200] if content else '',
-                'raw_text': combined_raw[:8000],
-                'source': 'deepseek_raw',
+                'closing_note': (content or '')[:1200] if content else '',
+                'raw_text': (content or '')[:8000],
+                'source': f'{resp.provider}_raw',
             }
             db.save_scan_ai_summary(scan_id, out)
             data = db.get_scan_ai_summary(scan_id)
@@ -1088,13 +1189,127 @@ def scan_ai_summary(scan_id: int):
             'recommendations': filtered,
             'closing_note': str(parsed.get('closing_note') or '')[:1200],
             'raw_text': None,
-            'source': 'deepseek',
+            'source': resp.provider,
         }
         db.save_scan_ai_summary(scan_id, out)
         data = db.get_scan_ai_summary(scan_id)
         return jsonify({'success': True, 'data': data, 'cached': False})
     except Exception as e:
         logger.exception('scan_ai_summary failed: %s', e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/strategy/factor/template', methods=['GET'])
+def factor_prompt_template():
+    """返回未注入的 Python 框架源码（与生成结果对齐）。"""
+    return jsonify({
+        'success': True,
+        'data': {
+            'code': FACTOR_CODE_TEMPLATE,
+            'version': FACTOR_TEMPLATE_VERSION,
+        },
+    })
+
+
+@strategy_bp.route('/api/strategy/factor/status', methods=['GET'])
+def factor_prompt_status():
+    """LLM 配置状态（供前端展示）"""
+    client = get_client()
+    return jsonify({
+        'success': True,
+        'connected': client.is_configured(),
+        'model_display': '通义千问3.6-Plus' if client.is_configured() else None,
+        'model_id': client.provider if client.is_configured() else None,
+        'template_version': FACTOR_TEMPLATE_VERSION,
+    })
+
+
+@strategy_bp.route('/api/strategy/factor/generate', methods=['POST'])
+def factor_prompt_generate():
+    """
+    根据自然语言指令调用 LLM，返回合并后的 factor_template.py 文本。
+    非量化因子类请求由模型在 JSON 内标记为 rejected。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        instruction = (data.get('instruction') or data.get('prompt') or '').strip()
+    except Exception:
+        instruction = ''
+
+    if len(instruction) < 4:
+        return jsonify({
+            'success': False,
+            'error': '请输入更具体的因子描述（至少 4 个字符）',
+            'filtered': True,
+        }), 400
+
+    if not get_client().is_configured():
+        return jsonify({
+            'success': False,
+            'error': 'LLM 服务未配置',
+        }), 503
+
+    system_msg = (
+        '你是 A 股量化因子工程助手。你必须只输出一段合法 JSON（不要用 markdown 代码围栏），UTF-8，键为：\n'
+        '  "intent": 字符串，取 "factor_development" 或 "rejected"\n'
+        '  "reject_reason": 当 intent 为 rejected 时必填，中文一句话\n'
+        '  "injected_code": 当 intent 为 factor_development 时必填，为 Python 源码字符串\n'
+        '规则：\n'
+        '- 若用户请求与股票因子、量价 alpha、技术指标（如均线/RSI/成交量衍生）等无关，intent 必须为 rejected。\n'
+        '- injected_code 只写「逻辑注入区」内的代码：可使用已有变量 close_prices、volume（与行情长度对齐，可为 pandas Series 或 numpy 数组）；'
+        '必须赋值 factor_values，形状与 close_prices 对齐（可为 Series、ndarray 或与之一致的标量广播）。\n'
+        '- 如需 import，仅写在 injected_code 内；优先 numpy（np）与 pandas（pd）。\n'
+        '- 不要重复 class 定义或 compute_factor 签名；不要包含「开始/结束逻辑注入」注释行。'
+    )
+
+    user_msg = f'用户因子指令：\n{instruction}'
+
+    try:
+        options = CallOptions(temperature=0.25, max_tokens=4096)
+        resp = get_client().call(user_msg, system=system_msg, options=options)
+        if not resp.success:
+            return jsonify({'success': False, 'error': resp.error or 'LLM 调用失败'}), 500
+
+        content = resp.content
+        parsed = get_agent_registry().extract_json(content) if content else None
+
+        if not isinstance(parsed, dict):
+            return jsonify({
+                'success': False,
+                'error': '模型返回无法解析为 JSON，请换一句描述或稍后重试',
+            }), 502
+
+        intent = str(parsed.get('intent') or '').strip().lower()
+        if intent == 'rejected':
+            reason = str(parsed.get('reject_reason') or '该请求与因子开发无关，已过滤').strip()
+            return jsonify({
+                'success': False,
+                'error': reason,
+                'filtered': True,
+                'intent': 'rejected',
+            }), 422
+
+        injected = str(parsed.get('injected_code') or '').strip()
+        if not injected:
+            return jsonify({
+                'success': False,
+                'error': '模型未返回 injected_code，请重试',
+            }), 502
+
+        merged = _merge_factor_injected_code(injected)
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'code': merged,
+                'template_version': FACTOR_TEMPLATE_VERSION,
+                'intent': 'factor_development',
+                'model': resp.model,
+                'tokens_used': resp.tokens_used,
+            },
+        })
+    except Exception as e:
+        logger.exception('factor_prompt_generate failed: %s', e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -1140,14 +1355,10 @@ def _normalize_stock_ai_parsed(parsed: dict) -> dict:
 @strategy_bp.route('/api/scan/<int:scan_id>/stock-ai-analysis', methods=['POST'])
 def scan_stock_ai_analysis(scan_id: int):
     """
-    DeepSeek：针对扫描内单只标的，结合布林带收缩相关指标与标签做简析（非投资建议）。
+    LLM：针对扫描内单只标的，结合布林带收缩相关指标与标签做简析（非投资建议）。
     不入库缓存，每次请求现算。
     """
-    from agent_prompts import (
-        extract_json_from_response,
-        extract_json_object_from_text,
-        normalize_agent_stock_code,
-    )
+    from agent_prompts import normalize_agent_stock_code
 
     detail = db.get_scan_detail(scan_id)
     if not detail:
@@ -1165,12 +1376,8 @@ def scan_stock_ai_analysis(scan_id: int):
     stock, sector_name, sector_change = found
     norm_code = normalize_agent_stock_code(stock.get('code')) or raw_code
 
-    api_key = os.environ.get('DEEPSEEK_API_KEY', '').strip()
-    if not api_key:
-        return jsonify({
-            'success': False,
-            'error': '未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek',
-        }), 503
+    if not get_client().is_configured():
+        return jsonify({'success': False, 'error': 'LLM 服务未配置'}), 503
 
     tags = stock.get('tags')
     if isinstance(tags, list):
@@ -1216,50 +1423,26 @@ def scan_stock_ai_analysis(scan_id: int):
     )
 
     try:
-        resp = requests.post(
-            'https://api.deepseek.com/chat/completions',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'model': 'deepseek-chat',
-                'messages': [
-                    {'role': 'system', 'content': system_msg},
-                    {'role': 'user', 'content': user_prompt},
-                ],
-                'temperature': 0.2,
-                'max_tokens': 2800,
-                'stream': False,
-            },
-            timeout=90,
-        )
-        result = resp.json()
-        if resp.status_code >= 400 or result.get('error'):
-            err = result.get('error') or {}
-            msg = err.get('message', resp.text[:200] if resp.text else 'DeepSeek 请求失败')
-            logger.warning('scan_stock_ai_analysis API error: %s', msg)
-            return jsonify({'success': False, 'error': msg}), 502
+        options = CallOptions(temperature=0.2, max_tokens=2800)
+        resp = get_client().call(user_prompt, system=system_msg, options=options)
+        if not resp.success:
+            return jsonify({'success': False, 'error': resp.error or 'LLM 调用失败'}), 500
 
-        msg_data = result['choices'][0]['message']
-        reasoning = (msg_data.get('reasoning_content') or '').strip()
-        content = (msg_data.get('content') or '').strip()
-        # 合并 reasoning + content：DeepSeek 常把最终 JSON 放在 content，推理在 reasoning，只取其一会解析失败
-        combined = '\n'.join(x for x in [reasoning, content] if x)
-        parsed = extract_json_from_response(combined)
+        content = resp.content
+        parsed = get_agent_registry().extract_json(content) if content else None
         if not parsed:
-            parsed = extract_json_object_from_text(combined)
+            parsed = get_agent_registry()._extract_json_object_from_text(content) if content else None
         if isinstance(parsed, dict):
             parsed = _normalize_stock_ai_parsed(parsed)
 
         if not parsed:
             out = {
                 'cot_steps': [
-                    {'title': '模型输出', 'content': (combined or '无内容')[:4000]}
+                    {'title': '模型输出', 'content': (content or '无内容')[:4000]}
                 ],
-                'summary': (content or reasoning or '')[:800],
+                'summary': (content or '')[:800],
                 'risk_note': '',
-                'source': 'deepseek_raw',
+                'source': f'{resp.provider}_raw',
             }
             return jsonify({'success': True, 'data': out})
 
@@ -1278,7 +1461,7 @@ def scan_stock_ai_analysis(scan_id: int):
             'cot_steps': cot_clean,
             'summary': str(parsed.get('summary') or '')[:600],
             'risk_note': str(parsed.get('risk_note') or '')[:400],
-            'source': 'deepseek',
+            'source': resp.provider,
         }
         return jsonify({'success': True, 'data': out})
     except Exception as e:
@@ -1335,48 +1518,54 @@ def get_stock_detail(code: str):
     global last_api_request_time
     last_api_request_time = 0
     API_REQUEST_INTERVAL = 1.0
-    
+
+    # 读取并验证 interval 参数
+    interval_arg = request.args.get('interval', 'daily')
+    if interval_arg not in ('daily', 'weekly', 'monthly'):
+        interval_arg = 'daily'
+
     from utils.ths_crawler import get_stock_kline_sina
-    
+
     if not code or not code.isdigit() or len(code) != 6:
         return jsonify({'success': False, 'error': '无效的股票代码'})
-    
+
     try:
+        # 缓存暂不支持 interval 分开存储，共用现有缓存
         cached_data = db.get_kline_cache(code)
         if cached_data and 'vp_obv' in cached_data:
             logger.info(f"[CACHE HIT] 股票 {code} 使用缓存数据")
             return jsonify({'success': True, 'data': cached_data, 'cached': True})
-        
+
         if cached_data and 'vp_obv' not in cached_data:
             logger.info(f"[CACHE STALE] 股票 {code} 缓存缺少量能画像数据，重新获取")
-        
+
         logger.info(f"[CACHE MISS] 股票 {code} 从新浪API获取数据")
-        
+
         current_time = time.time()
         time_since_last = current_time - last_api_request_time
         if time_since_last < API_REQUEST_INTERVAL:
             time.sleep(API_REQUEST_INTERVAL - time_since_last)
-        
+
         last_api_request_time = time.time()
-        
+
         from bollinger_squeeze_strategy import BollingerSqueezeStrategy
-        
-        df = get_stock_kline_sina(code, days=120)
-        
+
+        df = get_stock_kline_sina(code, days=120, interval=interval_arg)
+
         if df is None or df.empty:
             return jsonify({'success': False, 'error': '数据获取失败，请稍后重试'})
-        
+
         strategy = BollingerSqueezeStrategy()
         df = strategy.calculate_bollinger_bands(df)
         df = strategy.calculate_squeeze_signal(df)
         df = strategy.calculate_trend_indicators(df)
         df = strategy.calculate_volume_profile(df)
-        
+
         data = prepare_kline_data(df)
-        
+
         if data is None:
             return jsonify({'success': False, 'error': '数据处理失败'})
-        
+
         db.save_kline_cache(code, data)
         logger.info(f"[CACHE SAVE] 股票 {code} 数据已缓存")
 
@@ -1395,9 +1584,9 @@ def get_stock_detail(code: str):
                 })
             if raw_bars:
                 db.save_kline_raw_cache(code, _pd.DataFrame(raw_bars))
-        
+
         return jsonify({'success': True, 'data': data, 'cached': False})
-        
+
     except Exception as e:
         logger.error(f"获取股票 {code} 详情失败: {e}")
         return jsonify({'success': False, 'error': str(e)})
@@ -1411,6 +1600,16 @@ def get_watchlist():
     try:
         stocks = db.get_watchlist()
         return jsonify({'success': True, 'data': stocks})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@strategy_bp.route('/api/cache/clear', methods=['POST'])
+def clear_all_cache():
+    """清空所有缓存数据"""
+    try:
+        results = db.clear_all_cache()
+        return jsonify({'success': True, 'data': results, 'message': '缓存已清空'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -1698,36 +1897,32 @@ def watchlist_strategy_run():
 
         # 延迟导入：避免启动时失败
         import signal
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ProcessPoolExecutor, as_completed
         from utils.watchlist_talib_strategies import (
             run_multi_strategies_on_watchlist,
             run_strategy_on_watchlist,
         )
 
-        # 拉 K 线（加超时，避免单只卡死）
+        # 拉 K 线（进程隔离，避免 mini_racer 多线程崩溃）
         from utils.ths_crawler import get_stock_kline_sina
         _KLINE_TIMEOUT = 15  # 秒/只
 
         def _one(c: str):
             try:
-                def _fetch():
-                    return get_stock_kline_sina(c, days=120)
-
-                result = _fetch()
-                return c, result
+                return _fetch_kline_worker(c, 120, 20)
             except Exception as ex:
                 logger.warning('watchlist kline %s: %s', c, ex)
                 return c, None
 
         dfs = {}
-        with ThreadPoolExecutor(max_workers=min(6, len(codes))) as pool:
+        with ProcessPoolExecutor(max_workers=min(6, len(codes))) as pool:
             futures = {pool.submit(_one, c): c for c in codes}
             for fut in as_completed(futures):
                 try:
                     c, df = fut.result()
                     dfs[c] = df
                 except Exception as ex:
-                    logger.warning('watchlist thread: %s', ex)
+                    logger.warning('watchlist process: %s', ex)
 
         def fetch_df(code: str):
             return dfs.get(code)
@@ -1813,64 +2008,30 @@ def sync_stocks():
         logger.info("[StockSync] 开始同步股票数据...")
         saved = 0
         try:
-            # 沪市
+            # 沪深京A股列表（不需要参数）
             try:
-                df_sh = _ak.stock_info_a_code_name(market="SH")
-                if df_sh is not None and not df_sh.empty:
+                df_all = _ak.stock_info_a_code_name()
+                if df_all is not None and not df_all.empty:
                     records = []
-                    for _, row in df_sh.iterrows():
+                    for _, row in df_all.iterrows():
                         code = str(row.get('code', '') or row.get('证券代码', '')).strip()
                         name = str(row.get('name', '') or row.get('证券简称', '')).strip()
                         if code and name and len(code) == 6 and code.isdigit():
+                            mtype = 'sh' if code.startswith(('6', '9')) else 'sz' if code.startswith(('0', '3')) else 'bj'
                             records.append({
                                 'code': code,
                                 'name': name,
-                                'market_type': 'sh',
+                                'market_type': mtype,
                             })
                     if records:
-                        saved += db.upsert_stocks_batch(records)
+                        saved = db.upsert_stocks_batch(records)
+                        logger.info(f"[StockSync] 写入 {len(records)} 条股票记录")
             except Exception as e:
-                logger.warning(f"[StockSync] 沪市同步失败: {e}")
+                logger.warning(f"[StockSync] 同步失败: {e}")
+                import traceback
+                traceback.print_exc()
 
-            # 深市
-            try:
-                df_sz = _ak.stock_info_a_code_name(market="SZ")
-                if df_sz is not None and not df_sz.empty:
-                    records = []
-                    for _, row in df_sz.iterrows():
-                        code = str(row.get('code', '') or row.get('证券代码', '')).strip()
-                        name = str(row.get('name', '') or row.get('证券简称', '')).strip()
-                        if code and name and len(code) == 6 and code.isdigit():
-                            records.append({
-                                'code': code,
-                                'name': name,
-                                'market_type': 'sz',
-                            })
-                    if records:
-                        saved += db.upsert_stocks_batch(records)
-            except Exception as e:
-                logger.warning(f"[StockSync] 深市同步失败: {e}")
-
-            # 北交所
-            try:
-                df_bj = _ak.stock_info_a_code_name(market="BJ")
-                if df_bj is not None and not df_bj.empty:
-                    records = []
-                    for _, row in df_bj.iterrows():
-                        code = str(row.get('code', '') or row.get('证券代码', '')).strip()
-                        name = str(row.get('name', '') or row.get('证券简称', '')).strip()
-                        if code and name and len(code) == 6 and code.isdigit():
-                            records.append({
-                                'code': code,
-                                'name': name,
-                                'market_type': 'bj',
-                            })
-                    if records:
-                        saved += db.upsert_stocks_batch(records)
-            except Exception as e:
-                logger.warning(f"[StockSync] 北交所同步失败: {e}")
-
-            # 如果上述接口全部失败，使用备用方案
+            # 如果上述接口失败，使用备用方案
             if saved == 0:
                 try:
                     df_all = _ak.stock_zh_a_spot_em()
@@ -1887,6 +2048,7 @@ def sync_stocks():
                                     records.append({'code': code, 'name': name, 'market_type': mtype})
                             if records:
                                 saved = db.upsert_stocks_batch(records)
+                                logger.info(f"[StockSync] 备用方案写入 {len(records)} 条股票记录")
                 except Exception as e:
                     logger.warning(f"[StockSync] 备用方案（全市场快照）失败: {e}")
 
@@ -2048,400 +2210,21 @@ def _get_quote_sina(code: str) -> Optional[dict]:
         return None
 
 
-# ==================== Agent 分析系统 ====================
-# 腾讯混元 / 智谱 GLM Prompt Engineering + 多智能体聚合分析
+# ══════════════════════════════════════════════════════════════════════════════
+# Agent 分析系统（统一使用 utils.llm 模块）
+# ══════════════════════════════════════════════════════════════════════════════
+# 以下内容已迁移至 utils/llm/ 模块：
+#   - LLM 配置常量（LLM_PROVIDER / DASHSCOPE_API_KEY 等）→ utils.llm.client
+#   - LLM 调用函数（_llm_invoke）→ utils.llm.client.LLMClient
+#   - AgentProfile 数据结构 → utils.llm.agents.AgentRegistry
+#   - Agent 配置字典（AGENT_PROFILES）→ utils.llm.agents.AgentRegistry._agents
+# ══════════════════════════════════════════════════════════════════════════════
 
-import re
+from utils.llm import get_client, get_agent_registry, CallOptions
+
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
-
-# ── LLM 配置 ────────────────────────────────────────────────────────────────
-
-LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'tencent')  # 'tencent' | 'zhipu'
-TENANT_KEY = os.environ.get('TENANT_KEY', '')
-HUNYUAN_API_KEY = os.environ.get('HUNYUAN_API_KEY', '')   # 腾讯混元 API Key
-ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '')
-
-LLM_MODEL_MAP = {
-    'tencent': 'hunyuan-pro',
-    'zhipu': 'glm-4-flash',
-}
-
-
-def _llm_invoke(prompt: str, system: str = '', model: str = '',
-                 temperature: float = 0.7) -> str:
-    """统一调用 LLM 接口（腾讯混元 / 智谱 GLM），超时 60s"""
-    if not model:
-        model = LLM_MODEL_MAP.get(LLM_PROVIDER, 'hunyuan-pro')
-
-    try:
-        if LLM_PROVIDER == 'tencent' and HUNYUAN_API_KEY:
-            import urllib.request, urllib.parse
-            payload = json.dumps({
-                "model": model,
-                "messages": (
-                    [{"role": "system", "content": system}] if system else []
-                ) + [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "max_tokens": 2048,
-            }).encode('utf-8')
-            req = urllib.request.Request(
-                "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {HUNYUAN_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method='POST',
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read())
-                return data['choices'][0]['message']['content'].strip()
-
-        elif LLM_PROVIDER == 'zhipu' and ZHIPU_API_KEY:
-            import urllib.request
-            payload = json.dumps({
-                "model": model,
-                "messages": (
-                    [{"role": "system", "content": system}] if system else []
-                ) + [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "max_tokens": 2048,
-            }).encode('utf-8')
-            req = urllib.request.Request(
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {ZHIPU_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method='POST',
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read())
-                return data['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        logger.warning(f"LLM 调用失败 [{LLM_PROVIDER}]: {e}")
-    return ''
-
-
-# ── Agent Prompt 库 ─────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = """你是一位专业的A股短线交易策略分析师，代号「{agent_name}」，使用{style}风格。
-你拥有丰富的题材炒作、龙头战法、板块轮动实战经验，熟悉游资操盘手法与量化指标。
-请始终以专业、严谨、客观的态度输出分析，禁止提供具体买卖价格建议。
-分析结果仅供研究参考，不构成任何投资建议。"""
-
-
-@dataclass
-class AgentProfile:
-    id: str
-    name: str
-    name_brand: str      # 前端显示简称
-    style: str
-    system_prompt: str
-    user_prompt_tpl: str
-    avatar_url: str
-    role_subtitle: str
-    temperature: float = 0.3   # LLM 随机性，越低越稳定
-
-
-# 各 Agent Prompt 模板（参考钧哥天下无双格式）
-AGENT_PROFILES: Dict[str, AgentProfile] = {
-    'jun': AgentProfile(
-        id='jun',
-        name='钧哥天下无双',
-        name_brand='钧哥',
-        style='龙头战法',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='钧哥天下无双', style='龙头战法（聚焦龙头股、连板股、情绪周期）'),
-        user_prompt_tpl="""你是一位A股短线策略分析师「钧哥天下无双」，擅长龙头战法。
-
-请根据以下今日市场数据，从龙头视角给出你的策略分析：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-两市涨停家数: {limit_up_count} 家
-市场情绪: {sentiment}
-
-【热门题材 TOP5】
-{hot_themes}
-
-【强势股 TOP10】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "jun",
-  "agent_name": "钧哥天下无双",
-  "stance": "bull|bear|neutral",
-  "confidence": 75,
-  "marketCommentary": "市场情绪解读（50字以内）",
-  "positionAdvice": "仓位建议与调仓方向（80字以内）",
-  "riskWarning": "风险提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "龙头|跟风|补涨",
-      "reason": "推荐逻辑（30字以内）",
-      "chg_pct": 5.5
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuD97zD2NIGTCO_1tiXq1wsbA98aL5lltkwfWvGuW5ykcn7zacGqWOfQaC0Cgqq8Y70ssQbZDu4WTh34HYBodcl31NA-stzpx7g9dxTWCMuzM7s7gcIOeZVI8i8nHPZnB0F4J3ToG2bh9x5rvE7Qe3qAnETQRHznWRcVuYltPv923yduEQvww9hwsCd_YcKQjJrZK_VVNT5V0-w_9fQ5GDMZ9eGfWPxUPX4PFFDFtZaCN0EpwpuQSgMG_xOxIR3Btmz_rneBA88VIGp0',
-        role_subtitle='龙头战法',
-        temperature=0.25,
-    ),
-    'qiao': AgentProfile(
-        id='qiao',
-        name='乔帮主',
-        name_brand='乔帮主',
-        style='板块轮动',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='乔帮主', style='板块轮动（聚焦板块节奏、资金流向、产业周期）'),
-        user_prompt_tpl="""你是一位A股策略分析师「乔帮主」，擅长板块轮动分析。
-
-请根据以下今日市场数据，分析板块轮动节奏与配置方向：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-市场情绪: {sentiment}
-板块轮动特征: {sector_rotation}
-
-【热门题材】
-{hot_themes}
-
-【资金流向】
-主力净流入板块: {top_inflow_sectors}
-主力净流出板块: {top_outflow_sectors}
-
-【强势股】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "qiao",
-  "agent_name": "乔帮主",
-  "stance": "bull|bear|neutral",
-  "confidence": 70,
-  "marketCommentary": "板块轮动特征解读（50字以内）",
-  "positionAdvice": "板块配置与仓位建议（80字以内）",
-  "riskWarning": "风格切换风险提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "主线龙头|轮动补涨|防御配置",
-      "reason": "推荐逻辑（30字以内）",
-      "chg_pct": 3.2
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuAkvzyqjBc8b9-yrIA6kgiCLQcivIp4wH7WIrTQUKwzMfdOzv2XtxUV1wNrNrhfqeTLIsfBuwrA3EAr241oN4kTt-lHWYMl71AITtxC7_wt8A4nW5MoITPdKsNLCU-voyo3kk-xnCUKV3_3FlxK00PYxoASCqVuhe9VcRsOmbddONa0gr6gZFUpH1G88RrCpk-PROMttjpPhO7TZ0ni-GVtLFYsVapWVFGzL1FCMkpV35eb1k3IDjJCoTwR7-_RArQ6FiGkkFrFe9QP',
-        role_subtitle='板块轮动',
-        temperature=0.30,
-    ),
-    'jia': AgentProfile(
-        id='jia',
-        name='炒股养家',
-        name_brand='炒股养家',
-        style='低位潜伏',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='炒股养家', style='低位潜伏（聚焦安全边际、估值修复、左侧布局）'),
-        user_prompt_tpl="""你是一位A股价值型交易策略分析师「炒股养家」，擅长低位潜伏与安全边际分析。
-
-请根据以下市场数据，从价值与安全边际角度给出分析：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-市场情绪: {sentiment}
-
-【热门题材】
-{hot_themes}
-
-【估值与基本面线索】
-PE 较低板块: {low_pe_sectors}
-超跌板块: {oversold_sectors}
-
-【强势股】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "jia",
-  "agent_name": "炒股养家",
-  "stance": "bull|bear|neutral",
-  "confidence": 65,
-  "marketCommentary": "市场安全边际评估（50字以内）",
-  "positionAdvice": "低位布局方向与仓位策略（80字以内）",
-  "riskWarning": "左侧布局风险提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "潜伏标的|价值修复|困境反转",
-      "reason": "推荐逻辑（30字以内）",
-      "chg_pct": 1.5
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuCGHKOsrw9P6UWNPtwRIbhOcdxdNbEN4ox5tJN9WMKrpuIDRMSGn8J3pzyTvreLu-7teIzU07GZxcA73Tcn15zCifb-gTMNKucYIvJRRtfnD8_yb5Lkp135iwwUdn2cR7vLp37g7uccbUfYOzGdXVQo5_HBrYIZiv5TgKFSeJ8t5-j0uQAu7VZkOuNLsDBQv8zcpObbrHC3y2ydOpBCzine4Ex3E-LQvcjIDCbWGcOWcetrGAmcOSofOp6KqiV9C8SjYZZV4crcvnKb',
-        role_subtitle='低位潜伏',
-        temperature=0.20,
-    ),
-    'speed': AgentProfile(
-        id='speed',
-        name='极速先锋',
-        name_brand='极速先锋',
-        style='打板专家',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='极速先锋', style='打板专家（聚焦涨停板、情绪高潮点、隔夜溢价）'),
-        user_prompt_tpl="""你是一位A股超短线交易策略分析师「极速先锋」，专注涨停板研究与打板策略。
-
-请根据以下市场数据，分析打板机会与风险：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-两市涨停家数: {limit_up_count} 家
-炸板率: {break_rate}%
-市场情绪: {sentiment}
-
-【热门题材】
-{hot_themes}
-
-【连板股与涨停强势股】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "speed",
-  "agent_name": "极速先锋",
-  "stance": "bull|bear|neutral",
-  "confidence": 60,
-  "marketCommentary": "打板情绪与溢价空间评估（50字以内）",
-  "positionAdvice": "打板方向与仓位控制建议（80字以内）",
-  "riskWarning": "炸板与隔夜风险提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "首板|连板|一字板",
-      "reason": "打板逻辑（30字以内）",
-      "chg_pct": 10.0
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuBI1vgeMlusdYkzuj2NE-ZGv7Qn0PwPB9a_8WTgd0SGuQgcffIKV3DMdqPmLrjo_tJOUEbWfFAaM7etkCiK-DL0Kapz57lZHDU_E2NrtrhRLiyYhFUv4Wjod5RP80FRuRoaI6Imm8MC3xR_Fk4UVdMODD4y766SLxZpwZ6wfesd3pjueWfMgRetsFTOBrdDiR9sO0SmJ3UVyPu0w3xeOx2YfAI8VEUP5yhV5egxcDv0BQBPOWmUPY1n6ED5gCwKVlSooRXybPuYgEVS',
-        role_subtitle='打板专家',
-        temperature=0.35,
-    ),
-    'trend': AgentProfile(
-        id='trend',
-        name='趋势追随者',
-        name_brand='趋势追随者',
-        style='中线波段',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='趋势追随者', style='中线波段（聚焦趋势线、均线系统、趋势破坏信号）'),
-        user_prompt_tpl="""你是一位A股中线波段策略分析师「趋势追随者」，擅长趋势跟踪与均线系统分析。
-
-请根据以下市场数据，分析中期趋势方向与波段机会：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-市场情绪: {sentiment}
-
-【趋势指标】
-均线系统: {ma_system}
-趋势状态: {trend_state}
-
-【热门题材】
-{hot_themes}
-
-【强势股】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "trend",
-  "agent_name": "趋势追随者",
-  "stance": "bull|bear|neutral",
-  "confidence": 72,
-  "marketCommentary": "中期趋势方向判断（50字以内）",
-  "positionAdvice": "波段操作建议与趋势保护（80字以内）",
-  "riskWarning": "趋势破坏与止损提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "趋势股|波段标的|均线支撑",
-      "reason": "趋势逻辑（30字以内）",
-      "chg_pct": 4.8
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuC7iUecTzgh3H2Vfw_JF5So-Z65G9cEHtjtOH7DEpIkIAvZVHQD6hDEjwcthbiSx752DTPKTOWEo95r0Q7cwv2gz0FSSYH1TddIwzZy58u2sHd2jjQgjqv4Rz16eJOIaRUgO5y0uI_DjjZt935pLPrGECMwP4rGV9rg_9voHG4bA8bi_3seWorRDwsmUj7vNh2_FiyvN963Et2sHDidpmRnG2hntpi1oHnFFbScS5u_oIfAFIvKdj0DG6C7bTHJToK3ya0bUw5Mal3y',
-        role_subtitle='中线波段',
-        temperature=0.20,
-    ),
-    'quant': AgentProfile(
-        id='quant',
-        name='量化之翼',
-        name_brand='量化之翼',
-        style='算法回测',
-        system_prompt=SYSTEM_PROMPT.format(agent_name='量化之翼', style='算法回测（聚焦多因子模型、波动率、量化择时）'),
-        user_prompt_tpl="""你是一位量化策略分析师「量化之翼」，擅长多因子模型与量化择时分析。
-
-请根据以下市场数据，给出量化视角的分析：
-
-【大盘概况】
-上证指数涨跌幅: {market_change:+.2f}%
-市场情绪: {sentiment}
-
-【量化指标】
-布林带状态: {bb_state}
-MACD信号: {macd_signal}
-RSI指标: {rsi_value}
-成交量状态: {volume_state}
-
-【热门题材】
-{hot_themes}
-
-【强势股】
-{top_stocks}
-
-请输出JSON格式的分析结果：
-```json
-{{
-  "agent_id": "quant",
-  "agent_name": "量化之翼",
-  "stance": "bull|bear|neutral",
-  "confidence": 68,
-  "marketCommentary": "量化指标综合解读（50字以内）",
-  "positionAdvice": "量化模型仓位建议与因子配置（80字以内）",
-  "riskWarning": "波动率风险与模型局限提示（50字以内）",
-  "recommendedStocks": [
-    {{
-      "name": "股票名称",
-      "code": "000000.SZ",
-      "role": "因子强势|动量标的|低波防御",
-      "reason": "量化逻辑（30字以内）",
-      "chg_pct": 2.1
-    }}
-  ]
-}}
-```""",
-        avatar_url='https://lh3.googleusercontent.com/aida-public/AB6AXuDGooDuo4HpiasBYDo6fvclBIFA-Gh4cz1OC5oVGRLDNxZJjYYx0j2REaQm6JDUHsEoUPFF1_w4cMBqT8qOZnTA6PHhdNfLvwxOrGe-V954yPvS_z1wJsPCEe5FQCb4-3dB2HiQjFwqveRFT0dOijk0eU_XX-RYIzJuzvzF9Y3eI343MalIdAFvOwUJH0NAGG3PxoqVPtKwHoNZRpT4MKFN-TGzRm55gHx_47AYleZV04gHMAVos0Y2tUQazlvkUpk9IyoyupmByD_e',
-        role_subtitle='算法回测',
-        temperature=0.15,
-    ),
-}
 
 
 # ── 市场数据获取 ────────────────────────────────────────────────────────────
@@ -2542,36 +2325,16 @@ def get_market_snapshot() -> Dict[str, Any]:
     }
 
 
-# ── Prompt 渲染 ─────────────────────────────────────────────────────────────
+# ── Prompt 渲染（适配旧模板格式）───────────────────────────────────────────
 
-def render_prompt(profile: AgentProfile, market: Dict[str, Any]) -> str:
+def render_prompt(profile: Dict, market: Dict[str, Any]) -> str:
     """将市场数据填充到 Agent 的 Prompt 模板"""
-    tpl = profile.user_prompt_tpl
+    # profile 是字典，字段名是 user_prompt_template（下划线，不是 tpl）
+    tpl = profile.get('user_prompt_template', '') or profile.get('user_prompt_tpl', '')
     for key, val in market.items():
         placeholder = '{' + key + '}'
         tpl = tpl.replace(placeholder, str(val))
     return tpl
-
-
-# ── JSON 解析 ───────────────────────────────────────────────────────────────
-
-def extract_json(text: str) -> Optional[Dict]:
-    """从 LLM 返回内容中提取 JSON"""
-    # 优先找代码块
-    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except Exception:
-            pass
-    # 兜底：全文找 JSON 对象
-    m = re.search(r'\{[\s\S]*\}', text)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
-    return None
 
 
 # ── 单个 Agent 分析 ─────────────────────────────────────────────────────────
@@ -2586,7 +2349,6 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
             trader = JunGeTrader(use_ai=True)
             scan_result = trader.run_daily_scan(top_sectors=5, enhance=True)
 
-            # JunGeTrader AI 增强结果直接返回
             ai_result = scan_result.get('agentResult')
             if ai_result and ai_result.get('success'):
                 structured = ai_result.get('structured', {})
@@ -2601,7 +2363,6 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
                     'structured': structured,
                     'analysis': ai_result.get('analysis', ''),
                     'tokens_used': ai_result.get('tokens_used', 0),
-                    # JunGeTrader 附加数据
                     '_junGeExtra': {
                         'scanTime': scan_result.get('scanTime'),
                         'elapsedSeconds': scan_result.get('elapsedSeconds'),
@@ -2615,7 +2376,6 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
                     },
                 }
             else:
-                # AI 增强失败，返回纯扫描结果
                 return {
                     'agent_id': 'jun',
                     'agent_name': '钧哥天下无双',
@@ -2656,43 +2416,50 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
                 'error': f'JunGeTrader 执行失败: {e}',
             }
 
-    # ── 其他 Agent：原有逻辑 ────────────────────────────────────────────────
-    profile = AGENT_PROFILES.get(agent_id)
+    # ── 其他 Agent：使用统一 LLM 模块 ────────────────────────────────────
+    registry = get_agent_registry()
+    profile = registry.get(agent_id)
     if not profile:
         return {'agent_id': agent_id, 'success': False, 'error': f'未知 Agent: {agent_id}'}
 
     market = get_market_snapshot()
     prompt = render_prompt(profile, market)
-    raw = _llm_invoke(
-        prompt,
-        system=profile.system_prompt,
-        temperature=profile.temperature,
+
+    # 使用统一 LLM 客户端调用
+    options = CallOptions(
+        temperature=profile.get('temperature', 0.3),
+        max_tokens=3000,
+    )
+    resp = get_client().call(
+        prompt=prompt,
+        system=profile.get('system_prompt', ''),
+        options=options,
     )
 
     result = {
         'agent_id': agent_id,
-        'agent_name': profile.name,
-        'name_brand': profile.name_brand,
-        'role_subtitle': profile.role_subtitle,
-        'avatar_url': profile.avatar_url,
+        'agent_name': profile.get('name', ''),
+        'name_brand': profile.get('name', ''),
+        'role_subtitle': profile.get('role', ''),
+        'avatar_url': '',
         'success': False,
-        'raw_response': raw,
+        'raw_response': resp.content if resp.success else '',
         'structured': None,
         'analysis': '',
-        'tokens_used': 0,
+        'tokens_used': resp.tokens_used,
     }
 
-    if not raw:
-        result['error'] = 'LLM 调用返回空'
+    if not resp.success or not resp.content:
+        result['error'] = resp.error or 'LLM 调用返回空'
         return result
 
-    # 解析结构化数据
-    parsed = extract_json(raw)
+    # 使用统一 AgentRegistry 解析 JSON
+    parsed = registry.extract_json(resp.content)
     if parsed:
         result['success'] = True
         result['structured'] = {
             'agentId': parsed.get('agent_id', agent_id),
-            'agentName': parsed.get('agent_name', profile.name),
+            'agentName': parsed.get('agent_name', profile.get('name', '')),
             'stance': parsed.get('stance', 'neutral'),
             'confidence': int(parsed.get('confidence', 50)),
             'marketCommentary': str(parsed.get('marketCommentary', '')),
@@ -2700,7 +2467,6 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
             'riskWarning': str(parsed.get('riskWarning', '')),
             'recommendedStocks': parsed.get('recommendedStocks', []),
         }
-        # 拼接自然语言分析
         parts = [
             f"【市场解读】{parsed.get('marketCommentary','')}",
             f"【策略建议】{parsed.get('positionAdvice','')}",
@@ -2713,16 +2479,15 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
             parts.append('\n'.join(recs_lines))
         result['analysis'] = '\n'.join(parts)
     else:
-        # 解析失败时将 raw 作为纯文本分析
         result['success'] = True
-        result['analysis'] = raw
+        result['analysis'] = resp.content
         result['structured'] = {
             'agentId': agent_id,
-            'agentName': profile.name,
+            'agentName': profile.get('name', ''),
             'stance': 'neutral',
             'confidence': 50,
-            'marketCommentary': raw[:100],
-            'positionAdvice': raw[100:200],
+            'marketCommentary': resp.content[:100],
+            'positionAdvice': resp.content[100:200],
             'riskWarning': '',
             'recommendedStocks': [],
         }
@@ -2735,27 +2500,22 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
 @strategy_bp.route('/api/agents/prompts')
 def get_agent_prompts():
     """返回所有 Agent 的元信息（前端渲染用）"""
-    data = []
-    for p in AGENT_PROFILES.values():
-        data.append({
-            'id': p.id,
-            'name': p.name,
-            'name_brand': p.name_brand,
-            'style': p.style,
-            'avatar_url': p.avatar_url,
-            'role_subtitle': p.role_subtitle,
-        })
-    return jsonify({'success': True, 'data': data})
+    registry = get_agent_registry()
+    agents = registry.list_agents()
+    return jsonify({'success': True, 'data': agents})
 
 
 @strategy_bp.route('/api/agents/analyze/<agent_id>', methods=['POST'])
 def analyze_single_agent_api(agent_id):
     """单 Agent 分析接口"""
-    if agent_id not in AGENT_PROFILES:
+    registry = get_agent_registry()
+    if not registry.get(agent_id):
         return jsonify({'success': False, 'error': '未知 Agent'}), 404
 
     result = analyze_single_agent(agent_id)
-    return jsonify({'success': True, **result})
+    # 内层 result 含 success: False 时不可与外层 success 合并，否则覆盖为 false 导致前端误判失败、走演示数据
+    agent_success = result.pop('success', True)
+    return jsonify({'success': True, 'agent_success': agent_success, **result})
 
 
 @strategy_bp.route('/api/agents/batch', methods=['POST'])
@@ -2764,10 +2524,11 @@ def batch_analyze_agents():
     批量分析全部 6 个 Agent，并计算共识结果。
     并行调用，超时保护。
     """
-    agent_ids = list(AGENT_PROFILES.keys())
+    registry = get_agent_registry()
+    agent_ids = [a['id'] for a in registry.list_agents()]
 
     # 并行执行所有 Agent
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, as_completed
     results = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(analyze_single_agent, aid): aid for aid in agent_ids}
@@ -2809,12 +2570,15 @@ def batch_analyze_agents():
     for r in results:
         if r.get('success'):
             for s in r.get('structured', {}).get('recommendedStocks', []):
+                chg = s.get('chg_pct')
+                if chg is None:
+                    chg = s.get('changePct') or s.get('change_pct') or 0
                 all_recs.append({
                     'name': s.get('name', ''),
                     'code': s.get('code', ''),
-                    'role': s.get('role', ''),
-                    'reason': s.get('reason', ''),
-                    'chg_pct': float(s.get('chg_pct', 0)),
+                    'role': s.get('role') or s.get('adviseType') or s.get('grade') or '',
+                    'reason': s.get('reason') or s.get('signal') or s.get('meta') or '',
+                    'chg_pct': float(chg or 0),
                     'agent': r.get('agent_name', ''),
                 })
     all_recs.sort(key=lambda x: x['chg_pct'], reverse=True)
@@ -2924,3 +2688,87 @@ try:
     logger.info("JunGeTrader 路由注册成功")
 except ImportError as e:
     logger.warning(f"JunGeTrader 路由注册失败: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 量化回测 API
+# ══════════════════════════════════════════════════════════════════════════════
+
+@strategy_bp.route('/api/backtest/catalog', methods=['GET'])
+def backtest_catalog():
+    """返回内置策略模板列表（含参数定义），前端据此渲染配置表单。"""
+    from utils.backtest_engine import TEMPLATE_CATALOG
+    return jsonify({'success': True, 'data': TEMPLATE_CATALOG})
+
+
+@strategy_bp.route('/api/backtest/run', methods=['POST'])
+def backtest_run():
+    """
+    执行量化回测。
+
+    请求体：
+    {
+        "stock_code": "600519",
+        "template_id": "ma_cross",
+        "params": {"fast_ma": 5, "slow_ma": 20},
+        "start_date": "2025-01-01",   // 可选，默认近 days 天
+        "end_date": "2026-04-01",     // 可选，默认今天
+        "days": 120,                  // 可选，默认 120
+        "initial_cash": 100000.0,    // 可选，默认 10 万
+        "commission_pct": 0.001      // 可选，默认千 1
+    }
+
+    返回：回测结果（含 K 线 + 买卖点 + 权益曲线 + 统计指标）
+    """
+    try:
+        data = request.get_json() or {}
+    except Exception:
+        return jsonify({'success': False, 'error': '请求体必须是 JSON'}), 400
+
+    code = (data.get('stock_code') or '').strip()
+    if not code or len(code) != 6 or not code.isdigit():
+        return jsonify({'success': False, 'error': '无效的 stock_code（需 6 位数字）'}), 400
+
+    template_id = (data.get('template_id') or '').strip()
+    if not template_id:
+        return jsonify({'success': False, 'error': '缺少 template_id'}), 400
+
+    params = data.get('params') or {}
+    days = int(data.get('days', 120))
+    initial_cash = float(data.get('initial_cash', 100000.0))
+    commission_pct = float(data.get('commission_pct', 0.001))
+
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+
+    try:
+        from utils.backtest_engine import execute_backtest, TEMPLATE_CATALOG
+        valid_ids = {t['id'] for t in TEMPLATE_CATALOG}
+        if template_id not in valid_ids:
+            return jsonify({'success': False, 'error': f'未知策略模板: {template_id}'}), 400
+
+        result = execute_backtest(
+            stock_code=code,
+            template_id=template_id,
+            params=params,
+            start_date=start_date,
+            end_date=end_date,
+            days=min(days, 800),       # 上限 800 天（约 3 年）
+            initial_cash=initial_cash,
+            commission_pct=commission_pct,
+        )
+        if not result.get('success'):
+            return jsonify({'success': False, 'error': result.get('error', '回测失败')}), 422
+
+        # 安全序列化（过滤 NaN/Inf）
+        def _safe_json(obj):
+            return json.loads(
+                json.dumps(obj, ensure_ascii=False, default=lambda v: (
+                    None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
+                ))
+            )
+
+        return jsonify({'success': True, 'data': _safe_json(result)})
+    except Exception as e:
+        logger.exception('backtest_run failed')
+        return jsonify({'success': False, 'error': f'回测异常: {e}'}), 500

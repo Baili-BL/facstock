@@ -10,6 +10,9 @@ requests>=2.31.0
 flask>=3.0.0
 flask-cors>=4.0.0
 
+# AI 模型（阿里云百炼 / OpenAI 兼容）
+openai>=1.0.0
+
 # 生产服务器
 gunicorn>=21.0.0
 
@@ -28,8 +31,11 @@ redis>=5.0.0
 # 可选：数据分析增强
 scipy>=1.11.0
 
-# 可选：技术指标（需先安装系统 TA-Lib C 库）；未安装时自选策略自动使用 pandas 近似
+# 可选：技术指标（需先安装系统 TA-Lib C 库）；未安装时自动使用 pandas 近似
 # TA-Lib>=0.4.28
+
+# 可选：量化回测（backtrader）
+backtrader>=1.9.0
 
 # HTML 解析
 beautifulsoup4>=4.12.0

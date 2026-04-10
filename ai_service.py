@@ -1,38 +1,53 @@
 """
-AI 分析服务 - 使用腾讯混元 OpenAI 兼容 API
-"""
-import os
-import json
-import requests
-from datetime import datetime
+AI 分析服务
+============
 
-# 腾讯混元 OpenAI 兼容 API 配置
-HUNYUAN_API_KEY = os.environ.get('HUNYUAN_API_KEY', 'sk-YDYlUOiUi5VzumSjhppTWry9bBfWJFbN7IsCLN0XpD1ysM0Z')
-HUNYUAN_BASE_URL = "https://api.hunyuan.cloud.tencent.com/v1"
+使用统一 LLM 模块（utils.llm）提供 AI 股票分析能力。
+
+核心功能：
+- fetch_market_news(): 获取财联社、东方财富等实时新闻
+- AIAnalysisService: 封装 AI 分析流程（扫描数据 + 新闻 → LLM → 分析报告）
+
+已消除重复代码：
+- API Key / Base URL / Model 配置 → utils.llm.client
+- LLM 调用逻辑                   → utils.llm.client.LLMClient
+"""
+
+import os
+import logging
+from datetime import datetime
+from typing import Optional
+
+from utils.llm import get_client, CallOptions
+
+logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 领域数据获取（保留，非 LLM 逻辑）
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def fetch_market_news(scan_date: str = None):
     """
     获取市场新闻和政策消息
-    
+
     Args:
         scan_date: 扫描日期，格式 YYYY-MM-DD，新闻必须早于或等于此日期
     """
     news_list = []
-    
-    # 解析扫描日期
+
     if scan_date:
         try:
             scan_dt = datetime.strptime(scan_date[:10], '%Y-%m-%d')
-        except:
+        except Exception:
             scan_dt = datetime.now()
     else:
         scan_dt = datetime.now()
-    
+
     try:
         import akshare as ak
-        
-        # 辅助函数：从 DataFrame 行中提取时间
+
         def extract_time(row):
             for col in ['发布时间', '时间', 'time', 'datetime', '日期']:
                 if col in row.index:
@@ -40,8 +55,7 @@ def fetch_market_news(scan_date: str = None):
                     if val is not None and str(val).strip():
                         return str(val).strip()
             return datetime.now().strftime('%m-%d %H:%M')
-        
-        # 辅助函数：从 DataFrame 行中提取内容
+
         def extract_content(row):
             for col in ['内容', '标题', 'content', 'title', '新闻内容']:
                 if col in row.index:
@@ -49,12 +63,11 @@ def fetch_market_news(scan_date: str = None):
                     if val is not None and str(val).strip():
                         return str(val).strip()[:120]
             return ''
-        
-        # 1. 财联社电报 - 最快的财经新闻
+
+        # 财联社电报
         try:
             df = ak.stock_telegraph_cls()
             if df is not None and not df.empty:
-                print(f"[财联社] 列名: {df.columns.tolist()}")
                 for _, row in df.head(8).iterrows():
                     time_str = extract_time(row)
                     title = extract_content(row)
@@ -65,13 +78,12 @@ def fetch_market_news(scan_date: str = None):
                             'source': '财联社'
                         })
         except Exception as e:
-            print(f"获取财联社新闻失败: {e}")
-        
-        # 2. 东方财富全球财经快讯
+            logger.warning(f"获取财联社新闻失败: {e}")
+
+        # 东方财富全球财经快讯
         try:
             df = ak.stock_info_global_em()
             if df is not None and not df.empty:
-                print(f"[东方财富] 列名: {df.columns.tolist()}")
                 for _, row in df.head(8).iterrows():
                     time_str = extract_time(row)
                     title = extract_content(row)
@@ -82,13 +94,12 @@ def fetch_market_news(scan_date: str = None):
                             'source': '东方财富'
                         })
         except Exception as e:
-            print(f"获取东方财富新闻失败: {e}")
-        
-        # 3. 同花顺财经新闻
+            logger.warning(f"获取东方财富新闻失败: {e}")
+
+        # 同花顺财经新闻
         try:
             df = ak.stock_info_global_ths()
             if df is not None and not df.empty:
-                print(f"[同花顺] 列名: {df.columns.tolist()}")
                 for _, row in df.head(5).iterrows():
                     time_str = extract_time(row)
                     title = extract_content(row)
@@ -99,13 +110,12 @@ def fetch_market_news(scan_date: str = None):
                             'source': '同花顺'
                         })
         except Exception as e:
-            print(f"获取同花顺新闻失败: {e}")
-        
-        # 4. 富途资讯
+            logger.warning(f"获取同花顺新闻失败: {e}")
+
+        # 富途资讯
         try:
             df = ak.stock_info_global_futu()
             if df is not None and not df.empty:
-                print(f"[富途] 列名: {df.columns.tolist()}")
                 for _, row in df.head(4).iterrows():
                     time_str = extract_time(row)
                     title = extract_content(row)
@@ -116,25 +126,29 @@ def fetch_market_news(scan_date: str = None):
                             'source': '富途资讯'
                         })
         except Exception as e:
-            print(f"获取富途新闻失败: {e}")
-        
+            logger.warning(f"获取富途新闻失败: {e}")
+
     except ImportError:
-        print("akshare 未安装，跳过新闻获取")
+        logger.warning("akshare 未安装，跳过新闻获取")
     except Exception as e:
-        print(f"获取新闻失败: {e}")
-    
-    # 去重（按标题）
+        logger.warning(f"获取新闻失败: {e}")
+
+    # 去重（按标题前50字符判断）
     seen_titles = set()
     unique_news = []
     for news in news_list:
-        title = news.get('title', '')[:50]  # 用前50字符判断重复
+        title = news.get('title', '')[:50]
         if title not in seen_titles and len(title) > 5:
             seen_titles.add(title)
             unique_news.append(news)
-    
-    return unique_news[:15]  # 最多返回15条
 
-# 钧哥低吸策略 Prompt 模板
+    return unique_news[:15]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 钧哥低吸策略 Prompt（保留领域特色）
+# ══════════════════════════════════════════════════════════════════════════════
+
 JUNGE_STRATEGY_PROMPT = """
 你是一位专业的A股技术分析师。请基于下方提供的扫描数据和市场新闻进行分析。
 
@@ -210,25 +224,36 @@ JUNGE_STRATEGY_PROMPT = """
 """
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# AI 分析服务
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 class AIAnalysisService:
-    """AI 分析服务"""
-    
-    def __init__(self, api_key=None):
-        self.api_key = api_key or HUNYUAN_API_KEY
-        self.base_url = HUNYUAN_BASE_URL
-    
-    def is_configured(self):
+    """AI 股票分析服务 — 基于统一 LLM 模块"""
+
+    def __init__(self):
+        self._client = None
+
+    @property
+    def client(self):
+        """懒加载统一 LLM 客户端"""
+        if self._client is None:
+            self._client = get_client()
+        return self._client
+
+    def is_configured(self) -> bool:
         """检查是否已配置"""
-        return bool(self.api_key)
-    
+        return self.client.is_configured()
+
     def analyze_stocks(self, scan_data: dict, current_time: str) -> dict:
         """
         分析股票数据
-        
+
         Args:
             scan_data: 扫描结果数据
             current_time: 当前时间字符串
-            
+
         Returns:
             分析结果字典
         """
@@ -237,139 +262,90 @@ class AIAnalysisService:
                 'success': False,
                 'error': 'AI 服务未配置'
             }
-        
+
         try:
-            # 格式化扫描数据
             formatted_data = self._format_scan_data(scan_data)
-            
-            # 获取扫描日期
             scan_date = scan_data.get('scan_time', '')[:10] if scan_data.get('scan_time') else None
-            
-            # 获取最新新闻（早于扫描日期）
             news_data = self._format_news_data(scan_date)
-            
-            # 构建 prompt
+
             prompt = JUNGE_STRATEGY_PROMPT.format(
                 current_time=current_time,
                 news_data=news_data,
                 scan_data=formatted_data
             )
-            
-            # 调用 OpenAI 兼容 API
-            headers = {
-                'Authorization': f'Bearer {self.api_key}',
-                'Content-Type': 'application/json'
-            }
-            
-            payload = {
-                'model': 'hunyuan-lite',  # 免费模型
-                'messages': [
-                    {
-                        'role': 'system',
-                        'content': '你是一位严谨的A股技术分析助手。你只能基于用户提供的扫描数据进行分析，绝对不能编造任何数据中没有的股票、价格、涨幅等信息。如果数据不足，请如实说明。'
-                    },
-                    {
-                        'role': 'user',
-                        'content': prompt
-                    }
-                ],
-                'temperature': 0.3,  # 降低温度，减少幻觉
-                'max_tokens': 2000,
-                'stream': False
-            }
-            
-            response = requests.post(
-                f'{self.base_url}/chat/completions',
-                headers=headers,
-                json=payload,
-                timeout=120
+
+            system_prompt = (
+                '你是一位严谨的A股技术分析助手。你只能基于用户提供的扫描数据进行分析，'
+                '绝对不能编造任何数据中没有的股票、价格、涨幅等信息。如果数据不足，请如实说明。'
             )
-            
-            result = response.json()
-            
-            # 检查错误
-            if 'error' in result:
+
+            options = CallOptions(
+                temperature=0.3,
+                max_tokens=2000,
+            )
+
+            resp = self.client.call(prompt, system=system_prompt, options=options)
+
+            if not resp.success:
                 return {
                     'success': False,
-                    'error': f"API 错误: {result['error'].get('message', '未知错误')}"
+                    'error': f'AI 分析失败: {resp.error}'
                 }
-            
-            # 提取回复
-            if 'choices' in result and len(result['choices']) > 0:
-                analysis = result['choices'][0].get('message', {}).get('content', '')
-                usage = result.get('usage', {})
-                
-                return {
-                    'success': True,
-                    'analysis': analysis,
-                    'model': result.get('model', 'hunyuan-lite'),
-                    'tokens_used': usage.get('total_tokens', 0)
-                }
-            
+
             return {
-                'success': False,
-                'error': f'API 返回格式异常: {json.dumps(result, ensure_ascii=False)[:200]}'
+                'success': True,
+                'analysis': resp.content,
+                'model': f"{resp.provider}/{resp.model}",
+                'tokens_used': resp.tokens_used
             }
-            
-        except requests.exceptions.Timeout:
-            return {
-                'success': False,
-                'error': 'AI 分析超时，请稍后重试'
-            }
+
         except Exception as e:
+            logger.error(f"AI 分析异常: {e}")
             return {
                 'success': False,
                 'error': f'AI 分析失败: {str(e)}'
             }
-    
+
     def _format_news_data(self, scan_date: str = None) -> str:
-        """
-        格式化新闻数据
-        
-        Args:
-            scan_date: 扫描日期，新闻必须早于此日期
-        """
+        """格式化新闻数据"""
         news_list = fetch_market_news(scan_date)
-        
+
         if not news_list:
             return "【暂无最新消息】"
-        
+
         lines = [f"以下是 {scan_date or '今日'} 及之前的真实新闻，引用时必须原文复制：\n"]
         for i, news in enumerate(news_list, 1):
             time_str = news.get('time', '')
             title = news.get('title', '')
             source = news.get('source', '')
-            # 格式便于复制：【新闻1】「[时间] 标题」（来源）
             lines.append(f"【新闻{i}】「[{time_str}] {title}」（{source}）")
-        
+
         lines.append("\n★ 引用规则：必须原文复制「」内的内容，包括时间和标题，禁止改写")
-        
+
         return "\n".join(lines)
-    
+
     def _format_scan_data(self, scan_data: dict) -> str:
         """格式化扫描数据为文本"""
         if not scan_data or 'results' not in scan_data:
             return "【无扫描数据】"
-        
+
         results = scan_data.get('results', [])
         if not results:
             return "【无扫描数据】"
-        
-        # 只取评分较高的股票，优先主板
-        main_board_stocks = [s for s in results if s.get('code', '').startswith(('60', '00'))]
-        other_stocks = [s for s in results if not s.get('code', '').startswith(('60', '00'))]
-        
-        # 按评分排序（字段名是 total_score）
-        main_board_stocks = sorted(main_board_stocks, key=lambda x: x.get('total_score', 0), reverse=True)[:15]
-        other_stocks = sorted(other_stocks, key=lambda x: x.get('total_score', 0), reverse=True)[:5]
-        
+
+        main_board = [s for s in results if s.get('code', '').startswith(('60', '00'))]
+        other = [s for s in results if not s.get('code', '').startswith(('60', '00'))]
+
+        main_board = sorted(main_board, key=lambda x: x.get('total_score', 0), reverse=True)[:15]
+        other = sorted(other, key=lambda x: x.get('total_score', 0), reverse=True)[:5]
+
         lines = [f"共扫描到 {len(results)} 只股票，以下为筛选结果：\n"]
-        
-        if main_board_stocks:
+
+        if main_board:
             lines.append("## 主板股票（请从以下股票中选择推荐）")
             lines.append("")
-            
-            for i, stock in enumerate(main_board_stocks, 1):
+
+            for i, stock in enumerate(main_board, 1):
                 code = stock.get('code', '')
                 name = stock.get('name', '')
                 sector = stock.get('sector', '')
@@ -380,36 +356,41 @@ class AIAnalysisService:
                 volume_ratio = stock.get('volume_ratio', 0)
                 cmf = stock.get('cmf', 0)
                 rsv = stock.get('rsv', 0)
-                
-                # 使用更清晰的格式，方便AI复制
+
                 lines.append(f"【股票{i}】{name}（{code}）- {score}分（{grade}级）")
                 lines.append(f"  板块：{sector}")
-                lines.append(f"  技术数据：收缩率={squeeze_ratio:.1f}% | 带宽={bb_width_pct:.2f}% | 量比={volume_ratio:.2f} | CMF={cmf:.3f} | RSV={rsv:.1f}")
+                lines.append(
+                    f"  技术数据：收缩率={squeeze_ratio:.1f}% | 带宽={bb_width_pct:.2f}% "
+                    f"| 量比={volume_ratio:.2f} | CMF={cmf:.3f} | RSV={rsv:.1f}"
+                )
                 lines.append("")
-            
+
             lines.append("")
-        
-        if other_stocks:
+
+        if other:
             lines.append("## 创业板/科创板（仅供参考）")
-            for i, stock in enumerate(other_stocks, 1):
+            for i, stock in enumerate(other, 1):
                 code = stock.get('code', '')
                 name = stock.get('name', '')
-                score = stock.get('total_score', 0)  # 使用 total_score
+                score = stock.get('total_score', 0)
                 lines.append(f"- {name}（{code}）评分{score}分")
             lines.append("")
-        
+
         lines.append("【注意：请仅从上述主板股票中选择推荐】")
-        
+
         return "\n".join(lines)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
 # 单例实例
-ai_service = AIAnalysisService()
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ai_service_instance: Optional[AIAnalysisService] = None
 
 
-def get_ai_service(api_key=None):
-    """获取 AI 服务实例"""
-    global ai_service
-    if api_key:
-        ai_service = AIAnalysisService(api_key)
-    return ai_service
+def get_ai_service() -> AIAnalysisService:
+    """获取 AI 分析服务单例"""
+    global _ai_service_instance
+    if _ai_service_instance is None:
+        _ai_service_instance = AIAnalysisService()
+    return _ai_service_instance
