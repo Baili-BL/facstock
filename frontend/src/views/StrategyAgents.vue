@@ -295,17 +295,31 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { STRATEGY_AGENTS } from '@/data/strategyAgents.js'
 
 const router = useRouter()
 
-/** 演示数据：与产品设计稿一致，后续可接 API */
 const tab = ref('active')
 const calendarHint = ref(false)
 
 const consensusPct = ref(89)
+
+// 从后端拉取各 Agent 真实胜率/收益率，覆盖静态数据
+const agentPerf = ref({})
+
+async function fetchAgentPerformance() {
+  const ids = STRATEGY_AGENTS.map(a => a.id)
+  await Promise.allSettled(ids.map(async (id) => {
+    try {
+      const res = await fetch(`/api/agents/${id}/performance`).then(r => r.json())
+      if (res.success && res.data) agentPerf.value[id] = res.data
+    } catch {}
+  }))
+}
+
+onMounted(fetchAgentPerformance)
 
 /** 历史总结页 — 绩效区 */
 const perfWinRate = ref('84.2')
@@ -382,7 +396,19 @@ const heroAvatars = [
 
 const agents = STRATEGY_AGENTS
 
-const visibleAgents = computed(() => agents.filter((a) => a.status !== 'offline'))
+const visibleAgents = computed(() =>
+  agents
+    .filter((a) => a.status !== 'offline')
+    .map((a) => {
+      const perf = agentPerf.value[a.id]
+      if (!perf) return a
+      return {
+        ...a,
+        winRate: perf.analysisCount > 0 ? perf.winRate : a.winRate,
+        returnPct: perf.analysisCount > 0 ? perf.returnPct : a.returnPct,
+      }
+    })
+)
 
 const insightHtml =
   '当前市场情绪处于<span class="agents-insight__quote">「极度亢奋」</span>阶段，建议重点关注 <strong>钧哥天下无双</strong> 的龙头标的选择，并在高位配合 <strong>量化之翼</strong> 的回撤预警。'

@@ -189,6 +189,19 @@
           </div>
         </section>
 
+        <!-- AI 思考过程 -->
+        <section v-if="isDone && thinkingParagraphs.length > 0" class="aa-thinking-card">
+          <div class="aa-thinking-card__head">
+            <svg class="icon" aria-hidden="true"><use href="#icon-ai" /></svg>
+            <h2 class="aa-thinking-card__title">AI 思考过程</h2>
+          </div>
+          <div class="aa-thinking-card__body">
+            <template v-for="(para, i) in thinkingParagraphs" :key="i">
+              <p v-if="para" class="aa-thinking-para">{{ para }}</p>
+            </template>
+          </div>
+        </section>
+
         <!-- 完整分析文本 -->
         <section class="aa-analysis-card">
           <div class="aa-analysis-card__head">
@@ -275,12 +288,12 @@ const agentInitial = computed(() => {
 const _nameMap = {
   jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
   speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
-  deepseek: '深度思考者',
+  deepseek: '深度思考者', beijing: '北京炒家',
 }
 const _roleMap = {
   jun: '龙头战法', qiao: '板块轮动', jia: '低位潜伏',
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
-  deepseek: '深度推理',
+  deepseek: '深度推理', beijing: '游资打板',
 }
 // ── 状态 ────────────────────────────────────────────────────────────────
 const steps = ref([])
@@ -336,6 +349,11 @@ const analysisParagraphs = computed(() => {
   return text.split('\n').filter(l => l.trim())
 })
 
+const thinkingParagraphs = computed(() => {
+  const text = result.value?.thinking || ''
+  return text.split('\n').filter(l => l.trim())
+})
+
 const systemPromptPreview = computed(() => {
   return `你是一位专业的A股短线交易策略分析师，代号「${agentName.value}」，使用${roleSubtitle.value}风格。
 你拥有丰富的题材炒作、龙头战法、板块轮动实战经验，熟悉游资操盘手法与量化指标。
@@ -351,6 +369,7 @@ const userPromptPreview = computed(() => {
     'trend': '请根据以下市场数据，分析中期趋势方向与波段机会...',
     'quant': '请根据以下市场数据，给出量化视角的分析...',
     'deepseek': '请从宏观+行业+个股三维深度推理，结合扫描数据给出分析...',
+    'beijing': '请根据三有量化标准和六大板型，识别今日最强涨停板机会...',
   }
   return m[agentId.value] || '正在加载 Prompt...'
 })
@@ -1137,6 +1156,42 @@ function goBack() {
   font-weight: 700;
   color: var(--primary);
   margin-top: 4px;
+}
+
+/* AI 思考过程卡片 */
+.aa-thinking-card {
+  background: var(--surface-1);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  padding: 20px;
+  margin-top: 16px;
+}
+.aa-thinking-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.aa-thinking-card__head .icon { fill: currentColor; color: #7c3aed; }
+.aa-thinking-card__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #7c3aed;
+  margin: 0;
+}
+.aa-thinking-card__body {
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  background: rgba(124, 58, 237, 0.04);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+.aa-thinking-para {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--on-var);
 }
 
 /* Actions */

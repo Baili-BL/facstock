@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # 配置常量（统一入口，禁止在其他文件中重复定义）
 # ══════════════════════════════════════════════════════════════════════════════
 
-# 当前选中的 Provider：'dashscope'（阿里云百炼）或 'zhipu'（智谱 GLM）
-LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'dashscope')
+# 当前选中的 Provider：'dashscope'（阿里云百炼）或 'zhipu'（智谱 GLM）或 'deepseek'
+LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'deepseek')
 
 # ── 阿里云百炼 ────────────────────────────────────────────────────────────────
 
@@ -47,12 +47,22 @@ DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DASHSCOPE_MODEL = os.environ.get('DASHSCOPE_MODEL', 'qwen3.6-plus')
 DASHSCOPE_TIMEOUT = int(os.environ.get('DASHSCOPE_TIMEOUT', '120'))
 
+# ── DeepSeek ─────────────────────────────────────────────────────────────────
+
+DEEPSEEK_API_KEY = os.environ.get(
+    'DEEPSEEK_API_KEY',
+    'sk-bac2a0f93a7744858239db7e69979729'
+)
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+DEEPSEEK_TIMEOUT = int(os.environ.get('DEEPSEEK_TIMEOUT', '300'))
+
 # ── 智谱 GLM ─────────────────────────────────────────────────────────────────
 
 ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '')
 ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_MODEL = os.environ.get('ZHIPU_MODEL', 'glm-4-flash')
-ZHIPU_TIMEOUT = int(os.environ.get('ZHIPU_TIMEOUT', '60'))
+ZHIPU_TIMEOUT = int(os.environ.get('ZHIPU_TIMEOUT', '120'))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 数据结构
@@ -68,6 +78,7 @@ class LLMResponse:
     provider: str = ""        # Provider 名称
     success: bool = True      # 是否成功
     error: str = ""           # 错误信息（如有）
+    reasoning_content: str = ""  # 思考过程（DeepSeek reasoning 模式）
 
 
 @dataclass
@@ -98,6 +109,7 @@ class LLMClient:
     def __init__(self, provider: str = None):
         self.provider = provider or LLM_PROVIDER
         self._dashscope_client = None
+        self._deepseek_client = None
         self._stats = {"calls": 0, "total_tokens": 0}
 
     # ── 公开接口 ─────────────────────────────────────────────────────────────
@@ -123,6 +135,8 @@ class LLMClient:
 
         if self.provider == 'zhipu':
             return self._call_zhipu(prompt, system, opts)
+        elif self.provider == 'deepseek':
+            return self._call_deepseek(prompt, system, opts)
         else:
             return self._call_dashscope(prompt, system, opts)
 
@@ -145,6 +159,8 @@ class LLMClient:
 
         if self.provider == 'zhipu':
             return self._call_zhipu_messages(messages, opts)
+        elif self.provider == 'deepseek':
+            return self._call_deepseek_messages(messages, opts)
         else:
             return self._call_dashscope_messages(messages, opts)
 
@@ -152,6 +168,8 @@ class LLMClient:
         """检查是否已配置有效的 API Key"""
         if self.provider == 'zhipu':
             return bool(ZHIPU_API_KEY)
+        elif self.provider == 'deepseek':
+            return bool(DEEPSEEK_API_KEY)
         return bool(DASHSCOPE_API_KEY)
 
     def stats(self) -> Dict[str, Any]:
@@ -163,10 +181,21 @@ class LLMClient:
     def _get_dashscope_client(self):
         """懒加载 DashScope OpenAI 客户端"""
         if self._dashscope_client is None:
+            import os
             from openai import OpenAI
+            # 清除代理环境变量
+            for k in list(os.environ.keys()):
+                if 'proxy' in k.lower():
+                    del os.environ[k]
+            try:
+                import httpx
+                http_client = httpx.Client(trust_env=False, timeout=120.0)
+            except Exception:
+                http_client = None
             self._dashscope_client = OpenAI(
                 api_key=DASHSCOPE_API_KEY,
                 base_url=DASHSCOPE_BASE_URL,
+                http_client=http_client,
             )
         return self._dashscope_client
 
@@ -176,27 +205,50 @@ class LLMClient:
         system: str,
         options: CallOptions,
     ) -> LLMResponse:
-        """调用阿里云百炼（responses.create 方式）"""
+        """调用阿里云百炼（requests 方式，避免代理问题）"""
+        import os
+        import json
+        import requests
+
         model = options.model or DASHSCOPE_MODEL
 
-        try:
-            client = self._get_dashscope_client()
+        # 清除代理
+        for k in list(os.environ.keys()):
+            if 'proxy' in k.lower():
+                del os.environ[k]
 
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": options.temperature,
+            "max_tokens": options.max_tokens,
+        }
+
+        try:
             logger.info(
                 "[LLM] provider=dashscope model=%s temperature=%s prompt_len=%d",
                 model, options.temperature, len(prompt)
             )
 
-            response = client.responses.create(
-                model=model,
-                instructions=system or '',
-                input=prompt,
-                temperature=options.temperature,
-                max_output_tokens=options.max_tokens,
+            resp = requests.post(
+                f"{DASHSCOPE_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=120,
             )
+            resp.raise_for_status()
+            data = resp.json()
 
-            content = response.output_text or ''
-            tokens = response.usage.total_tokens if response.usage else 0
+            content = data['choices'][0]['message']['content']
+            tokens = data.get('usage', {}).get('total_tokens', 0)
 
             self._stats['calls'] += 1
             self._stats['total_tokens'] += tokens
@@ -381,6 +433,141 @@ class LLMClient:
                 error=str(e),
             )
 
+    # ── DeepSeek ─────────────────────────────────────────────────────────────────
+
+    def _get_deepseek_client(self):
+        """懒加载 DeepSeek OpenAI 客户端"""
+        if self._deepseek_client is None:
+            import os
+            from openai import OpenAI
+            for k in list(os.environ.keys()):
+                if 'proxy' in k.lower():
+                    del os.environ[k]
+            try:
+                import httpx
+                http_client = httpx.Client(trust_env=False, timeout=300.0)
+            except Exception:
+                http_client = None
+            self._deepseek_client = OpenAI(
+                api_key=DEEPSEEK_API_KEY,
+                base_url=DEEPSEEK_BASE_URL,
+                http_client=http_client,
+            )
+        return self._deepseek_client
+
+    def _call_deepseek(
+        self,
+        prompt: str,
+        system: str,
+        options: CallOptions,
+    ) -> LLMResponse:
+        """调用 DeepSeek（chat.completions + 思考模式）"""
+        model = options.model or DEEPSEEK_MODEL
+
+        try:
+            client = self._get_deepseek_client()
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=options.temperature,
+                max_tokens=options.max_tokens,
+                extra_body={"thinking": {"type": "enabled"}},
+            )
+
+            choice = resp.choices[0]
+            content = choice.message.content or ''
+            reasoning_content = choice.message.reasoning_content or ''
+            tokens = resp.usage.total_tokens if resp.usage else 0
+
+            self._stats['calls'] += 1
+            self._stats['total_tokens'] += tokens
+
+            logger.info(
+                "[LLM] provider=deepseek model=%s content_len=%d reasoning_len=%d tokens=%d",
+                model, len(content), len(reasoning_content), tokens
+            )
+
+            # content 包含 reasoning_content + 最终答案，分离处理
+            # reasoning_content 单独存储，content 只保留最终答案
+            return LLMResponse(
+                content=content,
+                tokens_used=tokens,
+                model=model,
+                provider='deepseek',
+                success=True,
+                reasoning_content=reasoning_content,
+            )
+
+        except Exception as e:
+            logger.error("[LLM] provider=deepseek error=%s", e)
+            return LLMResponse(
+                content='',
+                tokens_used=0,
+                model=model,
+                provider='deepseek',
+                success=False,
+                error=str(e),
+            )
+
+    def _call_deepseek_messages(
+        self,
+        messages: List[Dict[str, str]],
+        options: CallOptions,
+    ) -> LLMResponse:
+        """通过 messages 调用 DeepSeek（chat.completions + 思考模式）"""
+        model = options.model or DEEPSEEK_MODEL
+
+        try:
+            client = self._get_deepseek_client()
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=options.temperature,
+                max_tokens=options.max_tokens,
+                extra_body={
+                    "thinking": {"type": "enabled"},
+                    "enable_search": True,
+                },
+            )
+
+            choice = resp.choices[0]
+            content = choice.message.content or ''
+            reasoning_content = choice.message.reasoning_content or ''
+            tokens = resp.usage.total_tokens if resp.usage else 0
+
+            self._stats['calls'] += 1
+            self._stats['total_tokens'] += tokens
+
+            logger.info(
+                "[LLM] provider=deepseek messages model=%s content_len=%d reasoning_len=%d tokens=%d",
+                model, len(content), len(reasoning_content), tokens
+            )
+
+            return LLMResponse(
+                content=content,
+                tokens_used=tokens,
+                model=model,
+                provider='deepseek',
+                success=True,
+                reasoning_content=reasoning_content,
+            )
+
+        except Exception as e:
+            logger.error("[LLM] provider=deepseek messages error=%s", e)
+            return LLMResponse(
+                content='',
+                tokens_used=0,
+                model=model,
+                provider='deepseek',
+                success=False,
+                error=str(e),
+            )
+
     # ── Agent 场景封装 ─────────────────────────────────────────────────────
 
     def call_agent(
@@ -438,8 +625,9 @@ class LLMClient:
             extra_context=extra_context,
         )
 
-        # 调用 LLM
+        # 调用 LLM（支持 per-agent model 覆盖）
         options = CallOptions(
+            model=agent.get('model', ''),
             temperature=agent.get('temperature', 0.3),
             max_tokens=agent.get('max_tokens', 3000),
         )
@@ -482,9 +670,10 @@ class LLMClient:
                     'code': s.get('code', '') or src.get('code', ''),
                     'name': s.get('name', '') or src.get('name', ''),
                     'sector': s.get('sector', '') or src.get('sector', ''),
-                    'price': s.get('price', 0) or src.get('price', 0),
-                    'changePct': s.get('changePct', 0) or src.get('changePct', 0),
-                    'score': s.get('score', 0) or src.get('score', 0),
+                    # 使用 if is not None 判断，保留 0 这样的有效值
+                    'price': s.get('price') if s.get('price') is not None else src.get('price', 0),
+                    'changePct': s.get('changePct') if s.get('changePct') is not None else src.get('changePct', 0),
+                    'score': s.get('score') if s.get('score') is not None else src.get('score', 0),
                     'grade': s.get('grade', '') or src.get('grade', ''),
                     'buyRange': s.get('buyRange', '') or src.get('buyRange', ''),
                     'stopLoss': s.get('stopLoss', '') or src.get('stopLoss', ''),
@@ -495,7 +684,7 @@ class LLMClient:
                     'riskLevel': s.get('riskLevel', ''),
                     'safetyMargin': s.get('safetyMargin', ''),
                     'valuation': s.get('valuation', ''),
-                    'adviseType': s.get('adviseType', agent.get('adviseType', '波段')),
+                    'adviseType': s.get('adviseType', '') or agent.get('adviseType', '波段'),
                     'meta': s.get('meta', ''),
                 })
 

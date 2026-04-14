@@ -1,12 +1,12 @@
 """
-AI 分析服务
-============
+AI 分析服务 - 新闻获取模块
+============================
 
 使用统一 LLM 模块（utils.llm）提供 AI 股票分析能力。
 
 核心功能：
 - fetch_market_news(): 获取财联社、东方财富等实时新闻
-- AIAnalysisService: 封装 AI 分析流程（扫描数据 + 新闻 → LLM → 分析报告）
+- fetch_junge_enhanced_news(): 钧哥天下无双专用增强新闻获取
 
 已消除重复代码：
 - API Key / Base URL / Model 配置 → utils.llm.client
@@ -16,15 +16,12 @@ AI 分析服务
 import os
 import logging
 from datetime import datetime
-from typing import Optional
-
-from utils.llm import get_client, CallOptions
 
 logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 领域数据获取（保留，非 LLM 逻辑）
+# 市场新闻获取
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -145,252 +142,135 @@ def fetch_market_news(scan_date: str = None):
     return unique_news[:15]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 钧哥低吸策略 Prompt（保留领域特色）
-# ══════════════════════════════════════════════════════════════════════════════
+def fetch_junge_enhanced_news(scan_date: str = None) -> str:
+    """
+    钧哥天下无双专用增强新闻获取 - 直接调用 qwen3.6-plus 模型生成新闻和资金流向数据。
 
-JUNGE_STRATEGY_PROMPT = """
-你是一位专业的A股技术分析师。请基于下方提供的扫描数据和市场新闻进行分析。
+    Returns:
+        格式化的新闻文本，供注入 Agent Prompt
+    """
+    import urllib.request
+    import json as _json
 
-## 重要时间说明
-- 股票扫描时间：{current_time}
-- 下方新闻均为扫描时间当天或之前的消息
-- 分析时请注意：新闻发布时间 ≤ 股票数据更新时间
+    today = datetime.now()
+    is_monday = today.weekday() == 0
+    date_range_desc = "近3天" if is_monday else "今日"
 
-## 最新市场消息（扫描日期及之前）
-{news_data}
+    sections = []
 
-## 选股策略：钧哥低吸策略
-优先级：政策利好 > 布林带收缩 > 量价配合 > 资金流向（CMF）
+    # ── 直接调用 qwen3.6-plus 生成完整新闻 + 资金流向 ──────────────────────
+    try:
+        qwen_api_key = os.environ.get('DASHSCOPE_API_KEY', '') or os.environ.get('QWEN_API_KEY', '')
+        if not qwen_api_key:
+            logger.warning("[JungeNews] 未配置 DASHSCOPE_API_KEY，使用兜底数据")
+            sections.append(_build_fallback_news())
+            return _finalize_news(sections, is_monday, date_range_desc)
 
-### 关键指标解读
-- **收缩率**：越高表示布林带越收紧，突破信号越强
-- **带宽%**：<5% 表示极度收缩，可能即将突破
-- **量比**：>1.5 表示放量，配合收缩更佳
-- **CMF**：>0 资金流入，<0 资金流出
-- **RSV**：<20 超卖区，>80 超买区
+        qwen_prompt = f"""你是【钧哥天下无双】，一位专注于A股题材炒作的顶级游资高手。今天是 {today.strftime('%Y年%m月%d日')}（{date_range_desc}）。
 
-## 扫描结果数据
-{scan_data}
+请基于你的市场知识，生成一份对A股市场有重要影响的新闻和板块资金流向分析。
 
-## 任务要求
-请从上述扫描结果中，结合最新市场消息，筛选 2-3 只股票：
+## 新闻部分（按题材级别排序）
+1. **S级题材**（国家政策、顶层设计，最多1条）
+2. **A级题材**（部委政策、行业利好，最多2条）
+3. **B级题材**（个股公告、业绩公告，最多2条）
 
-### 筛选条件
-1. **必须是主板股票**（代码以 60 或 00 开头）
-2. **政策关联**：优先选择与最新政策/新闻相关的板块
-3. **评分优先**：优先选择 S级 或 A级
-4. **技术形态**：收缩率高 + 带宽低 = 布林带收紧，突破概率大
-5. **量价配合**：量比>1 且 CMF>0 更佳
+## 板块资金流向分析
+1. 行业板块净流入 TOP5（板块名、净流入估算、涨跌幅）
+2. 概念板块净流入 TOP5（概念名、净流入估算、涨跌幅）
 
-### 输出格式（必须严格按此格式，填入真实数据）
+## 输出格式：
+=== AI整理新闻（钧哥天下无双）===
+|【S级题材】
+暂无（或：描述具体政策新闻）
 
-#### 一、今日重点消息
-从上方新闻列表中选 2-3 条，原文复制：
+|【A级题材】
+暂无（或：描述具体行业利好）
 
-1. 【新闻X】「[时间] 新闻内容」（来源）→ 利好板块：xxx
+|【B级题材】
+暂无（或：描述具体个股公告）
 
-#### 二、精选股票
+=== 板块资金流向 TOP5 ===
+|【行业板块净流入TOP5】
+  - 板块名: 净流入 X.XX亿 | 涨幅 X.XX%
 
-从上方扫描数据表格中选择 2-3 只主板股票，必须填入真实的股票名称和代码：
+|【概念板块净流入TOP5】
+  - 概念名: 净流入 X.XX亿 | 涨幅 X.XX%
 
-**1. [填入股票名称]（[填入6位代码]）** - [填入评分]分（[填入等级]级）
-- 所属板块：[填入板块名]
-- 📰 关联消息：【新闻X】「[复制新闻原文]」
-- 📊 技术数据：收缩率=[填入]% | 带宽=[填入]% | 量比=[填入] | CMF=[填入] | RSV=[填入]
-- 💡 买入建议：[低吸策略建议]
-- ⚠️ 风险提示：[具体风险]
+注意：
+- 新闻必须真实合理，可以基于近期已知事实
+- 资金流向数据基于合理估算
+- 如果不确定，写"暂无"
+- 不要输出任何解释，直接输出报告"""
 
-**2. [填入股票名称]（[填入6位代码]）** - [填入评分]分（[填入等级]级）
-- 所属板块：[填入板块名]
-- 📰 关联消息：【新闻X】或"无直接关联，纯技术面"
-- 📊 技术数据：收缩率=[填入]% | 带宽=[填入]% | 量比=[填入] | CMF=[填入] | RSV=[填入]
-- 💡 买入建议：[低吸策略建议]
-- ⚠️ 风险提示：[具体风险]
+        payload = _json.dumps({
+            "model": "qwen3.6-plus",
+            "instructions": "你是一位专业的A股财经分析师【钧哥天下无双】，专注于题材炒作和事件驱动选股。",
+            "input": qwen_prompt,
+            "temperature": 0.4,
+            "max_output_tokens": 2500,
+        }).encode('utf-8')
 
-#### 三、整体风险提示
-[市场风险说明]
+        req = urllib.request.Request(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {qwen_api_key}",
+                "Content-Type": "application/json",
+            },
+            method='POST',
+        )
 
-### ⚠️ 严格要求
-1. 股票名称和代码必须从扫描数据表格中复制，例如：隆基绿能（601012）
-2. 技术数据必须从表格中复制真实数值，不能写"XX"或空着
-3. 新闻必须从上方新闻列表原文复制
-4. 禁止推荐扫描数据中不存在的股票
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = _json.loads(resp.read())
+            qwen_result = data.get('output', {}).get('text', '')
 
-## 重要提醒
-- 股票必须来自扫描数据，不要推荐数据中没有的股票
-- 技术指标数值必须引用扫描数据中的真实数值
-- 新闻解读要客观，不要过度解读
+            if qwen_result:
+                sections.append(qwen_result.strip())
+                logger.info("[JungeNews] qwen3.6-plus 新闻生成成功，长度=%d", len(qwen_result))
+            else:
+                logger.warning("[JungeNews] qwen 返回为空，使用兜底数据")
+                sections.append(_build_fallback_news())
+
+    except Exception as e:
+        logger.warning("[JungeNews] qwen API 调用失败: %s", e)
+        sections.append(_build_fallback_news())
+
+    # ── akshare 实时快讯（补充）─────────────────────────────────────────
+    akshare_news = fetch_market_news(scan_date)
+    if akshare_news:
+        lines = ["=== 实时财经快讯（akshare）==="]
+        for i, n in enumerate(akshare_news[:10], 1):
+            lines.append(f"【快讯{i}】[{n.get('time','')}] {n.get('title','')}（{n.get('source','')}）")
+        sections.append("\n".join(lines))
+
+    return _finalize_news(sections, is_monday, date_range_desc)
+
+
+def _build_fallback_news():
+    """构建兜底新闻数据"""
+    return """=== AI整理新闻（通义千问）===
+|【国际新闻】
+暂无重要消息
+
+|【国内政策】
+暂无重要消息
+
+|【科技突破】
+暂无重要消息
+
+=== 板块资金流向 TOP5 ===
+|【行业板块净流入TOP5】
+  - 暂无数据（API 未配置或请求失败）
+
+|【概念板块净流入TOP5】
+  - 暂无数据（API 未配置或请求失败）
 """
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# AI 分析服务
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class AIAnalysisService:
-    """AI 股票分析服务 — 基于统一 LLM 模块"""
-
-    def __init__(self):
-        self._client = None
-
-    @property
-    def client(self):
-        """懒加载统一 LLM 客户端"""
-        if self._client is None:
-            self._client = get_client()
-        return self._client
-
-    def is_configured(self) -> bool:
-        """检查是否已配置"""
-        return self.client.is_configured()
-
-    def analyze_stocks(self, scan_data: dict, current_time: str) -> dict:
-        """
-        分析股票数据
-
-        Args:
-            scan_data: 扫描结果数据
-            current_time: 当前时间字符串
-
-        Returns:
-            分析结果字典
-        """
-        if not self.is_configured():
-            return {
-                'success': False,
-                'error': 'AI 服务未配置'
-            }
-
-        try:
-            formatted_data = self._format_scan_data(scan_data)
-            scan_date = scan_data.get('scan_time', '')[:10] if scan_data.get('scan_time') else None
-            news_data = self._format_news_data(scan_date)
-
-            prompt = JUNGE_STRATEGY_PROMPT.format(
-                current_time=current_time,
-                news_data=news_data,
-                scan_data=formatted_data
-            )
-
-            system_prompt = (
-                '你是一位严谨的A股技术分析助手。你只能基于用户提供的扫描数据进行分析，'
-                '绝对不能编造任何数据中没有的股票、价格、涨幅等信息。如果数据不足，请如实说明。'
-            )
-
-            options = CallOptions(
-                temperature=0.3,
-                max_tokens=2000,
-            )
-
-            resp = self.client.call(prompt, system=system_prompt, options=options)
-
-            if not resp.success:
-                return {
-                    'success': False,
-                    'error': f'AI 分析失败: {resp.error}'
-                }
-
-            return {
-                'success': True,
-                'analysis': resp.content,
-                'model': f"{resp.provider}/{resp.model}",
-                'tokens_used': resp.tokens_used
-            }
-
-        except Exception as e:
-            logger.error(f"AI 分析异常: {e}")
-            return {
-                'success': False,
-                'error': f'AI 分析失败: {str(e)}'
-            }
-
-    def _format_news_data(self, scan_date: str = None) -> str:
-        """格式化新闻数据"""
-        news_list = fetch_market_news(scan_date)
-
-        if not news_list:
-            return "【暂无最新消息】"
-
-        lines = [f"以下是 {scan_date or '今日'} 及之前的真实新闻，引用时必须原文复制：\n"]
-        for i, news in enumerate(news_list, 1):
-            time_str = news.get('time', '')
-            title = news.get('title', '')
-            source = news.get('source', '')
-            lines.append(f"【新闻{i}】「[{time_str}] {title}」（{source}）")
-
-        lines.append("\n★ 引用规则：必须原文复制「」内的内容，包括时间和标题，禁止改写")
-
-        return "\n".join(lines)
-
-    def _format_scan_data(self, scan_data: dict) -> str:
-        """格式化扫描数据为文本"""
-        if not scan_data or 'results' not in scan_data:
-            return "【无扫描数据】"
-
-        results = scan_data.get('results', [])
-        if not results:
-            return "【无扫描数据】"
-
-        main_board = [s for s in results if s.get('code', '').startswith(('60', '00'))]
-        other = [s for s in results if not s.get('code', '').startswith(('60', '00'))]
-
-        main_board = sorted(main_board, key=lambda x: x.get('total_score', 0), reverse=True)[:15]
-        other = sorted(other, key=lambda x: x.get('total_score', 0), reverse=True)[:5]
-
-        lines = [f"共扫描到 {len(results)} 只股票，以下为筛选结果：\n"]
-
-        if main_board:
-            lines.append("## 主板股票（请从以下股票中选择推荐）")
-            lines.append("")
-
-            for i, stock in enumerate(main_board, 1):
-                code = stock.get('code', '')
-                name = stock.get('name', '')
-                sector = stock.get('sector', '')
-                score = stock.get('total_score', 0)
-                grade = stock.get('grade', '')
-                squeeze_ratio = stock.get('squeeze_ratio', 0)
-                bb_width_pct = stock.get('bb_width_pct', 0)
-                volume_ratio = stock.get('volume_ratio', 0)
-                cmf = stock.get('cmf', 0)
-                rsv = stock.get('rsv', 0)
-
-                lines.append(f"【股票{i}】{name}（{code}）- {score}分（{grade}级）")
-                lines.append(f"  板块：{sector}")
-                lines.append(
-                    f"  技术数据：收缩率={squeeze_ratio:.1f}% | 带宽={bb_width_pct:.2f}% "
-                    f"| 量比={volume_ratio:.2f} | CMF={cmf:.3f} | RSV={rsv:.1f}"
-                )
-                lines.append("")
-
-            lines.append("")
-
-        if other:
-            lines.append("## 创业板/科创板（仅供参考）")
-            for i, stock in enumerate(other, 1):
-                code = stock.get('code', '')
-                name = stock.get('name', '')
-                score = stock.get('total_score', 0)
-                lines.append(f"- {name}（{code}）评分{score}分")
-            lines.append("")
-
-        lines.append("【注意：请仅从上述主板股票中选择推荐】")
-
-        return "\n".join(lines)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 单例实例
-# ══════════════════════════════════════════════════════════════════════════════
-
-_ai_service_instance: Optional[AIAnalysisService] = None
-
-
-def get_ai_service() -> AIAnalysisService:
-    """获取 AI 分析服务单例"""
-    global _ai_service_instance
-    if _ai_service_instance is None:
-        _ai_service_instance = AIAnalysisService()
-    return _ai_service_instance
+def _finalize_news(sections, is_monday, date_range_desc):
+    """整理最终新闻数据"""
+    if not sections:
+        return "【暂无最新消息】"
+    header = f"📅 新闻时间范围：{date_range_desc}（{'周一扩展模式' if is_monday else '日常模式'}）\n"
+    return header + "\n\n".join(sections)

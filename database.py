@@ -224,6 +224,9 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
+        # 迁移：agent_analysis_history 表缺失列（历史遗留）
+        _migrate_agent_analysis_history_cols(cursor)
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS holdings (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1545,7 +1548,8 @@ def upsert_holding(code: str, name: str, sector: str = '', avg_cost: float = 0,
                 profit_loss_amount = VALUES(profit_loss_amount),
                 hold_days = VALUES(hold_days),
                 position_type = VALUES(position_type),
-                remark = VALUES(remark)
+                remark = IF(holdings.remark IS NULL OR holdings.remark = '' OR holdings.remark NOT LIKE 'AI推荐(%%)',
+                             VALUES(remark), holdings.remark)
         ''', (code, name, sector, avg_cost, current_price,
               position_ratio, profit_loss_pct, profit_loss_amount,
               hold_days, position_type, remark))
@@ -1567,6 +1571,24 @@ def get_all_holdings() -> List[Dict]:
         ''')
         rows = cursor.fetchall()
         # DictCursor 已返回 dict，禁止 dict(zip(cols, row))（会把列名当值）
+        return [dict(r) if isinstance(r, dict) else dict(zip([d[0] for d in cursor.description], r)) for r in rows]
+
+
+def get_holdings_by_agent(agent_id: str) -> List[Dict]:
+    """获取指定 agent 的持仓（通过 remark 字段过滤）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT stock_code, stock_name, sector,
+                   position_ratio, avg_cost, current_price,
+                   profit_loss_pct, profit_loss_amount,
+                   hold_days, position_type, remark,
+                   update_time
+            FROM holdings
+            WHERE remark LIKE %s
+            ORDER BY update_time DESC
+        ''', (f'%({agent_id})%',))
+        rows = cursor.fetchall()
         return [dict(r) if isinstance(r, dict) else dict(zip([d[0] for d in cursor.description], r)) for r in rows]
 
 
@@ -1603,6 +1625,27 @@ def upsert_holdings_batch(holdings_list: List[Dict]) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent 分析历史（按 Agent + 日期唯一，历史锁定，当天可覆盖）
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _migrate_agent_analysis_history_cols(cursor):
+    """迁移 agent_analysis_history 表缺失列（历史遗留问题）"""
+    cols = _get_table_columns(cursor, 'agent_analysis_history')
+    for col, typ in [
+        ('thinking_text', 'LONGTEXT'),
+        ('remark',         'TEXT'),
+    ]:
+        if col not in cols:
+            cursor.execute(f'ALTER TABLE agent_analysis_history ADD COLUMN {col} {typ} NULL')
+
+
+def _get_table_columns(cursor, table_name: str) -> set:
+    """获取表的所有列名（兼容历史迁移）"""
+    cursor.execute(
+        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+        (table_name,)
+    )
+    return {row['COLUMN_NAME'] for row in cursor.fetchall()}
+
 
 def _snapshot_float(v, default: float = 0.0) -> float:
     if v is None or v == '':
@@ -1652,18 +1695,66 @@ def snapshot_rows_from_recommended_stocks(stocks: List[Dict]) -> List[Dict]:
     return out
 
 
+def save_recommended_stocks_as_holdings(
+    agent_id: str,
+    stocks: List[Dict],
+    remark_template: str = 'AI推荐({agent_id})',
+) -> int:
+    """
+    将 AI analysis 返回的 recommendedStocks 写入 holdings 表（若无真实持仓时的自动同步）。
+    返回写入/更新的条数。
+    """
+    def _parse_float(v, default: float = 0.0) -> float:
+        """解析带 % 的字符串，如 '20%' -> 20.0"""
+        if v is None or v == '':
+            return default
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip().rstrip('%').replace(',', '')
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return default
+
+    if not stocks:
+        return 0
+    count = 0
+    remark_tpl = remark_template or 'AI推荐({agent_id})'
+    for s in stocks or []:
+        code = str(s.get('code') or '').strip()
+        name = str(s.get('name') or '').strip()
+        if not code or not name:
+            continue
+        try:
+            ok = upsert_holding(
+                code=code,
+                name=name,
+                sector=str(s.get('sector') or ''),
+                avg_cost=_parse_float(s.get('price') or 0),
+                current_price=_parse_float(s.get('price') or 0),
+                position_ratio=_parse_float(s.get('positionRatio') or 0),
+                profit_loss_pct=_parse_float(s.get('changePct') or 0),
+                profit_loss_amount=0.0,
+                hold_days=0,
+                position_type='long',
+                remark=remark_tpl.replace('{agent_id}', agent_id),
+            )
+            if ok:
+                count += 1
+        except Exception:
+            pass
+    return count
+
+
 def build_analysis_holdings_snapshot(
     db_holdings: List[Dict],
     analysis_result: Any = None,
 ) -> List[Dict]:
     """
-    写入 agent_analysis_history 的快照：优先真实持仓；若为空则用分析结果中的推荐股，
-    避免持仓页在「未维护 holdings 表」时始终 0 条。
-    analysis_result 可为扁平 dict（含 recommendedStocks），或 app 保存的 { structured, raw_text }。
+    写入 agent_analysis_history 的快照：优先 AI 推荐股票；若为空则用 DB 持仓。
+    与 app.py/junge_trader.py 的逻辑保持一致。
     """
-    snap = snapshot_rows_from_db_holdings(db_holdings)
-    if snap:
-        return snap
+    # 优先使用 AI 推荐股票
     rec: List[Dict] = []
     if isinstance(analysis_result, dict):
         if isinstance(analysis_result.get('recommendedStocks'), list):
@@ -1671,7 +1762,10 @@ def build_analysis_holdings_snapshot(
         st = analysis_result.get('structured')
         if isinstance(st, dict) and isinstance(st.get('recommendedStocks'), list):
             rec = st['recommendedStocks']
-    return snapshot_rows_from_recommended_stocks(rec)
+    if rec:
+        return snapshot_rows_from_recommended_stocks(rec)
+    # 兜底：使用 DB 持仓
+    return snapshot_rows_from_db_holdings(db_holdings)
 
 
 def save_agent_analysis_history(
@@ -1680,6 +1774,7 @@ def save_agent_analysis_history(
     holdings_snapshot: List[Dict],
     analysis_result: Dict,
     raw_response: str = '',
+    thinking: str = '',
     stance: str = '',
     confidence: int = 0,
     tokens_used: int = 0,
@@ -1707,14 +1802,15 @@ def save_agent_analysis_history(
         cursor.execute('''
             INSERT INTO agent_analysis_history
                 (agent_id, report_date, scan_id, holdings_snapshot_json,
-                 analysis_result_json, raw_response_text, stance,
-                 confidence, tokens_used, model, report_time)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 analysis_result_json, raw_response_text, thinking_text,
+                 stance, confidence, tokens_used, model, report_time)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 scan_id = VALUES(scan_id),
                 holdings_snapshot_json = VALUES(holdings_snapshot_json),
                 analysis_result_json = VALUES(analysis_result_json),
                 raw_response_text = VALUES(raw_response_text),
+                thinking_text = VALUES(thinking_text),
                 stance = VALUES(stance),
                 confidence = VALUES(confidence),
                 tokens_used = VALUES(tokens_used),
@@ -1727,6 +1823,7 @@ def save_agent_analysis_history(
             _s(holdings_snapshot),
             _s(analysis_result),
             raw_response,
+            thinking,
             stance,
             confidence,
             tokens_used,
@@ -1750,14 +1847,19 @@ def get_agent_analysis_history(
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        sql = '''
-            SELECT id, agent_id, report_date, scan_id,
-                   holdings_snapshot_json, analysis_result_json,
-                   raw_response_text, stance, confidence,
-                   tokens_used, model, report_time
-            FROM agent_analysis_history
-            WHERE agent_id = %s
-        '''
+        # 只查存在的列，兼容历史迁移前的数据
+        cols = _get_table_columns(cursor, 'agent_analysis_history')
+        sel_cols = []
+        for c in ['id', 'agent_id', 'report_date', 'scan_id',
+                  'holdings_snapshot_json', 'analysis_result_json',
+                  'raw_response_text', 'thinking_text', 'stance', 'confidence',
+                  'tokens_used', 'model', 'report_time']:
+            if c in cols:
+                sel_cols.append(c)
+        if not sel_cols:
+            return []
+
+        sql = f"SELECT {', '.join(sel_cols)} FROM agent_analysis_history WHERE agent_id = %s"
         args = [agent_id]
 
         if start_date:
@@ -1777,6 +1879,7 @@ def get_agent_analysis_history(
             d = dict(row) if not isinstance(row, dict) else row
             d['holdings_snapshot'] = _json.loads((d.pop('holdings_snapshot_json') or '[]')) if d.get('holdings_snapshot_json') else []
             d['analysis_result']   = _json.loads((d.pop('analysis_result_json')   or '{}')) if d.get('analysis_result_json')  else {}
+            # thinking_text 直接保留在 d 中
             rd = d.get('report_date')
             if hasattr(rd, 'isoformat'):
                 d['report_date'] = rd.isoformat()
@@ -1793,20 +1896,23 @@ def get_latest_agent_analysis(agent_id: str) -> Optional[Dict]:
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, agent_id, report_date, scan_id,
-                   holdings_snapshot_json, analysis_result_json,
-                   raw_response_text, stance, confidence,
-                   tokens_used, model, report_time
-            FROM agent_analysis_history
-            WHERE agent_id = %s
-            ORDER BY report_date DESC, report_time DESC
-            LIMIT 1
-        ''', (agent_id,))
+        cols = _get_table_columns(cursor, 'agent_analysis_history')
+        sel_cols = []
+        for c in ['id', 'agent_id', 'report_date', 'scan_id',
+                  'holdings_snapshot_json', 'analysis_result_json',
+                  'raw_response_text', 'thinking_text', 'stance', 'confidence',
+                  'tokens_used', 'model', 'report_time']:
+            if c in cols:
+                sel_cols.append(c)
+        if not sel_cols:
+            return None
+
+        sql = (f"SELECT {', '.join(sel_cols)} FROM agent_analysis_history "
+               f"WHERE agent_id = %s ORDER BY report_date DESC, report_time DESC LIMIT 1")
+        cursor.execute(sql, (agent_id,))
         row = cursor.fetchone()
         if not row:
             return None
-        # cursorclass=DictCursor 已返回 dict，直接使用
         d = dict(row) if not isinstance(row, dict) else row
         d['holdings_snapshot'] = _json.loads(d.pop('holdings_snapshot_json') or '[]') if d.get('holdings_snapshot_json') else []
         d['analysis_result']   = _json.loads(d.pop('analysis_result_json') or '{}')   if d.get('analysis_result_json')  else {}

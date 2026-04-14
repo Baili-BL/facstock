@@ -714,7 +714,7 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
     else:
         logger.warning("[JUN-AI] JSON 解析失败，raw 前200字: %.200s", resp.content[:200])
 
-    # 构建推荐股列表
+    # 构建推荐股列表（确保数据格式一致，0 值不被误判为无效）
     recommended = []
     for s in (parsed.get('recommendedStocks') or [])[:3]:
         code = s.get('code', '')
@@ -723,9 +723,10 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
             'code': s.get('code', '') or src.get('code', ''),
             'name': s.get('name', '') or src.get('name', ''),
             'sector': s.get('sector', '') or src.get('sector', ''),
-            'price': s.get('price', 0) or src.get('price', 0),
-            'changePct': s.get('changePct', 0) or src.get('changePct', 0),
-            'score': s.get('score', 0) or src.get('score', 0),
+            # 使用 if is not None 判断，保留 0 这样的有效值
+            'price': s.get('price') if s.get('price') is not None else src.get('price', 0),
+            'changePct': s.get('changePct') if s.get('changePct') is not None else src.get('changePct', 0),
+            'score': s.get('score') if s.get('score') is not None else src.get('score', 0),
             'grade': s.get('grade', '') or src.get('grade', ''),
             'buyRange': s.get('buyRange', '') or src.get('buyRange', ''),
             'stopLoss': s.get('stopLoss', '') or src.get('stopLoss', ''),
@@ -755,6 +756,7 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
                 'riskWarning': str(parsed.get('riskWarning', '')),
                 'recommendedStocks': recommended,
             }
+            # 快照优先级：AI推荐 > DB持仓（与 app.py 保持一致）
             snap = _db.build_analysis_holdings_snapshot(holdings_list, analysis_payload)
             _db.save_agent_analysis_history(
                 agent_id='jun',
@@ -768,7 +770,7 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
             )
         else:
             # JSON 解析失败，保存原始文本
-            snap_fail = _db.build_analysis_holdings_snapshot(holdings_list, None)
+            snap_fail = _db.snapshot_rows_from_db_holdings(holdings_list)
             _db.save_agent_analysis_history(
                 agent_id='jun',
                 report_date=report_date,
@@ -778,6 +780,16 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
                 tokens_used=resp.tokens_used,
             )
         logger.info(f"[JUN-AI] 历史已写入 agent_analysis_history agent=jun date={report_date}")
+
+        # 同步推荐股票到持仓表（与 /api/agents/analyze/jun 保持一致）
+        if recommended:
+            try:
+                import database as _db
+                saved = _db.save_recommended_stocks_as_holdings('jun', recommended)
+                logger.info(f"[JUN-AI] 推荐股票已写入 holdings 表，共 {saved} 条")
+            except Exception as sync_err:
+                logger.warning(f"[JUN-AI] 同步推荐股票到持仓表失败: {sync_err}")
+
     except Exception as hist_err:
         logger.warning(f"[JUN-AI] 保存分析历史失败: {hist_err}")
 
@@ -1009,9 +1021,9 @@ class JunGeTrader:
         # 5. 精选推荐（扫描层）
         recommendations = self._generate_recommendations(unique_candidates)
 
-        # 6. AI 增强（可选）
+        # 6. AI 增强（可选）- 即使扫描数据为空也执行，让 AI 基于市场知识推荐
         ai_result = None
-        if enhance and unique_candidates:
+        if enhance:
             logger.info("🤖 启动 AI 增强分析...")
             news = self.get_news()
             ai_result = enhance_with_ai(unique_candidates, news, start_time.isoformat())

@@ -201,79 +201,96 @@ export async function demoAnalyzeAgent(agentId, onStep) {
 const _agentNameMap = {
   jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
   speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
+  deepseek: '深度思考者', beijing: '北京炒家',
 }
 const _agentBrandMap = {
   jun: '钧哥', qiao: '乔帮主', jia: '炒股养家',
   speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
+  deepseek: '深度思考者', beijing: '北京炒家',
 }
 const _roleMap = {
   jun: '龙头战法', qiao: '板块轮动', jia: '低位潜伏',
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
+  deepseek: '深度推理', beijing: '游资打板',
 }
 
 const _demoStructured = {
   jun: {
-    agentId: 'jun', agentName: '钧哥天下无双', stance: 'bull', confidence: 82,
-    marketCommentary: '市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。',
-    positionAdvice: '维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。',
-    riskWarning: '警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。',
+    agentId: 'jun', agentName: '钧哥天下无双', stance: 'bull', confidence: 75,
+    marketCommentary: '题材炒作情绪回暖，热点板块资金持续流入，适合聚焦事件驱动的强势标的。',
+    positionAdvice: '建议维持6-7成仓位，重点关注消息面驱动的题材龙头机会，低吸为主不追高。',
+    riskWarning: '市场轮动较快，需警惕高位个股筹码松动风险，止损纪律严格执行。',
     recommendedStocks: [
-      { name: '龙头股份', code: '600630.SH', role: '龙头', reason: '板块龙头连板，人气极高', chg_pct: 10.0 },
-      { name: '宁德时代', code: '300750.SZ', role: '中军', reason: '行业龙头，机构锁仓', chg_pct: 5.5 },
+      { name: '君实生物', code: '688180.SH', role: 'A级关注', reason: '生物制品板块，评分66，事件驱动机会', chg_pct: 2.5 },
+      { name: '百利天恒', code: '688506.SH', role: 'A级关注', reason: '化学制药板块，评分62，业绩超预期', chg_pct: 1.8 },
+      { name: '本川智能', code: '300964.SZ', role: 'B级关注', reason: '元件板块，评分57，资金关注', chg_pct: 3.2 },
     ],
   },
   qiao: {
-    agentId: 'qiao', agentName: '乔帮主', stance: 'bull', confidence: 74,
-    marketCommentary: '板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。',
-    positionAdvice: '维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。',
+    agentId: 'qiao', agentName: '乔帮主', stance: 'bull', confidence: 70,
+    marketCommentary: '板块轮动加快，生物医药与游戏板块资金关注度提升，关注主线切换信号。',
+    positionAdvice: '维持6-7成仓位，主线持仓为主，关注板块轮动节奏变化，适时切换。',
     riskWarning: '警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
     recommendedStocks: [
-      { name: '北方华创', code: '002371.SZ', role: '轮动龙头', reason: '半导体主线，业绩超预期', chg_pct: 4.8 },
+      { name: '博腾股份', code: '300363.SZ', role: '轮动标的', reason: '医疗服务板块，资金关注', chg_pct: 2.1 },
     ],
   },
   jia: {
-    agentId: 'jia', agentName: '炒股养家', stance: 'neutral', confidence: 65,
-    marketCommentary: '市场高位震荡，安全边际有所下降，建议控制仓位，适度防御。',
+    agentId: 'jia', agentName: '炒股养家', stance: 'neutral', confidence: 62,
+    marketCommentary: '市场震荡整理，部分优质标的估值回到合理区间，关注低位布局机会。',
     positionAdvice: '建议5-6成仓位，配置低估值高股息标的，左侧布局等待估值修复。',
     riskWarning: '高位震荡风险加大，左侧布局需严格止损纪律。',
     recommendedStocks: [
-      { name: '长江电力', code: '600900.SH', role: '防御配置', reason: '高股息，低波动', chg_pct: 0.5 },
+      { name: '浙数文化', code: '600633.SH', role: '低位关注', reason: '游戏板块，估值偏低', chg_pct: 0.8 },
     ],
   },
   speed: {
-    agentId: 'speed', agentName: '极速先锋', stance: 'bear', confidence: 60,
-    marketCommentary: '打板情绪高潮，炸板率上升，隔夜溢价收窄，当前非理想打板时机。',
+    agentId: 'speed', agentName: '极速先锋', stance: 'neutral', confidence: 55,
+    marketCommentary: '市场情绪分化，涨停板数量减少，打板溢价收窄，保持谨慎。',
     positionAdvice: '收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。',
     riskWarning: '高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-    recommendedStocks: [],
+    recommendedStocks: [
+      { name: '星辉娱乐', code: '300043.SZ', role: '首板关注', reason: '游戏板块，低位首板', chg_pct: 2.8 },
+    ],
   },
   trend: {
-    agentId: 'trend', agentName: '趋势追随者', stance: 'bull', confidence: 72,
+    agentId: 'trend', agentName: '趋势追随者', stance: 'bull', confidence: 68,
     marketCommentary: '均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。',
-    positionAdvice: '维持7成仓位，回调至均线附近加仓，跌破20日线减仓保护利润。',
+    positionAdvice: '维持6-7成仓位，回调至均线附近加仓，跌破均线减仓保护利润。',
     riskWarning: '趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
     recommendedStocks: [
-      { name: '宁德时代', code: '300750.SZ', role: '趋势跟随', reason: '均线多头，趋势完好', chg_pct: 3.2 },
+      { name: '百普赛斯', code: '301080.SZ', role: '趋势标的', reason: '生物制品，趋势向上', chg_pct: 1.5 },
     ],
   },
   quant: {
-    agentId: 'quant', agentName: '量化之翼', stance: 'bull', confidence: 68,
-    marketCommentary: '多因子模型显示成长与动量因子共振向上，波动率处于中等偏低区间。',
-    positionAdvice: '因子模型建议8成仓位，成长因子权重略高，等权配置，动态再平衡。',
+    agentId: 'quant', agentName: '量化之翼', stance: 'bull', confidence: 72,
+    marketCommentary: '多因子模型显示成长与动量因子共振向上，生物医药板块因子得分较高。',
+    positionAdvice: '因子模型建议7成仓位，成长因子权重略高，等权配置，动态再平衡。',
     riskWarning: '量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
     recommendedStocks: [
-      { name: '迈瑞医疗', code: '300760.SZ', role: '因子强势', reason: '动量因子得分高', chg_pct: 2.1 },
+      { name: '本川智能', code: '300964.SZ', role: '因子强势', reason: '元件板块，动量因子得分高', chg_pct: 3.2 },
+    ],
+  },
+  beijing: {
+    agentId: 'beijing', agentName: '北京炒家', stance: 'bull', confidence: 68,
+    marketCommentary: '今日板块情绪高度良好，涨停板数量充足，三有标准命中多只标的，游资活跃。',
+    positionAdvice: '单票1/8仓，优先秒拉板扫单，换手板排单等待，创业板减半至1/16仓。',
+    riskWarning: '高位炸板风险大，严格执行1小时释放法则，T+1高开8%以上直接清仓。',
+    recommendedStocks: [
+      { name: '星辉娱乐', code: '300043.SZ', role: '秒拉板', reason: '游戏板块共振，量比≥3，10:30前封板，三有全满足', chg_pct: 10.0 },
+      { name: '本川智能', code: '300964.SZ', role: '换手板', reason: '元件板块，高换手率，排单进场', chg_pct: 10.0 },
     ],
   },
 }
 
 const _demoAnalysis = {
-  jun: '【市场解读】市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。\n【策略建议】维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。\n【风险提示】警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。\n推荐关注：龙头股份(600630.SH) - 龙头: 板块龙头连板，人气极高\n推荐关注：宁德时代(300750.SZ) - 中军: 行业龙头，机构锁仓',
-  qiao: '【市场解读】板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。\n【策略建议】维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。\n【风险提示】警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
-  jia: '【市场解读】市场高位震荡，安全边际有所下降，建议控制仓位，适度防御。\n【策略建议】建议5-6成仓位，配置低估值高股息标的，左侧布局等待估值修复。\n【风险提示】高位震荡风险加大，左侧布局需严格止损纪律。',
-  speed: '【市场解读】打板情绪高潮，炸板率上升，隔夜溢价收窄，当前非理想打板时机。\n【策略建议】收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。\n【风险提示】高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-  trend: '【市场解读】均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。\n【策略建议】维持7成仓位，回调至均线附近加仓，跌破20日线减仓保护利润。\n【风险提示】趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
-  quant: '【市场解读】多因子模型显示成长与动量因子共振向上，波动率处于中等偏低区间。\n【策略建议】因子模型建议8成仓位，成长因子权重略高，等权配置，动态再平衡。\n【风险提示】量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
+  jun: '【市场解读】题材炒作情绪回暖，生物制品与化学制药板块受消息面驱动，资金持续关注事件驱动型机会。\n【策略建议】建议维持6-7成仓位，重点关注君实生物、百利天恒等消息面驱动的强势标的，低吸为主不追高。\n【风险提示】市场轮动较快，需警惕高位个股筹码松动风险，止损纪律严格执行。\n推荐关注：君实生物(688180.SH) - A级关注: 生物制品板块，评分66\n推荐关注：百利天恒(688506.SH) - A级关注: 化学制药板块，评分62',
+  qiao: '【市场解读】板块轮动加快，生物医药与游戏板块资金关注度提升，关注主线切换信号。\n【策略建议】维持6-7成仓位，主线持仓为主，关注板块轮动节奏变化，适时切换。\n【风险提示】警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
+  jia: '【市场解读】市场震荡整理，部分优质标的估值回到合理区间，关注低位布局机会。\n【策略建议】建议5-6成仓位，配置低估值标的，左侧布局等待估值修复。\n【风险提示】震荡行情下需严格止损纪律。',
+  speed: '【市场解读】市场情绪分化，涨停板数量减少，打板溢价收窄，保持谨慎。\n【策略建议】收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。\n【风险提示】高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
+  trend: '【市场解读】均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。\n【策略建议】维持6-7成仓位，回调至均线附近加仓，跌破均线减仓保护利润。\n【风险提示】趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
+  quant: '【市场解读】多因子模型显示成长与动量因子共振向上，生物医药板块因子得分较高。\n【策略建议】因子模型建议7成仓位，成长因子权重略高，等权配置，动态再平衡。\n【风险提示】量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
+  beijing: '【市场解读】今日板块情绪高度良好，涨停板数量充足，三有标准命中多只标的，游资活跃。\n【策略建议】单票1/8仓严格执行，秒拉板扫单、换手板排单，创业板减半至1/16仓。\n【风险提示】高位炸板风险大，严格执行1小时释放法则，T+1高开8%以上直接清仓。',
 }
 
 /**
@@ -281,10 +298,10 @@ const _demoAnalysis = {
  * @param {Function} onStep - 回调({agentId, step, message})
  */
 export async function demoBatchAnalyze(onStep) {
-  const agents = ['jun', 'qiao', 'jia', 'speed', 'trend', 'quant']
+  const agents = ['jun', 'qiao', 'jia', 'speed', 'trend', 'quant', 'deepseek', 'beijing']
 
   // 阶段一：并行初始化所有 Agent
-  if (onStep) onStep({ phase: 'init', message: '正在并行初始化 6 个 Agent...' })
+  if (onStep) onStep({ phase: 'init', message: '正在并行初始化 8 个 Agent...' })
   await new Promise(r => setTimeout(r, 800))
 
   // 阶段二：并行执行所有 Agent
@@ -328,9 +345,9 @@ export async function demoBatchAnalyze(onStep) {
 
   if (!consensusOpportunities.length) {
     consensusOpportunities.push(
-      { rank: 1, title: '宁德时代 (300750.SZ)', badge: '龙头共识', badgeKind: 'primary', meta: '主线龙头 · 资金持续流入', chg: 5.8, flowLabel: '来源: 钧哥天下无双' },
-      { rank: 2, title: '北方华创 (002371.SZ)', badge: '多策略共振', badgeKind: 'primary', meta: '趋势跟随 · 均线多头排列', chg: 4.2, flowLabel: '来源: 乔帮主' },
-      { rank: 3, title: '比亚迪 (002594.SZ)', badge: '资金认可', badgeKind: 'muted', meta: '板块轮动 · 底部放量', chg: 3.1, flowLabel: '来源: 量化之翼' },
+      { rank: 1, title: '君实生物 (688180.SH)', badge: '消息驱动', badgeKind: 'primary', meta: '生物制品 · 事件催化', chg: 2.5, flowLabel: '来源: 钧哥天下无双' },
+      { rank: 2, title: '百利天恒 (688506.SH)', badge: '业绩超预期', badgeKind: 'primary', meta: '化学制药 · 资金关注', chg: 1.8, flowLabel: '来源: 钧哥天下无双' },
+      { rank: 3, title: '本川智能 (300964.SZ)', badge: '板块轮动', badgeKind: 'muted', meta: '元件板块 · 底部放量', chg: 3.2, flowLabel: '来源: 量化之翼' },
     )
   }
 
