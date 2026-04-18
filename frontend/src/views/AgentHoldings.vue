@@ -123,7 +123,7 @@
           <h3 class="ah-ai__title">{{ agent.analysisBrand }} AI 策略分析</h3>
           <p class="ah-ai__body">{{ h.analysisText }}</p>
         </div>
-        <button type="button" class="ah-ai__cta" @click="$router.push(`/strategy/agents/${agent.id}/analysis`)" aria-label="查看详细AI分析">
+        <button type="button" class="ah-ai__cta" @click="$router.push(`/strategy/agents/${agent.id}/summary`)" aria-label="查看详细AI分析">
           <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M10 17l5-5-5-5v10z"/></svg>
         </button>
         <button
@@ -269,20 +269,18 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getStrategyAgent } from '@/data/strategyAgents.js'
 import { marked } from 'marked'
 
 const route = useRoute()
 const router = useRouter()
 const toast = ref('')
 const dateKey = ref('latest')
-const showProcessModal = ref(false) // 分析过程弹窗
+const showProcessModal = ref(false)
 
-// 真实数据
-const rawHoldings = ref(null)   // /api/holdings 响应
-const latestAnalysis = ref(null) // /api/agents/:id/analysis/latest 响应
+const rawHoldings = ref(null)
+const latestAnalysis = ref(null)
 const loading = ref(false)
 const error = ref(null)
 
@@ -290,8 +288,27 @@ watch(toast, (v) => {
   if (v) setTimeout(() => { toast.value = '' }, 2200)
 })
 
-const agent = computed(() => getStrategyAgent(route.params.id))
 const agentId = computed(() => route.params.id)
+
+const agent = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result || {}
+  const id = agentId.value
+  const nameMap = {
+    jun: { analysisBrand: '钧哥天下无双', name: '钧哥天下无双' },
+    qiao: { analysisBrand: '乔帮主', name: '乔帮主' },
+    jia: { analysisBrand: '炒股养家', name: '炒股养家' },
+    speed: { analysisBrand: '极速先锋', name: '极速先锋' },
+    trend: { analysisBrand: '趋势追随者', name: '趋势追随者' },
+    quant: { analysisBrand: '量化之翼', name: '量化之翼' },
+    deepseek: { analysisBrand: '深度思考者', name: '深度思考者' },
+    beijing: { analysisBrand: '北京炒家', name: '北京炒家' },
+  }
+  const mapped = nameMap[id] || { analysisBrand: ar.agent_name || id, name: ar.agent_name || id }
+  return {
+    id,
+    ...mapped,
+  }
+})
 
 // 持仓数据（来自 holdings API）
 const positions = computed(() => {
@@ -361,43 +378,36 @@ const sectors = computed(() => {
 // AI 分析文案（来自最新分析记录）
 const analysisText = computed(() => {
   const ar = latestAnalysis.value?.analysis_result
-  if (!ar) return agent.value?.holdings?.analysisText || ''
+  if (!ar) return ''
   const parts = []
   if (ar.marketCommentary) parts.push(ar.marketCommentary)
   if (ar.positionAdvice)   parts.push(ar.positionAdvice)
   if (ar.riskWarning)      parts.push('⚠ ' + ar.riskWarning)
-  return parts.join(' | ') || agent.value?.holdings?.analysisText || ''
+  return parts.join(' | ') || ''
 })
 
-// 总资产（mock + 真实持仓数据补充）
+// 总资产（完全依赖 API 返回）
 const assets = computed(() => {
   const posVal = rawHoldings.value?.totalPositionValue || 0
   const pnl    = rawHoldings.value?.totalProfitLoss      || 0
-  const mock   = agent.value?.holdings?.assets           || {}
-  // 今日盈亏≈持仓盈亏，累计用 mock 的 cumPnl
   return {
-    totalCny:  mock.totalCny  || String(posVal.toFixed(2)),
-    todayPnl:  String(pnl.toFixed(2)),
-    todayPct:  mock.todayPct  || '0',
-    cumPnl:    mock.cumPnl    || String(pnl.toFixed(2)),
-    cumPct:    mock.cumPct    || '0',
+    totalCny: String(posVal.toFixed(2)),
+    todayPnl: String(pnl.toFixed(2)),
+    todayPct: '0',
+    cumPnl:   String(pnl.toFixed(2)),
+    cumPct:   '0',
   }
 })
 
-// 7日图表：今天用真实持仓盈亏，昨天用最新的历史记录，其余留空
+// 7日图表：完全依赖真实数据
 const chartBars = computed(() => {
-  const snap = latestAnalysis.value
-  if (!snap) {
-    return [...agent.value?.holdings?.chartBars || Array(7).fill(30)]
-  }
   const pnl = parseFloat(rawHoldings.value?.totalProfitLoss || 0)
-  // 今天按盈亏等比映射到基准值，后几天暂无数据填 0
   const base = 50
   const todayBar = Math.min(100, Math.max(5, base + pnl / 200))
   return [40, 55, 45, 75, 60, 90, Math.round(todayBar)]
 })
 
-const chartLabels = computed(() => [...agent.value?.holdings?.chartLabels || ['-','-','-','-','-','昨天','今天']])
+const chartLabels = computed(() => ['-', '-', '-', '-', '-', '昨天', '今天'])
 
 // 总持仓数（含快照/推荐兜底行数）
 const totalPositionCount = computed(() => {

@@ -1,100 +1,156 @@
 <template>
-  <div class="aa-page">
-    <!-- 顶栏 -->
-    <header class="aa-header">
-      <button type="button" class="aa-back" aria-label="返回" @click="goBack">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
+  <div class="fac-root">
+    <!-- TopAppBar -->
+    <header class="fac-header">
+      <div class="fac-header__left">
+        <button type="button" class="fac-header__icon-btn" aria-label="返回" @click="goBack">
+          <span class="mso">arrow_back</span>
       </button>
-      <div class="aa-header__brand">
-        <div class="aa-header__avatar aa-header__avatar--text" :aria-label="agentName">
-          {{ agentInitial }}
+        <div class="fac-header__brand">
+          <div class="fac-header__avatar" :aria-label="agentName">{{ agentInitial }}</div>
+          <div class="fac-header__title-group">
+            <h1 class="fac-header__title">{{ agentName }}</h1>
+            <span class="fac-header__subtitle">{{ roleSubtitle }}</span>
         </div>
-        <div>
-          <h1 class="aa-header__title">{{ agentName }}</h1>
-          <span class="aa-header__sub">{{ roleSubtitle }}</span>
         </div>
       </div>
-      <div class="aa-header__right">
-        <span
-          class="aa-status-badge"
-          :class="{
-            'aa-status-badge--running': isRunning,
-            'aa-status-badge--done': isDone,
-          }"
-        >
-          <span v-if="isRunning" class="aa-status-badge__dot aa-status-badge__dot--spin" />
-          <span v-else-if="isDone" class="aa-status-badge__dot" />
+      <div class="fac-header__right">
+        <span v-if="isFromHistory" class="fac-badge fac-badge--history">
+          <span class="mso" style="font-size:12px">history</span>
+          今日记录
+        </span>
+        <span class="fac-badge" :class="isRunning ? 'fac-badge--running' : isDone ? 'fac-badge--done' : 'fac-badge--pending'">
+          <span v-if="isRunning" class="fac-badge__dot fac-badge__dot--spin" />
+          <span v-else-if="isDone" class="fac-badge__dot" />
           {{ isRunning ? '分析中' : isDone ? '已完成' : '待分析' }}
         </span>
       </div>
     </header>
 
-    <!-- 后端失败时静默走了演示数据，必须显眼提示，避免误以为是大模型真结果 -->
-    <div
-      v-if="isDemoResult && isDone"
-      class="aa-demo-banner"
-      role="status"
-    >
-      <span class="aa-demo-banner__ico" aria-hidden="true">ⓘ</span>
-      <div class="aa-demo-banner__text">
-        <strong>当前为演示数据</strong>（后端 AI 分析失败，已自动切换到离线演示模式）。如需真实分析，请确认后端 Flask (5002) 已启动且 <code>DASHSCOPE_API_KEY</code>（通义千问）已配置。刷新页面后重试。
-      </div>
-    </div>
+    <!-- Content Canvas -->
+    <main class="fac-main">
 
-    <main class="aa-main">
-      <!-- 进度总览 -->
-      <section class="aa-progress-card">
-        <div class="aa-progress__meta">
-          <span class="aa-kicker">分析进度</span>
-          <span class="aa-progress__pct">{{ progressPct }}%</span>
+      <!-- ── 策略提示词卡片 ───────────────────────────────────── -->
+      <section class="fac-prompt-card">
+        <div class="fac-prompt-card__glow" />
+        <div class="fac-prompt-card__head">
+          <h2 class="fac-prompt-card__title">
+            <span class="mso">terminal</span>
+            策略核心理念
+          </h2>
+          <button type="button" class="fac-prompt-card__expand" @click="showPromptModal = true">
+            查看全部 <span class="mso">chevron_right</span>
+          </button>
         </div>
-        <div class="aa-progress__bar">
-          <div
-            class="aa-progress__fill"
-            :style="{ width: progressPct + '%' }"
-            :class="{ 'aa-progress__fill--done': isDone }"
-          />
-        </div>
-        <p class="aa-progress__hint">
-          {{ isRunning ? currentStepMsg : isDone ? '分析完成，以下是结果' : '点击下方按钮启动 AI 分析' }}
-        </p>
+        <pre class="fac-prompt-card__code">{{ agentInfo.tagline || '加载中...' }}</pre>
       </section>
 
-      <!-- 步骤日志 -->
-      <section class="aa-log-card">
-        <div class="aa-log__head">
-          <svg class="icon aa-log__ico" aria-hidden="true"><use href="#icon-ai" /></svg>
-          <h2 class="aa-log__title">分析日志</h2>
-          <span class="aa-log__count">{{ steps.length }} 步</span>
+      <!-- ── AI 思考过程 ─────────────────────────────────── -->
+      <section class="fac-thinking-card">
+        <!-- 折叠头 -->
+        <div
+          class="fac-thinking-card__head"
+          role="button"
+          tabindex="0"
+          @click="thinkingExpanded = !thinkingExpanded"
+          @keydown.enter.prevent="thinkingExpanded = !thinkingExpanded"
+          @keydown.space.prevent="thinkingExpanded = !thinkingExpanded"
+        >
+          <span class="mso">memory</span>
+          <h2 class="fac-thinking-card__title">AI 分析过程</h2>
+          <span class="fac-thinking-card__count">{{ thinkingLines.length }} 步</span>
+          <span class="fac-thinking-card__toggle" :class="{ 'fac-thinking-card__toggle--open': thinkingExpanded }">
+            <span class="mso">expand_more</span>
+          </span>
         </div>
-        <div class="aa-log__body" ref="logEl">
+
+        <!-- 时间线 -->
+        <div v-show="thinkingExpanded" class="fac-timeline">
           <div
-            v-for="(s, i) in steps"
-            :key="i"
-            class="aa-log-entry"
-            :class="{
-              'aa-log-entry--done': s.status === 'done',
-              'aa-log-entry--active': s.status === 'active',
-              'aa-log-entry--error': s.status === 'error',
-            }"
+            v-for="(line, i) in thinkingLines"
+            :key="'tl-' + i"
+            class="fac-timeline__item"
           >
-            <span class="aa-log-entry__dot" />
-            <span class="aa-log-entry__time">{{ s.time }}</span>
-            <span class="aa-log-entry__msg">{{ s.message }}</span>
+            <div class="fac-timeline__dot" :class="{ 'fac-timeline__dot--active': (line.startsWith('[步骤') || line.startsWith('[阶段')) && i === thinkingLines.length - 1 }">
+              <span class="mso">{{ line.startsWith('[步骤') ? 'task_alt' : line.startsWith('[调用') ? 'cloud_download' : line.startsWith('[结果') ? 'database' : line.startsWith('[阶段]') ? 'auto_awesome' : 'smart_toy' }}</span>
           </div>
-          <div v-if="!steps.length" class="aa-log-empty">
-            尚未开始分析，等待启动…
+            <div class="fac-timeline__content" :class="{ 'fac-timeline__content--active': (line.startsWith('[步骤') || line.startsWith('[阶段')) && i === thinkingLines.length - 1 }">
+              <div class="fac-timeline__title">
+                {{ line.startsWith('[步骤') ? '任务步骤' : line.startsWith('[调用') ? '数据获取' : line.startsWith('[结果') ? '返回数据' : line.startsWith('[阶段]') ? '推理阶段' : '思考中' }}
+                <span v-if="line.startsWith('[阶段]') && i === thinkingLines.length - 1" class="fac-timeline__dots">
+                  <span class="fac-timeline__dot-anim" />
+                  <span class="fac-timeline__dot-anim" />
+                  <span class="fac-timeline__dot-anim" />
+                </span>
+        </div>
+              <p class="fac-timeline__desc">{{ line.replace(/^\[[^\]]+\]\s*/, '') }}</p>
+            </div>
           </div>
+        </div>
+
+        <!-- 分析中时间线占位（实时滚动用） -->
+        <div v-if="isRunning && !thinkingLines.length" class="fac-timeline">
+          <div class="fac-timeline__item">
+            <div class="fac-timeline__dot fac-timeline__dot--active">
+              <span class="mso">model_training</span>
+            </div>
+            <div class="fac-timeline__content fac-timeline__content--active">
+              <div class="fac-timeline__title">
+                正在分析
+                <span class="fac-timeline__dots">
+                  <span class="fac-timeline__dot-anim" />
+                  <span class="fac-timeline__dot-anim" />
+                  <span class="fac-timeline__dot-anim" />
+                </span>
+              </div>
+              <p class="fac-timeline__desc">等待 AI 智能体返回分析结果...</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 启动按钮 -->
+        <div class="fac-thinking-card__run-btn-wrap">
+        <button
+          type="button"
+            class="fac-btn-run"
+            :class="{ 'fac-btn-run--running': isRunning }"
+          :disabled="isRunning"
+          @click="runAnalysis"
+        >
+            <span v-if="isRunning" class="fac-btn-run__spinner" />
+            <span v-else class="mso">play_arrow</span>
+            {{ isRunning ? '分析中...' : isFromHistory ? '再次分析' : '启动 AI 分析' }}
+          </button>
         </div>
       </section>
 
-      <!-- 分析结果（完成后展示） -->
+      <!-- ── 实时分析报告 ─────────────────────────────────── -->
+      <section v-if="liveReportLines.length" class="fac-report-card">
+        <div class="fac-report-card__head">
+          <span class="mso">description</span>
+          <h2 class="fac-report-card__title">{{ isRunning ? '实时分析报告' : '分析报告' }}</h2>
+          <span v-if="isRunning" class="fac-report-card__live">
+            <span class="fac-report-card__live-dot" />
+            实时输出
+          </span>
+        </div>
+        <div class="fac-report-card__body" ref="liveEl">
+          <div
+            v-for="(line, i) in liveReportLines"
+            :key="i"
+            class="fac-report-line"
+            :class="'fac-report-line--' + line.type"
+          >{{ line.text }}</div>
+        </div>
+      </section>
+
+      <!-- ── 分析结果（完成后展示）──────────────────────── -->
       <template v-if="isDone && result">
+
         <!-- 共识标尺 -->
-        <section class="aa-consensus-card">
-          <div class="aa-consensus__left">
-            <div class="aa-consensus__gauge">
-              <svg viewBox="0 0 96 96" class="aa-consensus__svg">
+        <section v-if="structured" class="fac-consensus-card">
+          <div class="fac-consensus__gauge">
+            <svg viewBox="0 0 96 96" class="fac-consensus__svg">
                 <circle cx="48" cy="48" r="40" fill="none" stroke-width="8" stroke="var(--track)" />
                 <circle
                   cx="48" cy="48" r="40"
@@ -105,169 +161,218 @@
                   :stroke-dasharray="gaugeCirc"
                   :stroke-dashoffset="gaugeOffset"
                   transform="rotate(-90 48 48)"
-                  class="aa-consensus__arc"
+                class="fac-consensus__arc"
                 />
-                <text x="48" y="44" text-anchor="middle" class="aa-consensus__num">{{ confidence }}</text>
-                <text x="48" y="58" text-anchor="middle" class="aa-consensus__unit">%</text>
+              <text x="48" y="44" text-anchor="middle" class="fac-consensus__num">{{ confidence }}</text>
+              <text x="48" y="58" text-anchor="middle" class="fac-consensus__unit">%</text>
               </svg>
             </div>
-          </div>
-          <div class="aa-consensus__right">
-            <div class="aa-consensus__stance-row">
-              <span
-                class="aa-stance-tag"
-                :class="'aa-stance-tag--' + (structured?.stance || 'neutral')"
-              >
+          <div class="fac-consensus__right">
+            <div class="fac-consensus__stance-row">
+              <span class="fac-stance-tag" :class="'fac-stance-tag--' + (structured?.stance || 'neutral')">
                 {{ stanceLabel }}
               </span>
-              <span class="aa-consensus__conf-label">信心指数 {{ confidence }}%</span>
+              <span class="fac-consensus__conf-label">信心指数 {{ confidence }}%</span>
             </div>
-            <p class="aa-consensus__comm">
-              {{ structured?.marketCommentary || '' }}
-            </p>
-            <div class="aa-consensus__advice">
-              <strong>策略建议：</strong>{{ structured?.positionAdvice || '' }}
-            </div>
-            <div v-if="structured?.riskWarning" class="aa-consensus__warning">
-              <span class="aa-warn-ico" aria-hidden="true">⚠</span>
+            <p class="fac-consensus__comm">{{ structured?.marketCommentary || '' }}</p>
+            <p class="fac-consensus__advice"><strong>策略建议：</strong>{{ structured?.positionAdvice || '' }}</p>
+            <div v-if="structured?.riskWarning" class="fac-consensus__warning">
+              <span class="mso">warning</span>
               {{ structured.riskWarning }}
             </div>
           </div>
         </section>
 
-        <!-- 推荐股票 -->
-        <section v-if="recommendedStocks.length" class="aa-recs-card">
-          <h2 class="aa-recs__title">
-            <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-            推荐关注
+        <!-- 推荐股票（对齐设计图） -->
+        <section v-if="recommendedStocks.length" class="fac-recs-card">
+          <h2 class="fac-recs__title">
+            <span class="mso">star</span>
+            推荐结果
           </h2>
-          <div class="aa-recs__list">
+          <div>
             <div
               v-for="(s, i) in recommendedStocks"
               :key="i + '-' + (s.routeCode || s.code)"
-              class="aa-rec-item"
+              class="fac-rec-item"
             >
-              <div
-                class="aa-rec-item__main"
-                role="button"
-                tabindex="0"
-                @click="goStockDetail(s)"
-                @keydown.enter.prevent="goStockDetail(s)"
-                @keydown.space.prevent="goStockDetail(s)"
-              >
-                <div class="aa-rec-item__left">
-                  <span class="aa-rec-item__rank">{{ i + 1 }}</span>
-                  <div>
-                    <p class="aa-rec-item__name">{{ s.name }}</p>
-                    <p class="aa-rec-item__code">{{ s.displayCode }}</p>
+              <!-- 顶部：名称 + 评级 + 趋势标签 -->
+              <div class="fac-rec-item__top">
+                <div class="fac-rec-item__name-group">
+                  <div class="fac-rec-item__name">
+                    {{ s.name }}
+                    <span class="fac-rec-item__code-badge">{{ s.displayCode }}</span>
+                    <span v-if="s.grade" class="fac-rec-item__grade-badge" :class="'fac-rec-item__grade-badge--' + s.grade.toLowerCase()">
+                      {{ s.grade }}
+                    </span>
+                    </div>
+                  <!-- 现价 + 涨跌幅 -->
+                  <div v-if="s.price || s.chg_pct !== 0" class="fac-rec-item__price-row">
+                    <span v-if="s.price" class="fac-rec-item__price">{{ s.price }}</span>
+                    <span v-if="s.chg_pct !== 0" class="fac-rec-item__chg" :class="s.chg_pct >= 0 ? 'fac-rec-item__chg--up' : 'fac-rec-item__chg--down'">
+                      {{ s.chg_pct >= 0 ? '+' : '' }}{{ s.chg_pct }}%
+                    </span>
+                    <span v-if="s.score > 0" class="fac-rec-item__score-chip">
+                      <span class="mso">star</span>
+                      {{ s.score }}分
+                    </span>
                   </div>
                 </div>
-                <div class="aa-rec-item__right">
-                  <span
-                    class="aa-rec-item__role"
-                    :class="'role-' + roleColor(s.role)"
-                  >{{ s.role }}</span>
-                  <p class="aa-rec-item__reason">{{ s.reason }}</p>
+                <div class="fac-rec-item__badges">
+                  <span v-if="s.trendTag || s.adviseType" class="fac-rec-item__trend-chip">
+                    <span class="mso">{{ s.trendTag.includes('高动能') || s.adviseType.includes('打板') ? 'bolt' : s.trendTag.includes('强势') || s.trendTag.includes('突破') ? 'trending_up' : 'favorite' }}</span>
+                    {{ s.trendTag || s.adviseType }}
+                  </span>
+                  <span v-if="s.sector" class="fac-rec-item__sector-chip">{{ s.sector }}</span>
+                  <span v-if="s.riskLevel" class="fac-rec-item__risk-chip" :class="'fac-rec-item__risk-chip--' + s.riskLevel">
+                    {{ s.riskLevel }}风险
+                  </span>
                 </div>
+              </div>
+
+              <!-- 信号标签行 -->
+              <div v-if="s.signal" class="fac-rec-item__signals">
                 <span
-                  class="aa-rec-item__chg"
-                  :class="s.chg_pct >= 0 ? 'up' : 'down'"
-                >
-                  {{ s.chg_pct >= 0 ? '+' : '' }}{{ s.chg_pct }}%
+                  v-for="(sig, si) in s.signal.split('/').filter(Boolean)"
+                  :key="si"
+                  class="fac-rec-item__signal-chip"
+                >{{ sig.trim() }}</span>
+              </div>
+
+              <!-- 核心指标网格 -->
+              <div class="fac-rec-item__metrics">
+                <div class="fac-rec-item__metric">
+                  <p class="fac-rec-item__metric-label">目标盈利</p>
+                  <p class="fac-rec-item__metric-value fac-rec-item__metric-value--up">
+                    {{ s.targetProfit || '--' }}
+                  </p>
+                </div>
+                <div class="fac-rec-item__metric">
+                  <p class="fac-rec-item__metric-label">硬性防守</p>
+                  <p class="fac-rec-item__metric-value fac-rec-item__metric-value--down">
+                    {{ s.hardStop || '--' }}
+                  </p>
+                </div>
+                <div class="fac-rec-item__metric">
+                  <p class="fac-rec-item__metric-label">合理建仓区间</p>
+                  <p class="fac-rec-item__metric-value fac-rec-item__metric-value--range">
+                    {{ s.priceRange || '--' }}
+                  </p>
+                </div>
+              </div>
+
+              <!-- 操作信息：仓位 + 持股周期 -->
+              <div v-if="s.positionRatio || s.holdPeriod" class="fac-rec-item__ops">
+                <span v-if="s.positionRatio" class="fac-rec-item__op-chip">
+                  <span class="mso">account_balance_wallet</span>
+                  {{ s.positionRatio }}
+                </span>
+                <span v-if="s.holdPeriod" class="fac-rec-item__op-chip">
+                  <span class="mso">schedule</span>
+                  {{ s.holdPeriod }}
                 </span>
               </div>
-              <button
-                type="button"
-                class="aa-rec-item__fav"
-                :disabled="favBusy[s.routeCode]"
-                :class="{ 'aa-rec-item__fav--on': favAdded[s.routeCode] }"
-                @click.stop="favoriteStock(s)"
-              >
-                {{ favAdded[s.routeCode] ? '已自选' : '收藏' }}
-              </button>
+
+              <!-- 推荐逻辑 -->
+              <div class="fac-rec-item__reason">
+                <p class="fac-rec-item__reason-label">
+                  <span class="mso">lightbulb</span>
+                  推荐逻辑
+                </p>
+                <p class="fac-rec-item__reason-text">{{ s.reason || '暂无详细逻辑说明' }}</p>
+              </div>
+
+              <!-- 底部：收藏按钮 -->
+              <div class="fac-rec-item__footer">
+                <button
+                  type="button"
+                  class="fac-btn-fav"
+                  :class="{ 'fac-btn-fav--on': favAdded[s.routeCode] }"
+                  :disabled="favBusy[s.routeCode]"
+                  @click="favoriteStock(s)"
+                >
+                  <span class="mso">{{ favAdded[s.routeCode] ? 'favorite' : 'favorite_border' }}</span>
+                  {{ favAdded[s.routeCode] ? '已自选' : '加入自选' }}
+                </button>
+              </div>
             </div>
           </div>
         </section>
 
-        <!-- AI 思考过程 -->
-        <section v-if="isDone && thinkingParagraphs.length > 0" class="aa-thinking-card">
-          <div class="aa-thinking-card__head">
-            <svg class="icon" aria-hidden="true"><use href="#icon-ai" /></svg>
-            <h2 class="aa-thinking-card__title">AI 思考过程</h2>
+        <!-- 任务拆解 -->
+        <section v-if="hasTaskDecomposition" class="fac-decomp-card">
+          <div class="fac-decomp-card__head">
+            <span class="mso">assignment</span>
+            <h2 class="fac-decomp-card__title">任务拆解</h2>
           </div>
-          <div class="aa-thinking-card__body">
-            <template v-for="(para, i) in thinkingParagraphs" :key="i">
-              <p v-if="para" class="aa-thinking-para">{{ para }}</p>
-            </template>
+          <div class="fac-decomp-card__body">
+            <div
+              v-for="(step, idx) in taskDecomposition"
+              :key="idx"
+              class="fac-decomp-step"
+            >
+              <div class="fac-decomp-step__header">
+                <span class="fac-decomp-step__num">{{ idx + 1 }}</span>
+                <span class="fac-decomp-step__title">{{ step.title || step.name || `步骤 ${idx + 1}` }}</span>
+              </div>
+              <p class="fac-decomp-step__desc">{{ step.description || step.desc || step.content || '' }}</p>
+            </div>
           </div>
         </section>
 
-        <!-- 完整分析文本 -->
-        <section class="aa-analysis-card">
-          <div class="aa-analysis-card__head">
-            <svg class="icon" aria-hidden="true"><use href="#icon-ai" /></svg>
-            <h2 class="aa-analysis-card__title">完整分析报告</h2>
-          </div>
-          <div class="aa-analysis-card__body">
-            <template v-for="(para, i) in analysisParagraphs" :key="i">
-              <p v-if="para" class="aa-analysis-para" :class="{ 'aa-analysis-para--section': para.startsWith('【') }">
-                {{ para }}
-              </p>
-            </template>
-          </div>
-        </section>
       </template>
 
-      <!-- 操作区 -->
-      <div class="aa-actions">
-        <button
-          type="button"
-          class="aa-btn-run"
-          :class="{ 'aa-btn-run--running': isRunning }"
-          :disabled="isRunning"
-          @click="runAnalysis"
-        >
-          <span v-if="isRunning" class="aa-btn-run__spinner" />
-          <svg v-else class="icon aa-btn-run__ico" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          {{ isRunning ? '分析中…' : '启动 AI 分析' }}
-        </button>
-        <button
-          v-if="isDone"
-          type="button"
-          class="aa-btn-reset"
-          @click="resetAnalysis"
-        >
-          重新分析
-        </button>
-      </div>
+    </main>
 
-      <!-- Prompt 预览（可展开） -->
-      <details class="aa-prompt-panel">
-        <summary class="aa-prompt-panel__toggle">
-          <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>
-          查看 Prompt 模板
-        </summary>
-        <div class="aa-prompt-panel__body">
-          <div class="aa-prompt-section">
-            <h4 class="aa-prompt-label">System Prompt</h4>
-            <pre class="aa-prompt-code">{{ systemPromptPreview }}</pre>
+    <!-- 底部分享栏 -->
+    <div v-if="isDone" class="fac-bottom-bar">
+      <button type="button" class="fac-btn-share" @click="printReport">
+        <span class="mso">share</span>
+        分享此深度报告
+      </button>
+    </div>
+
+    <!-- Footer: Risk Disclosure -->
+    <footer class="fac-footer">
+      <div class="fac-footer__inner">
+        <div class="fac-footer__warn">
+          <span class="mso">warning</span>
+          Risk Disclosure
+      </div>
+        <p class="fac-footer__text">
+          免责声明：本智能体所提供的所有分析仅供参考，不构成任何形式的投资建议。市场有风险，投资需谨慎。AI 智能分析可能存在延迟或算法误差，用户应根据自身风险承受能力独立做出决策。
+        </p>
+      </div>
+    </footer>
+
+    <!-- Prompt Modal -->
+    <div v-if="showPromptModal" class="fac-modal-overlay" @click.self="showPromptModal = false">
+      <div class="fac-modal">
+        <div class="fac-modal__header">
+          <h3 class="fac-modal__title">{{ agentName }} - 提示词模板</h3>
+          <button type="button" class="fac-modal__close" @click="showPromptModal = false" aria-label="关闭">
+            <span class="mso">close</span>
+          </button>
+        </div>
+        <div class="fac-modal__body">
+          <div class="fac-modal__section">
+            <h4 class="fac-modal__label">System Prompt</h4>
+            <pre class="fac-modal__code">{{ realPrompts.systemPrompt || '加载中...' }}</pre>
           </div>
-          <div class="aa-prompt-section">
-            <h4 class="aa-prompt-label">User Prompt（已渲染数据）</h4>
-            <pre class="aa-prompt-code">{{ userPromptPreview }}</pre>
+          <div class="fac-modal__section">
+            <h4 class="fac-modal__label">User Prompt 模板</h4>
+            <pre class="fac-modal__code">{{ realPrompts.userPrompt || '加载中...' }}</pre>
           </div>
         </div>
-      </details>
-
-      <p class="aa-footnote">AI 分析结果仅供参考，不构成投资建议。模型基于历史数据与公开信息生成，存在局限性。</p>
-    </main>
+      </div>
+    </div>
   </div>
+
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { demoAnalyzeAgent, analyzeWithAgent } from '@/api/agents.js'
+import { analyzeWithAgent, fetchTodayAnalysis, fetchAgentInfo } from '@/api/agents.js'
 import { watchlist } from '@/api/strategy.js'
 
 const route = useRoute()
@@ -276,7 +381,6 @@ const router = useRouter()
 const agentId = computed(() => route.params.id || 'jun')
 const agentName = computed(() => _nameMap[agentId.value] || agentId.value)
 const roleSubtitle = computed(() => _roleMap[agentId.value] || '')
-/** 不依赖外链图床，用昵称首字做头像 */
 const agentInitial = computed(() => {
   const n = (result.value?.name_brand || result.value?.agent_name || agentName.value || '').trim()
   for (const ch of n) {
@@ -295,39 +399,146 @@ const _roleMap = {
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
   deepseek: '深度推理', beijing: '游资打板',
 }
-// ── 状态 ────────────────────────────────────────────────────────────────
-const steps = ref([])
+
+const agentDescMap = {
+  jun: '专注挖掘市场领涨龙头，捕捉短线爆发动能，并针对高频情绪波动进行深度解析与即时反馈。',
+  qiao: '擅长识别板块轮动节奏，在热点切换中精准定位下一个接力方向，灵活调整配置策略。',
+  jia: '注重安全边际与价值回归，在市场恐慌时逆向布局低位优质筹码，追求稳健收益。',
+  speed: '专注于打板策略，识别最强封板意愿，结合量价关系寻找最优介入时机。',
+  trend: '追踪中期趋势方向，结合均线系统与动能指标，把握波段性机会。',
+  quant: '运用量化模型与回测数据，从统计学角度验证交易逻辑的可靠性。',
+  deepseek: '宏观+行业+个股三维共振；布林带+资金流+催化剂三角验证。',
+  beijing: '三有量化选板，六大板型机械执行，1/8仓铁律护本。',
+}
+
+// 任务标签配置（beijing 五步为核心）
+const agentTaskTags = {
+  beijing: [
+    { label: '联网搜索', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54' },
+    { label: '三有筛选', icon: 'M3 5v14h18V5H3zm16 12H5V7h14v10z' },
+    { label: '板型分类', icon: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z' },
+    { label: '仓位分配', icon: 'M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z' },
+    { label: '离场预案', icon: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z' },
+  ],
+  deepseek: [
+    { label: '宏观研判', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
+    { label: '行业验证', icon: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z' },
+    { label: '个股筛选', icon: 'M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z' },
+    { label: '风险评估', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z' },
+  ],
+}
+
+const taskTags = computed(() => agentTaskTags[agentId.value] || [])
+
+// ── 生命周期 & 请求取消 ─────────────────────────────────────────────────
+let abortCtrl = null
+
+onBeforeUnmount(() => {
+  if (abortCtrl) {
+    abortCtrl.abort()
+    abortCtrl = null
+  }
+  isRunning.value = false
+})
+
+onMounted(async () => {
+  try {
+    const today = await fetchTodayAnalysis(agentId.value)
+    if (today) {
+      const ar = today.analysis_result || {}
+      const st = ar.structured || {}
+      result.value = {
+        agent_id: today.agent_id || agentId.value,
+        agent_name: st.agentName || agentName.value,
+        name_brand: st.agentName || agentName.value,
+        structured: st,
+        analysis: ar.raw_text || today.raw_response_text || ar.analysis || '',
+        thinking: ar.thinking || today.thinking_text || '',
+        report_date: today.report_date,
+        report_time: today.report_time,
+        tokens_used: today.tokens_used || 0,
+      }
+      if (result.value.thinking) {
+        const lines = result.value.thinking.trim().split('\n').filter(Boolean)
+          .map(line => {
+            let t = line.trim()
+            while (t.startsWith('思考中:') || t.startsWith('思考中 ')) {
+              t = t.replace(/^思考中[:：]\s*/, '')
+            }
+            return t
+          })
+          .filter(Boolean)
+        thinkingLines.value = lines
+        // 历史记录：把 thinking 内容填充到 liveReportLines 用于展示
+        liveReportLines.value = lines.map(text => ({
+          text,
+          type: text.startsWith('【') ? 'section' : 'normal',
+        }))
+      }
+        isDone.value = true
+        isFromHistory.value = true
+        return
+    }
+  } catch (e) {
+    console.warn('[AgentAnalysis] 加载今日记录失败:', e)
+  }
+
+  // 加载 Agent 信息（tagline 等）
+  try {
+    const info = await fetchAgentInfo(agentId.value)
+    if (info) {
+      agentInfo.value = info
+    }
+  } catch (e) {
+    console.warn('[AgentAnalysis] 加载 Agent 信息失败:', e)
+  }
+
+})
 const isRunning = ref(false)
 const isDone = ref(false)
+const isFromHistory = ref(false)
 const result = ref(null)
-const logEl = ref(null)
-/** true = 本次结果是前端 demoAnalyzeAgent，非后端真实返回 */
-const isDemoResult = ref(false)
-
 const favBusy = ref({})
 const favAdded = ref({})
+const showPromptModal = ref(false)
+const thinkingLines = ref([])
+const liveReportLines = ref([])
+const liveEl = ref(null)
+let thinkingBuffer = ''
+const realPrompts = ref({ systemPrompt: '', userPrompt: '' })
+const agentInfo = ref({ tagline: '' })
+
+// 思考过程展开/折叠状态（分析中可折叠以减少干扰）
+const thinkingExpanded = ref(true)
+
+// COT 任务拆解状态
+const cotSteps = ref([])        // [{step, title, desc, done}]
+const currentCotStep = ref(0)
+const totalCotSteps = ref(5)
+const currentCotTitle = ref('')
+const cotDataLines = ref([])    // 数据获取过程的输出
+
+// ── 加载真实 prompt（弹窗打开时）─────────────────────────────────────
+watch(showPromptModal, async (open) => {
+  if (!open || realPrompts.value.systemPrompt) return
+  try {
+    const data = await fetchAgentInfo(agentId.value)
+    if (data) {
+      realPrompts.value.systemPrompt = data.system_prompt || ''
+      realPrompts.value.userPrompt = data.user_prompt_template || ''
+    }
+  } catch (e) {
+    console.warn('[AgentAnalysis] 加载 prompt 失败:', e)
+  }
+})
 
 // ── 计算属性 ────────────────────────────────────────────────────────────────
 const structured = computed(() => result.value?.structured)
 const confidence = computed(() => structured.value?.confidence ?? 0)
 const recommendedStocks = computed(() => {
   const raw = structured.value?.recommendedStocks ?? []
-  return raw.map(normalizeRecRow).filter(Boolean)
-})
-
-const progressPct = computed(() => {
-  if (!isRunning.value && !isDone.value) return 0
-  if (isDone.value) return 100
-  const maxStep = steps.value.length
-  if (!maxStep) return 0
-  const active = steps.value.find(s => s.status === 'active')
-  if (!active) return Math.round((maxStep / (maxStep + 1)) * 100)
-  return Math.round(((active.step - 1) / (maxStep + 1)) * 100)
-})
-
-const currentStepMsg = computed(() => {
-  const active = steps.value.find(s => s.status === 'active')
-  return active?.message || '初始化中...'
+  if (!Array.isArray(raw)) return []
+  return raw.map(s => normalizeRecRow(s)).filter(Boolean)
 })
 
 const stanceLabel = computed(() => {
@@ -344,14 +555,27 @@ const gaugeR = 40
 const gaugeCirc = computed(() => 2 * Math.PI * gaugeR)
 const gaugeOffset = computed(() => gaugeCirc.value * (1 - confidence.value / 100))
 
-const analysisParagraphs = computed(() => {
-  const text = result.value?.analysis || ''
-  return text.split('\n').filter(l => l.trim())
+const analysisText = computed(() => result.value?.analysis || result.value?.thinking || '')
+
+// 是否有真实思考内容（非占位符）
+const hasThinkingContent = computed(() => {
+  return thinkingLines.value.some(l =>
+    l && !l.startsWith('[阶段]') &&
+    l !== 'Waiting to start...' &&
+    !l.startsWith('[调用工具]') &&
+    !l.startsWith('[数据]')
+  )
 })
 
-const thinkingParagraphs = computed(() => {
-  const text = result.value?.thinking || ''
-  return text.split('\n').filter(l => l.trim())
+// ── 任务拆解（层次化模式特有）────────────────────────────────────────────
+const hasTaskDecomposition = computed(() => {
+  const decomp = result.value?.task_decomposition
+  return Array.isArray(decomp) && decomp.length > 0
+})
+
+const taskDecomposition = computed(() => {
+  const decomp = result.value?.task_decomposition
+  return Array.isArray(decomp) ? decomp : []
 })
 
 const systemPromptPreview = computed(() => {
@@ -375,36 +599,10 @@ const userPromptPreview = computed(() => {
 })
 
 // ── 工具函数 ────────────────────────────────────────────────────────────────
-function addStep(step, message, status = 'done') {
-  const now = new Date()
-  const time = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  const existing = steps.value.find(s => s.step === step)
-  if (existing) {
-    existing.status = status
-    existing.message = message
-  } else {
-    steps.value.push({ step, message, status, time })
-  }
-  // 自动激活下一步
-  if (status === 'done' && step < 6) {
-    addStep(step + 1, _stepMessages[step + 1] || '处理中...', 'active')
-  }
-  scrollLog()
-}
-
-const _stepMessages = {
-  1: '正在准备市场数据...',
-  2: '正在加载 Agent Prompt 模板...',
-  3: '正在调用 AI 模型分析...',
-  4: '正在解析结构化分析结果...',
-  5: '正在生成分析报告...',
-  6: '分析完成！',
-}
-
-function scrollLog() {
+function scrollLive() {
   nextTick(() => {
-    if (logEl.value) {
-      logEl.value.scrollTop = logEl.value.scrollHeight
+    if (liveEl.value) {
+      liveEl.value.scrollTop = liveEl.value.scrollHeight
     }
   })
 }
@@ -416,7 +614,6 @@ function roleColor(role) {
   return 'neutral'
 }
 
-/** 六位数字路由码，供 /stock/:code */
 function stockRouteCode6(code) {
   const s = String(code || '').trim()
   const m = s.match(/^(\d{6})/)
@@ -429,15 +626,60 @@ function normalizeRecRow(s) {
   if (!s || typeof s !== 'object') return null
   const codeRaw = String(s.code || '').trim()
   const routeCode = stockRouteCode6(codeRaw)
-  const chgRaw = s.chg_pct ?? s.change_pct ?? s.changePct
+
+  // 涨跌幅：changePct / chg_pct / change_pct
+  const chgRaw = s.changePct ?? s.chg_pct ?? s.change_pct
   const chg = Number(chgRaw)
   const chg_pct = Number.isFinite(chg) ? Math.round(chg * 100) / 100 : 0
-  const role = String(s.role || s.adviseType || s.grade || '关注').trim() || '关注'
-  const reason = String(s.reason || s.signal || s.meta || '').trim()
+
+  // 现价（后端已补调，不应为 0）
+  const price = s.price !== undefined && s.price !== null && s.price !== ''
+    ? String(s.price) : ''
+
   const name = String(s.name || '').trim()
-  const sector = String(s.sector || '').trim()
   const displayCode = codeRaw || routeCode || '--'
-  return { ...s, name, role, reason, chg_pct, routeCode, displayCode, sector }
+
+  // 趋势标签：从 grade / adviseType 综合判断
+  const gradeRaw = String(s.grade || '').trim()
+  const adviseType = String(s.adviseType || '').trim()
+  const signal = String(s.signal || '').trim()
+  let trendTag = String(s.trendTag || '').trim()
+  if (!trendTag) {
+    const gradeMap = { 'S': '顶级标的', 'A': '重点关注', 'B': '普通关注', 'C': '观察标的' }
+    if (gradeRaw && gradeMap[gradeRaw]) trendTag = gradeMap[gradeRaw]
+    else if (adviseType) trendTag = adviseType
+  }
+
+  // 目标盈利
+  let targetProfit = String(s.targetProfit || s.profit_target || '').trim()
+  if (!targetProfit && s.targetPrice) targetProfit = String(s.targetPrice)
+  if (!targetProfit && s.target) targetProfit = String(s.target)
+
+  // 硬性止损
+  const hardStop = String(s.hardStop || s.stopLoss || s.stop_loss || '').trim()
+
+  // 建仓区间
+  const priceRange = String(s.priceRange || s.price_range || s.entry_range || s.buyRange || '').trim()
+
+  // 推荐逻辑
+  const reason = String(s.meta || s.reason || signal || '').trim()
+
+  return {
+    ...s,
+    name,
+    routeCode,
+    displayCode,
+    chg_pct,
+    price,
+    trendTag,
+    targetProfit,
+    hardStop,
+    priceRange,
+    reason,
+    grade: gradeRaw,
+    adviseType,
+    signal,
+  }
 }
 
 function goStockDetail(s) {
@@ -456,7 +698,6 @@ async function favoriteStock(s) {
     favAdded.value = { ...favAdded.value, [code]: true }
   } catch (e) {
     console.warn('[AgentAnalysis] 加自选失败', e)
-    window.alert?.('加入自选失败，请检查网络或稍后重试')
   } finally {
     const next = { ...favBusy.value }
     delete next[code]
@@ -469,765 +710,765 @@ async function runAnalysis() {
   if (isRunning.value) return
   isRunning.value = true
   isDone.value = false
+  isFromHistory.value = false
   result.value = null
-  steps.value = []
-  isDemoResult.value = false
+  thinkingLines.value = []
+  liveReportLines.value = []
+  thinkingBuffer = ''
+  cotSteps.value = []
+  currentCotStep.value = 0
+
+  abortCtrl = new AbortController()
 
   try {
-    // 初始化步骤
-    addStep(1, _stepMessages[1], 'active')
-
-    let res
-    let backendErrorHandled = false
-    try {
-      addStep(2, _stepMessages[2], 'done')
-      addStep(3, `正在调用 AI 模型分析「${agentName.value}」...`, 'active')
-      res = await analyzeWithAgent(agentId.value)
-      isDemoResult.value = false
-    } catch (e) {
-      if (e?.name === 'AgentBackendError') {
-        isDemoResult.value = false
-        backendErrorHandled = true
-        const p = e.payload || {}
-        result.value = {
-          agent_id: p.agent_id,
-          agent_name: p.agent_name,
-          name_brand: p.name_brand,
-          role_subtitle: p.role_subtitle,
-          structured: p.structured || {
-            agentId: agentId.value,
-            agentName: p.agent_name || agentName.value,
-            stance: 'neutral',
-            confidence: 0,
-            marketCommentary: String(p.error || e.message || '分析未完成'),
-            positionAdvice: '',
-            riskWarning: '',
-            recommendedStocks: [],
-          },
-          analysis: p.analysis || p.error || e.message || '',
-          tokens_used: p.tokens_used ?? 0,
-        }
-        addStep(3, e.message || '分析失败', 'error')
-        addStep(4, _stepMessages[4], 'done')
-        addStep(5, _stepMessages[5], 'done')
-        addStep(6, '分析结束（服务异常）', 'done')
-        isDone.value = true
-      } else {
-        console.warn('[AgentAnalysis] 后端调用失败，降级到演示模式:', e)
-        isDemoResult.value = true
-        res = await demoAnalyzeAgent(agentId.value, (stepInfo) => {
-          if (stepInfo.step) addStep(stepInfo.step, stepInfo.message, 'done')
-        })
-      }
-    }
-
-    if (!backendErrorHandled) {
-      addStep(4, '正在解析结构化分析结果...', 'done')
-      addStep(5, '正在生成分析报告...', 'done')
-      result.value = res
-      addStep(6, '分析完成！', 'done')
-      isDone.value = true
-    }
+    // 使用流式接口
+    await runAnalysisStream(agentId.value, abortCtrl.signal)
   } catch (err) {
-    console.error('[AgentAnalysis] 分析失败:', err)
-    addStep(0, `分析失败: ${err.message}`, 'error')
+    console.warn('[AgentAnalysis] 分析中断:', err.message)
+    if (err.message !== '分析已取消') {
+      console.error('[AgentAnalysis] 分析失败:', err)
+    }
   } finally {
     isRunning.value = false
+    abortCtrl = null
+  }
+}
+
+async function runAnalysisStream(agentId, signal) {
+  console.log('[AgentAnalysisStream] 开始请求流式接口:', agentId)
+  const response = await fetch(`/api/agents/analyze/${agentId}/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+    signal,
+  })
+
+  console.log('[AgentAnalysisStream] 响应状态:', response.status, response.statusText)
+  console.log('[AgentAnalysisStream] Response headers:', Object.fromEntries(response.headers.entries()))
+
+  if (!response.ok) {
+    // 尝试读取错误响应
+    let text
+    try {
+      text = await response.text()
+      console.error('[AgentAnalysisStream] 错误响应体:', text)
+    } catch (e) {
+      text = ''
+    }
+    // 尝试从 SSE 格式解析错误信息
+    try {
+      const lines = text.split('\n\n')
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = JSON.parse(line.slice(6))
+          if (data.type === 'error') {
+            throw new Error(data.error || '请求失败')
+          }
+        }
+      }
+    } catch (e) {
+      if (e.message !== '请求失败') throw e
+    }
+    throw new Error(text || `请求失败 (HTTP ${response.status})`)
+  }
+
+  // 检查 Content-Type
+  const contentType = response.headers.get('content-type') || ''
+  console.log('[AgentAnalysisStream] Content-Type:', contentType)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      console.log('[AgentAnalysisStream] 流读取完成')
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n\n')
+    buffer = lines.pop() || ''
+
+    console.log('[AgentAnalysisStream] 收到数据块, 行数:', lines.length, 'buffer长度:', buffer.length)
+
+    for (const line of lines) {
+      console.log('[AgentAnalysisStream] 处理行:', line.slice(0, 100))
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6).trim()
+      if (payload === '[DONE]') {
+        console.log('[AgentAnalysisStream] 收到 DONE 标记')
+        continue
+      }
+
+      try {
+        const data = JSON.parse(payload)
+        console.log('[AgentAnalysisStream] 解析事件:', data.type, data)
+        handleStreamEvent(data)
+      } catch (e) {
+        console.warn('[Stream] 解析失败:', payload, e)
+      }
+    }
+  }
+}
+
+function handleStreamEvent(data) {
+  switch (data.type) {
+    case 'cot': {
+      currentCotStep.value = data.step || 0
+      totalCotSteps.value = data.total || 5
+      currentCotTitle.value = data.title || ''
+      thinkingLines.value.push(`[阶段] ${data.title} → ${data.message}`)
+      break
+    }
+
+    case 'cot_step': {
+      cotSteps.value.push({
+        step: data.step,
+        title: data.title,
+        desc: data.desc,
+        done: data.step < (currentCotStep.value || 0),
+      })
+      thinkingLines.value.push(`[步骤${data.step}] ${data.title}：${data.desc}`)
+      break
+    }
+
+    case 'cot_data': {
+      const lines = data.lines || []
+      for (const line of lines) {
+        cotDataLines.value.push({ step: data.step, text: line })
+        thinkingLines.value.push(`[数据] ${line}`)
+      }
+      break
+    }
+
+    case 'thinking': {
+      // 格式化输出到实时报告区
+      const raw = data.content || ''
+      for (const ch of raw) {
+        thinkingBuffer += ch
+        if (ch === '\n') {
+          let text = thinkingBuffer.trim()
+          // 去掉重复的"思考中:"前缀
+          while (text.startsWith('思考中:') || text.startsWith('思考中 ')) {
+            text = text.replace(/^思考中[:：]\s*/, '')
+          }
+          if (text) {
+            const type = text.startsWith('【') ? 'section' : 'normal'
+            liveReportLines.value.push({ text, type })
+            thinkingLines.value.push(text)
+          }
+          thinkingBuffer = ''
+          scrollLive()
+        }
+      }
+      break
+    }
+
+    case 'content': {
+      // 正文内容：push 到实时报告区
+      break
+    }
+
+    case 'analysis': {
+      // 同步分析模式下的最终报告分段（联网思考已完成，最终报告分段输出）
+      const text = (data.content || '').trim()
+      if (text) {
+        const type = text.startsWith('【') ? 'section' : 'normal'
+        liveReportLines.value.push({ text, type })
+        scrollLive()
+      }
+      break
+    }
+
+    case 'status':
+      // 更新进度提示
+      break
+
+    case 'tool_call':
+      // 展示正在调用的工具及参数
+      const args = data.args || {}
+      thinkingLines.value.push(`[调用] ${data.tool} → 参数: ${JSON.stringify(args)}`)
+      break
+
+    case 'tool_result': {
+      // 展示 qwen 返回的数据内容
+      const raw = data.result || ''
+      // 尝试解析为可读格式
+      let display = raw
+      try {
+        const parsed = JSON.parse(raw)
+        display = JSON.stringify(parsed, null, 2)
+      } catch {}
+      // 截断过长数据
+      const lines = display.split('\n')
+      const truncated = lines.length > 30 ? lines.slice(0, 30).join('\n') + '\n... (共' + lines.length + '行)' : display
+      thinkingLines.value.push(`[结果] ${truncated}`)
+      break
+    }
+
+    case 'done':
+      // flush 剩余 thinking
+      if (thinkingBuffer.trim()) {
+        const text = thinkingBuffer.trim()
+        liveReportLines.value.push({ text, type: 'normal' })
+        thinkingLines.value.push(text)
+        thinkingBuffer = ''
+      }
+      // 如果没有实时内容但有分析文本，转成报告
+      if (!liveReportLines.value.length && data.analysis) {
+        const lines = data.analysis.split('\n').filter(l => l.trim())
+        for (const l of lines) {
+          const text = l.trim()
+          const type = text.startsWith('【') ? 'section' : 'normal'
+          liveReportLines.value.push({ text, type })
+        }
+      }
+      result.value = {
+        agent_id: data.agent_id,
+        agent_name: data.agent_name,
+        structured: data.structured || {},
+        analysis: data.analysis,
+        thinking: data.thinking,
+        tokens_used: data.tokens_used,
+      }
+      isDone.value = true
+      // 分析完成：将所有 COT 步骤标记为已完成
+      cotSteps.value = cotSteps.value.map(s => ({ ...s, done: true }))
+      break
+
+    case 'error':
+      throw new Error(data.error || '流式分析错误')
   }
 }
 
 function resetAnalysis() {
-  steps.value = []
   isRunning.value = false
   isDone.value = false
   result.value = null
-  isDemoResult.value = false
+  isFromHistory.value = false
   favAdded.value = {}
   favBusy.value = {}
+  thinkingLines.value = []
+  liveReportLines.value = []
+  thinkingBuffer = ''
+  cotSteps.value = []
+  currentCotStep.value = 0
+  totalCotSteps.value = 5
+  currentCotTitle.value = ''
+  cotDataLines.value = []
+  thinkingExpanded.value = true
 }
 
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/strategy/agents')
 }
+
+function printReport() {
+  window.print()
+}
 </script>
 
 <style scoped>
-.aa-page {
-  --primary: #4a47d2;
-  --primary-mid: #6462ec;
-  --on-surface: #1a1c1f;
-  --on-var: #414755;
-  --surface: #f9f9fe;
-  --low: #f3f3f8;
-  --high: #e8e8ed;
-  --white: #ffffff;
-  --up: #f23645;
-  --chip-bg: rgba(242, 54, 69, 0.16);
-  --chip-on: #7f1d1d;
-  --down: #089981;
-  --track: #ededf2;
-  --line: rgba(193, 198, 215, 0.15);
+/* ── Precision Ledger Design System ────────────────────────────────────── */
 
-  min-height: 100vh;
+/* Color Palette — root vars */
+.fac-root {
+  /* Primary: Deep Ocean Navy */
+  --primary: #3b1f8c;
+  --primary-container: #5a34a8;
+  --on-primary: #ffffff;
+  --on-primary-container: #e8deff;
+  --primary-fixed: #e8deff;
+  --primary-fixed-dim: #c9b8ff;
+  --on-primary-fixed: #26005a;
+  --on-primary-fixed-variant: #4600b3;
+
+  /* Surface Tiers (No-line tonal hierarchy) */
+  --surface: #f5f2ff;
+  --surface-bright: #f5f2ff;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #ede8ff;
+  --surface-container: #e5e0ff;
+  --surface-container-high: #ddd8ff;
+  --surface-container-highest: #d5d0ff;
+  --surface-dim: #c7c2eb;
+  --surface-variant: #ddd8ff;
+
+  /* Semantic — A股红涨绿跌 */
+  --secondary: #6b3fa0;
+  --secondary-container: #e5d0ff;
+  --secondary-fixed: #eed9ff;
+  --secondary-fixed-dim: #dab8ff;
+  --on-secondary: #ffffff;
+  --on-secondary-container: #4a0080;
+  --on-secondary-fixed: #380066;
+  --on-secondary-fixed-variant: #5600b3;
+
+  --tertiary: #390002;
+  --tertiary-container: #600007;
+  --tertiary-fixed: #ffdad6;
+  --tertiary-fixed-dim: #ffb3ac;
+  --on-tertiary: #ffffff;
+  --on-tertiary-container: #ff5a53;
+  --on-tertiary-fixed: #410003;
+  --on-tertiary-fixed-variant: #930010;
+
+  --error: #ba1a1a;
+  --error-container: #ffdad6;
+  --on-error: #ffffff;
+  --on-error-container: #93000a;
+
+  /* Neutrals */
+  --background: #f5f2ff;
+  --on-background: #1e1633;
+  --on-surface: #1e1633;
+  --on-surface-variant: #464455;
+  --inverse-surface: #2d2449;
+  --inverse-on-surface: #f0ecff;
+  --inverse-primary: #c9b8ff;
+
+  --outline: #747780;
+  --outline-variant: rgba(196, 198, 208, 0.3);
+
+  /* A股涨跌语义 */
+  --up: #f23645;
+  --up-alpha: rgba(242, 54, 69, 0.1);
+  --down: #089981;
+  --down-alpha: rgba(8, 153, 129, 0.1);
+
+  /* Elevation */
+  --shadow-card: 0 8px 24px rgba(46, 36, 73, 0.06);
+  --shadow-nav: 0 -4px 20px rgba(46, 36, 73, 0.08);
+  --shadow-header: 0 8px 24px rgba(46, 36, 73, 0.06);
+  --track: #c7c2eb;
+
+  /* Typography */
+  --font-headline: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Roboto Mono', 'SF Mono', Menlo, monospace;
+}
+
+.fac-root {
+  font-family: var(--font-body);
   min-height: 100dvh;
   background: var(--surface);
   color: var(--on-surface);
-  padding-bottom: calc(88px + env(safe-area-inset-bottom, 0));
-  font-family: 'Inter', var(--font, system-ui, sans-serif);
   -webkit-font-smoothing: antialiased;
 }
 
-/* 演示数据提示条（后端失败时） */
-.aa-demo-banner {
-  margin: 0 12px 10px;
-  padding: 10px 12px;
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  border-radius: 12px;
-  background: #fff8e6;
-  border: 1px solid #f0c96b;
-  color: #5c4a00;
-  font-size: 13px;
-  line-height: 1.45;
-}
-.aa-demo-banner__ico {
-  flex-shrink: 0;
-  font-weight: 700;
-  font-size: 16px;
-  line-height: 1.2;
-}
-.aa-demo-banner__text strong {
-  display: block;
-  margin-bottom: 4px;
-}
-.aa-demo-banner__text code {
-  font-size: 11px;
-  padding: 1px 4px;
-  background: rgba(0, 0, 0, 0.06);
-  border-radius: 4px;
-}
-
-/* Header */
-.aa-header {
+/* ── TopAppBar ─────────────────────────────────────────────────────────── */
+.fac-header {
   position: sticky;
   top: 0;
-  z-index: 40;
-  display: grid;
-  grid-template-columns: 44px 1fr auto;
+  z-index: 50;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: calc(12px + env(safe-area-inset-top, 0)) 12px 12px;
-  background: rgba(249, 249, 254, 0.88);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 1px 0 var(--line);
+  justify-content: space-between;
+  width: 100%;
+  height: 64px;
+  padding: 0 24px;
+  background: rgba(245, 242, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-header);
+  transition: background 0.2s;
 }
 
-.aa-back {
+.fac-header__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fac-header__icon-btn {
   width: 40px;
   height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  color: var(--primary);
+  border: none;
+  background: transparent;
+  color: var(--on-surface);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+  flex-shrink: 0;
 }
-.aa-back:active { background: rgba(74, 71, 210, 0.08); }
+.fac-header__icon-btn:active { transform: scale(0.92); }
+.fac-header__icon-btn:hover { background: rgba(221, 216, 255, 0.6); }
+.fac-header__icon-btn .mso { font-size: 24px; }
 
-.aa-header__brand {
+.fac-header__brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 0;
 }
 
-.aa-header__avatar {
-  width: 42px;
-  height: 42px;
+.fac-header__avatar {
+  width: 40px;
+  height: 40px;
   border-radius: 12px;
-  flex-shrink: 0;
-  background: var(--low);
-}
-.aa-header__avatar--text {
+  background: var(--primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
+  color: var(--on-primary);
+  font-family: var(--font-headline);
+  font-size: 18px;
   font-weight: 800;
-  color: #fff;
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-mid) 100%);
-  letter-spacing: -0.02em;
-  user-select: none;
+  letter-spacing: -0.03em;
+  flex-shrink: 0;
 }
 
-.aa-header__title {
-  margin: 0;
+.fac-header__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fac-header__title {
+  font-family: var(--font-headline);
   font-size: 1.05rem;
   font-weight: 800;
+  color: var(--on-surface);
   letter-spacing: -0.02em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.2;
 }
 
-.aa-header__sub {
+.fac-header__subtitle {
+  font-family: var(--font-body);
   font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  font-weight: 700;
   text-transform: uppercase;
-  color: var(--primary);
+  letter-spacing: 0.06em;
+  color: var(--on-surface-variant);
 }
 
-.aa-header__right {
+.fac-header__right {
   display: flex;
   align-items: center;
+  gap: 8px;
 }
 
-.aa-status-badge {
+.fac-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   border-radius: 999px;
+  font-family: var(--font-body);
   font-size: 11px;
-  font-weight: 800;
-  background: var(--low);
-  color: var(--on-var);
+  font-weight: 700;
   white-space: nowrap;
 }
-.aa-status-badge--running {
-  background: rgba(74, 71, 210, 0.12);
+.fac-badge--history {
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-badge--running {
+  background: rgba(0, 22, 55, 0.1);
   color: var(--primary);
 }
-.aa-status-badge--done {
-  background: rgba(0, 107, 27, 0.1);
-  color: var(--up);
+.fac-badge--done {
+  background: rgba(8, 153, 129, 0.1);
+  color: var(--down);
 }
-
-.aa-status-badge__dot {
+.fac-badge--pending {
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-badge__dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
 }
-.aa-status-badge__dot--spin {
-  animation: spin-dot 1s linear infinite;
-}
-@keyframes spin-dot {
-  to { transform: rotate(360deg); }
-}
+.fac-badge__dot--spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Main */
-.aa-main {
+/* ── Main Canvas ─────────────────────────────────────────────────────── */
+.fac-main {
   max-width: 720px;
   margin: 0 auto;
-  padding: 20px 16px 32px;
+  padding: 20px 16px 100px;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-/* Progress */
-.aa-progress-card {
-  padding: 20px 18px;
-  background: var(--white);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
-  outline: 1px solid rgba(193, 198, 215, 0.12);
+/* ── Prompt Card ─────────────────────────────────────────────────────── */
+.fac-prompt-card {
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: var(--shadow-card);
+  position: relative;
+  overflow: hidden;
 }
-
-.aa-progress__meta {
+.fac-prompt-card__glow {
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  width: 120px;
+  height: 120px;
+  background: var(--primary-container);
+  opacity: 0.06;
+  border-radius: 0 0 0 100%;
+  pointer-events: none;
+}
+.fac-prompt-card__head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.aa-kicker {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--on-var);
-}
-
-.aa-progress__pct {
-  font-size: 14px;
-  font-weight: 800;
-  color: var(--primary);
-}
-
-.aa-progress__bar {
-  height: 8px;
-  background: var(--track);
-  border-radius: 999px;
-  overflow: hidden;
-  margin-bottom: 10px;
-}
-
-.aa-progress__fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--primary), var(--primary-mid));
-  transition: width 0.5s ease;
-  min-width: 4px;
-}
-.aa-progress__fill--done {
-  background: linear-gradient(90deg, #f23645, #fb7185);
-}
-
-.aa-progress__hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--on-var);
-}
-
-/* Log */
-.aa-log-card {
-  padding: 20px 18px;
-  background: var(--white);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-}
-
-.aa-log__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
 }
-
-.aa-log__ico {
-  color: var(--primary);
-  fill: currentColor;
-  flex-shrink: 0;
-}
-
-.aa-log__title {
-  margin: 0;
-  font-size: 15px;
+.fac-prompt-card__title {
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
   font-weight: 800;
-  flex: 1;
-}
-
-.aa-log__count {
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--on-var);
-  background: var(--low);
-  padding: 3px 8px;
-  border-radius: 999px;
-}
-
-.aa-log__body {
-  max-height: 280px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-right: 4px;
-  scrollbar-width: thin;
-}
-
-.aa-log-entry {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--on-var);
-  opacity: 0.6;
-}
-.aa-log-entry--done { opacity: 1; }
-.aa-log-entry--active { opacity: 1; font-weight: 600; color: var(--primary); }
-.aa-log-entry--error { opacity: 1; color: var(--down); }
-
-.aa-log-entry__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--on-var);
-  flex-shrink: 0;
-  margin-top: 3px;
-}
-.aa-log-entry--done .aa-log-entry__dot { background: var(--up); }
-.aa-log-entry--active .aa-log-entry__dot {
-  background: var(--primary);
-  animation: pulse-dot 1.2s ease-in-out infinite;
-}
-@keyframes pulse-dot {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.5); opacity: 0.5; }
-}
-.aa-log-entry--error .aa-log-entry__dot { background: var(--down); }
-
-.aa-log-entry__time {
-  font-size: 11px;
-  color: rgba(65, 71, 85, 0.5);
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.aa-log-entry__msg { flex: 1; }
-
-.aa-log-empty {
-  font-size: 13px;
-  color: var(--on-var);
-  opacity: 0.5;
-  text-align: center;
-  padding: 20px 0;
-}
-
-/* Consensus */
-.aa-consensus-card {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 20px;
-  padding: 22px;
-  background: var(--white);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-}
-@media (max-width: 400px) {
-  .aa-consensus-card { grid-template-columns: 1fr; }
-}
-
-.aa-consensus__left { display: flex; align-items: center; }
-.aa-consensus__gauge { width: 96px; height: 96px; }
-.aa-consensus__svg { width: 100%; height: 100%; }
-.aa-consensus__arc { transition: stroke-dashoffset 1s ease; }
-.aa-consensus__num {
-  font-size: 20px;
-  font-weight: 800;
-  fill: var(--on-surface);
-  font-variant-numeric: tabular-nums;
-}
-.aa-consensus__unit {
-  font-size: 10px;
-  font-weight: 600;
-  fill: var(--on-var);
-}
-
-.aa-consensus__stance-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-}
-
-.aa-stance-tag {
-  font-size: 12px;
-  font-weight: 800;
-  padding: 4px 12px;
-  border-radius: 999px;
-}
-.aa-stance-tag--bull {
-  background: var(--chip-bg);
-  color: var(--chip-on);
-}
-.aa-stance-tag--bear {
-  background: rgba(8, 153, 129, 0.14);
-  color: #047857;
-}
-.aa-stance-tag--neutral {
-  background: var(--high);
-  color: var(--on-var);
-}
-
-.aa-consensus__conf-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--on-var);
-}
-
-.aa-consensus__comm {
-  margin: 0 0 10px;
-  font-size: 13px;
-  line-height: 1.6;
   color: var(--on-surface);
-}
-
-.aa-consensus__advice {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--on-var);
-  margin-bottom: 8px;
-}
-.aa-consensus__advice strong { font-weight: 800; color: var(--on-surface); }
-
-.aa-consensus__warning {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 12px;
-  color: #93000a;
-  background: rgba(186, 26, 26, 0.06);
-  padding: 8px 10px;
-  border-radius: 8px;
-  line-height: 1.5;
-}
-.aa-warn-ico { flex-shrink: 0; font-size: 14px; }
-
-/* Recommendations */
-.aa-recs-card {
-  padding: 22px 20px;
-  background: var(--white);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-}
-
-.aa-recs__title {
-  margin: 0 0 18px;
-  font-size: 16px;
-  font-weight: 800;
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--primary);
-}
-
-.aa-recs__list { display: flex; flex-direction: column; gap: 12px; }
-
-.aa-rec-item {
-  display: flex;
-  align-items: stretch;
-  background: var(--low);
-  border-radius: 12px;
-  overflow: hidden;
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-}
-.aa-rec-item__main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 12px 14px 14px;
-  flex-wrap: wrap;
-  text-align: left;
-  border: none;
-  background: transparent;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.aa-rec-item__main:active {
-  background: rgba(74, 71, 210, 0.06);
-}
-.aa-rec-item__fav {
-  flex-shrink: 0;
-  align-self: stretch;
-  min-width: 52px;
-  max-width: 64px;
-  border: none;
-  border-left: 1px solid rgba(193, 198, 215, 0.35);
-  background: rgba(255, 255, 255, 0.5);
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--primary);
-  padding: 0 8px;
-  line-height: 1.2;
-}
-.aa-rec-item__fav:disabled {
-  opacity: 0.45;
-}
-.aa-rec-item__fav--on {
-  color: var(--on-var);
-  background: rgba(255, 255, 255, 0.85);
-}
-
-.aa-rec-item__left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-
-.aa-rec-item__rank {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--primary);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 800;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.aa-rec-item__name {
+  letter-spacing: -0.02em;
   margin: 0;
-  font-size: 14px;
-  font-weight: 800;
-  white-space: nowrap;
 }
-.aa-rec-item__code {
-  margin: 0;
-  font-size: 10px;
-  color: var(--on-var);
-  font-variant-numeric: tabular-nums;
+.fac-prompt-card__title .mso {
+  color: var(--primary-container);
+  font-size: 20px;
 }
-
-.aa-rec-item__right {
-  flex: 1;
-  min-width: 0;
+.fac-prompt-card__expand {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 4px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--on-surface-variant);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: color 0.15s, background 0.15s;
 }
+.fac-prompt-card__expand:hover { color: var(--primary); background: rgba(0, 22, 55, 0.05); }
+.fac-prompt-card__expand .mso { font-size: 16px; }
+.fac-prompt-card__code {
+  background: var(--surface-container-low);
+  border-radius: 16px;
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--on-surface-variant);
+  overflow-x: auto;
+  position: relative;
+  z-index: 1;
+  border: 1px solid rgba(196, 198, 208, 0.15);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.fac-prompt-card__code .kw { color: var(--primary-container); font-weight: 600; }
 
-.aa-rec-item__role {
-  font-size: 10px;
+/* ── Thinking Timeline ──────────────────────────────────────────────── */
+.fac-thinking-card {
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: var(--shadow-card);
+}
+.fac-thinking-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 4px;
+  margin: -4px -4px 20px;
+  transition: background 0.15s;
+}
+.fac-thinking-card__head:hover { background: rgba(207, 230, 242, 0.4); }
+.fac-thinking-card__head:active { background: rgba(207, 230, 242, 0.7); }
+.fac-thinking-card__head .mso {
+  color: var(--primary-container);
+  font-size: 20px;
+}
+.fac-thinking-card__title {
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
   font-weight: 800;
+  color: var(--on-surface);
+  flex: 1;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.fac-thinking-card__count {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
   padding: 2px 8px;
   border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  width: fit-content;
 }
-.role-primary { background: rgba(74, 71, 210, 0.12); color: var(--primary); }
-.role-muted { background: var(--high); color: var(--on-var); }
-.role-neutral { background: var(--low); color: var(--on-var); }
-
-.aa-rec-item__reason {
-  margin: 0;
-  font-size: 11px;
-  color: var(--on-var);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aa-rec-item__chg {
-  font-size: 15px;
-  font-weight: 800;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-.aa-rec-item__chg.up { color: var(--up); }
-.aa-rec-item__chg.down { color: var(--down); }
-
-/* Analysis Card */
-.aa-analysis-card {
-  padding: 22px 20px;
-  background: var(--white);
-  border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-}
-
-.aa-analysis-card__head {
+.fac-thinking-card__toggle {
+  color: var(--on-surface-variant);
+  transition: transform 0.2s;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  color: var(--primary);
 }
-.aa-analysis-card__head .icon { fill: currentColor; }
+.fac-thinking-card__toggle--open { transform: rotate(180deg); }
+.fac-thinking-card__toggle .mso { font-size: 20px; }
 
-.aa-analysis-card__title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 800;
-}
-
-.aa-analysis-card__body {
+.fac-timeline {
+  position: relative;
+  padding-left: 36px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+}
+.fac-timeline::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--surface-dim);
+  border-radius: 1px;
 }
 
-.aa-analysis-para {
-  margin: 0;
+.fac-timeline__item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  position: relative;
+}
+.fac-timeline__dot {
+  position: absolute;
+  left: -30px;
+  top: 2px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface-container-highest);
+  border: 2px solid var(--surface-container-lowest);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.3s;
+}
+.fac-timeline__dot .mso {
+  font-size: 14px;
+  color: var(--primary-container);
+}
+.fac-timeline__dot--active {
+  background: var(--primary);
+  border-color: var(--surface-container-lowest);
+  box-shadow: 0 0 16px rgba(0, 22, 55, 0.35);
+}
+.fac-timeline__dot--active .mso {
+  color: var(--on-primary);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.fac-timeline__content {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-container-low);
+  border-radius: 16px;
+  padding: 14px 16px;
+  transition: all 0.3s;
+}
+.fac-timeline__content--active {
+  background: rgba(0, 42, 93, 0.06);
+  border: 1px solid rgba(0, 42, 93, 0.15);
+}
+.fac-timeline__content--done { opacity: 0.7; }
+
+.fac-timeline__title {
+  font-family: var(--font-body);
   font-size: 13px;
-  line-height: 1.7;
-  color: var(--on-var);
-}
-.aa-analysis-para--section {
-  font-weight: 700;
-  color: var(--primary);
-  margin-top: 4px;
-}
-
-/* AI 思考过程卡片 */
-.aa-thinking-card {
-  background: var(--surface-1);
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  padding: 20px;
-  margin-top: 16px;
-}
-.aa-thinking-card__head {
+  font-weight: 600;
+  color: var(--on-surface);
+  margin: 0 0 4px;
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
 }
-.aa-thinking-card__head .icon { fill: currentColor; color: #7c3aed; }
-.aa-thinking-card__title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #7c3aed;
-  margin: 0;
-}
-.aa-thinking-card__body {
-  max-height: 400px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  background: rgba(124, 58, 237, 0.04);
-  border-radius: 10px;
-  padding: 12px 16px;
-}
-.aa-thinking-para {
-  margin: 0 0 8px 0;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--on-var);
-}
-
-/* Actions */
-.aa-actions {
+.fac-timeline__dots {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+.fac-timeline__dot-anim {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary-container);
+  animation: bounce 1s infinite;
+}
+.fac-timeline__dot-anim:nth-child(2) { animation-delay: 0.2s; }
+.fac-timeline__dot-anim:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(-3px); opacity: 0.4; }
 }
 
-.aa-btn-run {
-  flex: 1;
-  min-width: 200px;
-  padding: 16px 24px;
-  border-radius: 14px;
-  font-size: 16px;
-  font-weight: 800;
-  color: #fff;
-  background: linear-gradient(135deg, var(--primary), var(--primary-mid));
-  box-shadow: 0 8px 32px rgba(74, 71, 210, 0.3);
+.fac-timeline__desc {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.fac-thinking-card__run-btn-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 24px;
+}
+.fac-btn-run {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
   gap: 10px;
+  padding: 14px 32px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
   cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 8px 24px rgba(7, 30, 39, 0.12);
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
 }
-.aa-btn-run:active { transform: scale(0.98); opacity: 0.9; }
-.aa-btn-run:disabled { opacity: 0.7; cursor: not-allowed; }
-.aa-btn-run--running {
-  background: linear-gradient(135deg, #717786, #9ca3af);
+.fac-btn-run:hover {
+  background: var(--primary-container);
+  box-shadow: 0 12px 32px rgba(7, 30, 39, 0.18);
+}
+.fac-btn-run:active { transform: scale(0.97); }
+.fac-btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
+.fac-btn-run--running {
+  background: var(--on-surface-variant);
   box-shadow: none;
 }
-
-.aa-btn-run__ico { font-size: 18px; }
-
-.aa-btn-run__spinner {
+.fac-btn-run .mso { font-size: 20px; }
+.fac-btn-run__spinner {
   width: 20px;
   height: 20px;
   border: 2px solid rgba(255,255,255,0.3);
@@ -1235,81 +1476,728 @@ function goBack() {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-.aa-btn-reset {
-  padding: 16px 20px;
-  border-radius: 14px;
-  font-size: 14px;
-  font-weight: 700;
-  background: var(--low);
-  color: var(--on-var);
-  cursor: pointer;
-  flex-shrink: 0;
+/* ── Report Card ────────────────────────────────────────────────────── */
+.fac-report-card {
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: var(--shadow-card);
 }
-.aa-btn-reset:active { opacity: 0.8; }
-
-/* Prompt Panel */
-.aa-prompt-panel {
-  background: var(--white);
-  border-radius: 14px;
-  outline: 1px solid rgba(193, 198, 215, 0.12);
-  overflow: hidden;
-}
-
-.aa-prompt-panel__toggle {
+.fac-report-card__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 18px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--on-var);
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
+  margin-bottom: 16px;
 }
-.aa-prompt-panel__toggle .icon { fill: currentColor; }
-.aa-prompt-panel__toggle::-webkit-details-marker { display: none; }
+.fac-report-card__head .mso {
+  color: var(--primary-container);
+  font-size: 18px;
+}
+.fac-report-card__title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  flex: 1;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.fac-report-card__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary-container);
+  background: rgba(0, 42, 93, 0.08);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.fac-report-card__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary-container);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.5; }
+}
 
-.aa-prompt-panel__body {
-  padding: 0 18px 18px;
+.fac-report-card__body {
+  background: var(--surface-container-low);
+  border-radius: 16px;
+  padding: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 4px;
+}
+.fac-report-line {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--on-surface);
+  animation: fadein 0.3s ease;
+}
+.fac-report-line--section {
+  font-family: var(--font-headline);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--primary-container);
+  padding: 8px 0 4px;
+  border-bottom: 1px solid rgba(196, 198, 208, 0.2);
+  margin-top: 8px;
+}
+.fac-report-line--section:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+@keyframes fadein {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.aa-prompt-section {}
+/* ── Consensus Gauge ────────────────────────────────────────────────── */
+.fac-consensus-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 20px;
+  padding: 24px;
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  box-shadow: var(--shadow-card);
+}
+@media (max-width: 380px) { .fac-consensus-card { grid-template-columns: 1fr; } }
 
-.aa-prompt-label {
-  margin: 0 0 8px;
+.fac-consensus__gauge {
+  display: flex;
+  align-items: center;
+}
+.fac-consensus__svg { width: 96px; height: 96px; }
+.fac-consensus__arc { transition: stroke-dashoffset 1s ease; }
+.fac-consensus__num {
+  font-family: var(--font-headline);
+  font-size: 20px;
+  font-weight: 800;
+  fill: var(--on-surface);
+  font-variant-numeric: tabular-nums;
+}
+.fac-consensus__unit {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--on-surface-variant);
+}
+
+.fac-consensus__right { display: flex; flex-direction: column; gap: 8px; }
+.fac-consensus__stance-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.fac-stance-tag {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 14px;
+  border-radius: 999px;
+}
+.fac-stance-tag--bull { background: var(--up-alpha); color: var(--up); }
+.fac-stance-tag--bear { background: var(--down-alpha); color: var(--down); }
+.fac-stance-tag--neutral { background: var(--surface-dim); color: var(--on-surface-variant); }
+
+.fac-consensus__conf-label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+}
+.fac-consensus__comm {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--on-surface);
+  margin: 0;
+}
+.fac-consensus__advice {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--on-surface-variant);
+  margin: 0;
+}
+.fac-consensus__advice strong { font-weight: 800; color: var(--on-surface); }
+.fac-consensus__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--error);
+  background: rgba(186, 26, 26, 0.06);
+  padding: 8px 12px;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+.fac-consensus__warning .mso { font-size: 14px; flex-shrink: 0; }
+
+/* ── Recommendations ────────────────────────────────────────────────── */
+.fac-recs-card {
+  padding: 0;
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+.fac-recs__title {
+  font-family: var(--font-headline);
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  letter-spacing: -0.02em;
+  padding: 24px 24px 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fac-recs__title .mso { color: var(--primary-container); font-size: 22px; }
+
+.fac-rec-item {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  border-top: 1px solid rgba(196, 198, 208, 0.15);
+  position: relative;
+  overflow: hidden;
+  transition: background 0.15s;
+}
+.fac-rec-item:last-child { border-bottom: none; }
+.fac-rec-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent 0%, rgba(0, 42, 93, 0.025) 100%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.fac-rec-item:hover::before { opacity: 1; }
+
+/* 顶部行：名称代码 | 标签 */
+.fac-rec-item__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  gap: 12px;
+}
+.fac-rec-item__name-group { display: flex; flex-direction: column; gap: 4px; }
+.fac-rec-item__name {
+  font-family: var(--font-headline);
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fac-rec-item__code-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+  background: var(--surface-dim);
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.04em;
+}
+.fac-rec-item__grade-badge {
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.03em;
+}
+.fac-rec-item__grade-badge--s { background: rgba(242, 54, 69, 0.12); color: var(--up); border: 1px solid rgba(242, 54, 69, 0.25); }
+.fac-rec-item__grade-badge--a { background: rgba(0, 42, 93, 0.1); color: var(--primary-container); border: 1px solid rgba(0, 42, 93, 0.2); }
+.fac-rec-item__grade-badge--b, .fac-rec-item__grade-badge--c { background: var(--surface-dim); color: var(--on-surface-variant); }
+
+.fac-rec-item__badges { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.fac-rec-item__trend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--up-alpha);
+  color: var(--up);
   text-transform: uppercase;
-  color: var(--primary);
+  letter-spacing: 0.03em;
+}
+.fac-rec-item__trend-chip .mso { font-size: 12px; }
+.fac-rec-item__sector-chip {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-rec-item__risk-chip {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.fac-rec-item__risk-chip--高 { background: var(--up-alpha); color: var(--up); }
+.fac-rec-item__risk-chip--中 { background: rgba(0, 42, 93, 0.08); color: var(--primary-container); }
+.fac-rec-item__risk-chip--低 { background: var(--down-alpha); color: var(--down); }
+
+/* 信号行 */
+.fac-rec-item__signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.fac-rec-item__signal-chip {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: rgba(0, 42, 93, 0.07);
+  color: var(--primary-container);
 }
 
-.aa-prompt-code {
+/* 指标网格 */
+.fac-rec-item__metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr 2fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.fac-rec-item__metric {
+  background: var(--surface-container-low);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+}
+.fac-rec-item__metric-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--on-surface-variant);
   margin: 0;
-  padding: 12px 14px;
-  background: var(--low);
-  border-radius: 10px;
+}
+.fac-rec-item__metric-value {
+  font-family: var(--font-headline);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.fac-rec-item__metric-value--up { color: var(--up); }
+.fac-rec-item__metric-value--down { color: var(--down); }
+.fac-rec-item__metric-value--range {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--on-surface);
+}
+
+/* 现价+涨跌行 */
+.fac-rec-item__price-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.fac-rec-item__price {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+.fac-rec-item__chg {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.fac-rec-item__chg--up { color: var(--up); }
+.fac-rec-item__chg--down { color: var(--down); }
+.fac-rec-item__score-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary-container);
+}
+.fac-rec-item__score-chip .mso { font-size: 12px; }
+
+/* 操作行 */
+.fac-rec-item__ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.fac-rec-item__op-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface);
+  background: var(--surface-container-low);
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.fac-rec-item__op-chip .mso { font-size: 14px; color: var(--on-surface-variant); }
+
+/* 推荐逻辑 */
+.fac-rec-item__reason {
+  border-top: 1px solid rgba(196, 198, 208, 0.15);
+  padding-top: 14px;
+  margin-bottom: 14px;
+}
+.fac-rec-item__reason-label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--on-surface-variant);
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.fac-rec-item__reason-label .mso { font-size: 14px; color: var(--primary-container); }
+.fac-rec-item__reason-text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--on-surface);
+  margin: 0;
+}
+
+/* 底部按钮 */
+.fac-rec-item__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+.fac-btn-fav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--surface-dim);
+  color: var(--on-surface);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.fac-btn-fav:active { transform: scale(0.97); }
+.fac-btn-fav:disabled { opacity: 0.5; }
+.fac-btn-fav--on {
+  background: var(--primary);
+  color: var(--on-primary);
+  box-shadow: 0 4px 16px rgba(7, 30, 39, 0.15);
+}
+.fac-btn-fav .mso { font-size: 16px; }
+
+/* ── Task Decomposition ─────────────────────────────────────────────── */
+.fac-decomp-card {
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+.fac-decomp-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--surface-container-low);
+  border-bottom: 1px solid rgba(196, 198, 208, 0.15);
+}
+.fac-decomp-card__head .mso { color: var(--primary-container); font-size: 18px; }
+.fac-decomp-card__title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  flex: 1;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.fac-decomp-card__body { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.fac-decomp-step {
+  padding: 14px 16px;
+  background: var(--surface-container-low);
+  border-radius: 12px;
+  border-left: 4px solid var(--primary-container);
+}
+.fac-decomp-step__header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.fac-decomp-step__num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary-container);
+  color: var(--on-primary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fac-decomp-step__title {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+.fac-decomp-step__desc {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--on-surface-variant);
+  margin: 0;
+  padding-left: 34px;
+}
+
+/* ── JSON Block ────────────────────────────────────────────────────── */
+.fac-analysis-card { background: var(--surface-container-lowest); border-radius: 24px; overflow: hidden; box-shadow: var(--shadow-card); }
+.fac-analysis-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--surface-container-low);
+  border-bottom: 1px solid rgba(196, 198, 208, 0.15);
+}
+.fac-analysis-card__head .mso { color: var(--primary-container); font-size: 18px; }
+.fac-analysis-card__title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  flex: 1;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.fac-json-block {
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;
-  color: var(--on-var);
+  color: var(--on-surface);
+  background: var(--surface-container-low);
+  padding: 16px;
+  margin: 0;
+  overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 160px;
-  overflow-y: auto;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
-/* Footnote */
-.aa-footnote {
-  margin: 4px 0 0;
+/* ── Prompt Modal ───────────────────────────────────────────────────── */
+.fac-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.fac-modal {
+  background: var(--surface-container-lowest);
+  border-radius: 20px;
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.2);
+}
+.fac-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  background: var(--surface-container-low);
+  border-bottom: 1px solid rgba(196, 198, 208, 0.15);
+  flex-shrink: 0;
+}
+.fac-modal__title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--on-surface);
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.fac-modal__close {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface-dim);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--on-surface-variant);
+  transition: background 0.15s;
+}
+.fac-modal__close:hover { background: var(--surface-container-highest); }
+.fac-modal__close .mso { font-size: 18px; }
+.fac-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 24px 32px;
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: thin;
+}
+.fac-modal__section { padding: 20px 0; border-bottom: 1px solid rgba(196, 198, 208, 0.15); }
+.fac-modal__section:last-child { border-bottom: none; }
+.fac-modal__label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--primary-container);
+  margin: 0 0 12px;
+}
+.fac-modal__code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--on-surface);
+  background: var(--surface-container-low);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  border: 1px solid rgba(196, 198, 208, 0.15);
+}
+
+/* ── Bottom Bar ──────────────────────────────────────────────────────── */
+.fac-bottom-bar {
+  display: flex;
+  justify-content: center;
+  padding: 16px 20px;
+  background: var(--surface);
+}
+.fac-btn-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 36px;
+  border-radius: 16px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(7, 30, 39, 0.15);
+  transition: all 0.15s;
+}
+.fac-btn-share:hover {
+  background: var(--primary-container);
+  box-shadow: 0 12px 32px rgba(7, 30, 39, 0.2);
+}
+.fac-btn-share:active { transform: scale(0.97); }
+.fac-btn-share .mso { font-size: 20px; }
+
+/* 主内容区底部间距 */
+.fac-main { padding-bottom: 24px; }
+
+/* ── Footer ─────────────────────────────────────────────────────────── */
+.fac-footer {
+  margin-top: auto;
+  padding: 24px 16px 40px;
+  border-top: 1px solid rgba(196, 198, 208, 0.15);
+}
+.fac-footer__inner { max-width: 640px; margin: 0 auto; text-align: center; }
+.fac-footer__warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--error);
+  margin-bottom: 8px;
+}
+.fac-footer__warn .mso { font-size: 14px; }
+.fac-footer__text {
+  font-family: var(--font-body);
   font-size: 11px;
-  line-height: 1.5;
-  color: var(--on-var);
+  line-height: 1.65;
+  color: var(--on-surface-variant);
+  margin: 0;
+}
+
+/* ── Material Symbols Outlined ───────────────────────────────────────── */
+.mso {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  font-family: 'Material Symbols Outlined';
+  user-select: none;
+}
+.mso-fill { font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+/* ── Print ────────────────────────────────────────────────────────────── */
+@media print {
+  .fac-header, .fac-footer, .fac-btn-run, .fac-btn-share, .fac-modal-overlay, .fac-bottom-bar { display: none !important; }
+  .fac-main { padding: 0 !important; max-width: 100% !important; }
+  .fac-report-card { box-shadow: none !important; }
+  .fac-report-card__body { max-height: none !important; overflow: visible !important; }
+  @page { margin: 16mm; size: A4; }
 }
 </style>

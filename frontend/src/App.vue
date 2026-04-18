@@ -24,6 +24,8 @@ const hideBottomNav = computed(
     route.path.startsWith('/strategy/ai') ||
     route.path.startsWith('/strategy/bollinger') ||
     route.path.startsWith('/strategy/factor-prompt') ||
+    route.path.startsWith('/strategy/agents') ||
+    route.path.startsWith('/strategy/backtest') ||
     route.path === '/watchlist/settings'
 )
 

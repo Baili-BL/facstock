@@ -80,29 +80,51 @@ export async function analyzeWithAgent(agentId) {
 // ─── 批量分析（全场共识）─────────────────────────────────────────────────
 
 /**
- * 并行跑全部 6 个 Agent，返回共识 + 头寸卡片 + TOP 3
+ * 并行跑全部 Agent 或层次化分析
  *
+ * @param {object} options
+ * @param {string} options.mode - 'parallel' | 'hierarchical'
  * @returns {Promise<{
  *   scan_time: string,
- *   consensus: { consensusPct, bullCount, bearCount, neutralCount },
+ *   mode: string,
+ *   consensus: { consensusPct, bullCount, bearCount, neutralCount, weightedConfidence },
  *   agentResults: Array<{
- *     agent_id, agent_name, success,
+ *     agent_id, agent_name, success, status,
  *     structured: {
  *       agentId, agentName, stance, confidence,
  *       marketCommentary, positionAdvice, riskWarning,
  *       recommendedStocks: Array<StockRecommendation>
  *     },
  *     analysis: string,
- *     tokens_used: number
+ *     thinking: string,
+ *     tokens_used: number,
+ *     execution_time_ms: number,
+ *     retry_count: number,
  *   }>,
  *   consensusOpportunities: Array<{
- *     rank, title, badge, badgeKind, meta, chg, flowLabel
+ *     rank, title, code, badge, badgeKind, meta, chg, flowLabel,
+ *     adviseTypes: string[], signals: string[]
  *   }>,
+ *   master: {
+ *     marketCoreIntent: string,
+ *     marketPhase: string,
+ *     riskAppetite: string,
+ *     agentPriority: string[],
+ *     keyTheme: string,
+ *     riskFactors: string[],
+ *     coordinationNotes: string,
+ *   } | null,
+ *   synthesis: string,
+ *   execution_log: Array<{
+ *     timestamp, phase, agent_id, status, message
+ *   }>,
+ *   success_rate: number,
  *   lastUpdated: string
  * }>}
  */
-export async function batchAnalyzeAgents() {
-  return apiPost(`${BASE}/agents/batch`)
+export async function batchAnalyzeAgents(options = {}) {
+  const mode = options.mode || 'parallel'
+  return apiPost(`${BASE}/agents/batch`, { mode })
 }
 
 // ─── 共识计算工具（前端 fallback）────────────────────────────────────────
@@ -162,216 +184,6 @@ export function cached(key, fn) {
 export function clearCache() {
   _cache.clear()
 }
-
-// ─── 演示模式 API ──────────────────────────────────────────────────────────
-
-/**
- * 演示模式：不调后端 LLM，直接用预设数据展示流程
- * @param {string} agentId
- * @param {Function} onStep - 回调(step: {step, message, data})
- */
-export async function demoAnalyzeAgent(agentId, onStep) {
-  const steps = [
-    { step: 1, message: '正在准备市场数据...', delay: 600 },
-    { step: 2, message: '正在加载 Agent Prompt 模板...', delay: 400 },
-    { step: 3, message: `正在调用 AI 模型分析「${agentId}」...`, delay: 1200 },
-    { step: 4, message: '正在解析结构化分析结果...', delay: 500 },
-    { step: 5, message: '正在聚合共识信号...', delay: 400 },
-  ]
-
-  // 逐步回调
-  for (const s of steps) {
-    await new Promise(r => setTimeout(r, s.delay))
-    if (onStep) onStep(s)
-  }
-
-  // 返回模拟结果
-  return {
-    success: true,
-    agent_id: agentId,
-    agent_name: _agentNameMap[agentId] || agentId,
-    name_brand: _agentBrandMap[agentId] || agentId,
-    role_subtitle: _roleMap[agentId] || '',
-    structured: _demoStructured[agentId] || _demoStructured.jun,
-    analysis: _demoAnalysis[agentId] || _demoAnalysis.jun,
-    tokens_used: 0,
-  }
-}
-
-const _agentNameMap = {
-  jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
-  speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
-  deepseek: '深度思考者', beijing: '北京炒家',
-}
-const _agentBrandMap = {
-  jun: '钧哥', qiao: '乔帮主', jia: '炒股养家',
-  speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
-  deepseek: '深度思考者', beijing: '北京炒家',
-}
-const _roleMap = {
-  jun: '龙头战法', qiao: '板块轮动', jia: '低位潜伏',
-  speed: '打板专家', trend: '中线波段', quant: '算法回测',
-  deepseek: '深度推理', beijing: '游资打板',
-}
-
-const _demoStructured = {
-  jun: {
-    agentId: 'jun', agentName: '钧哥天下无双', stance: 'bull', confidence: 75,
-    marketCommentary: '题材炒作情绪回暖，热点板块资金持续流入，适合聚焦事件驱动的强势标的。',
-    positionAdvice: '建议维持6-7成仓位，重点关注消息面驱动的题材龙头机会，低吸为主不追高。',
-    riskWarning: '市场轮动较快，需警惕高位个股筹码松动风险，止损纪律严格执行。',
-    recommendedStocks: [
-      { name: '君实生物', code: '688180.SH', role: 'A级关注', reason: '生物制品板块，评分66，事件驱动机会', chg_pct: 2.5 },
-      { name: '百利天恒', code: '688506.SH', role: 'A级关注', reason: '化学制药板块，评分62，业绩超预期', chg_pct: 1.8 },
-      { name: '本川智能', code: '300964.SZ', role: 'B级关注', reason: '元件板块，评分57，资金关注', chg_pct: 3.2 },
-    ],
-  },
-  qiao: {
-    agentId: 'qiao', agentName: '乔帮主', stance: 'bull', confidence: 70,
-    marketCommentary: '板块轮动加快，生物医药与游戏板块资金关注度提升，关注主线切换信号。',
-    positionAdvice: '维持6-7成仓位，主线持仓为主，关注板块轮动节奏变化，适时切换。',
-    riskWarning: '警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
-    recommendedStocks: [
-      { name: '博腾股份', code: '300363.SZ', role: '轮动标的', reason: '医疗服务板块，资金关注', chg_pct: 2.1 },
-    ],
-  },
-  jia: {
-    agentId: 'jia', agentName: '炒股养家', stance: 'neutral', confidence: 62,
-    marketCommentary: '市场震荡整理，部分优质标的估值回到合理区间，关注低位布局机会。',
-    positionAdvice: '建议5-6成仓位，配置低估值高股息标的，左侧布局等待估值修复。',
-    riskWarning: '高位震荡风险加大，左侧布局需严格止损纪律。',
-    recommendedStocks: [
-      { name: '浙数文化', code: '600633.SH', role: '低位关注', reason: '游戏板块，估值偏低', chg_pct: 0.8 },
-    ],
-  },
-  speed: {
-    agentId: 'speed', agentName: '极速先锋', stance: 'neutral', confidence: 55,
-    marketCommentary: '市场情绪分化，涨停板数量减少，打板溢价收窄，保持谨慎。',
-    positionAdvice: '收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。',
-    riskWarning: '高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-    recommendedStocks: [
-      { name: '星辉娱乐', code: '300043.SZ', role: '首板关注', reason: '游戏板块，低位首板', chg_pct: 2.8 },
-    ],
-  },
-  trend: {
-    agentId: 'trend', agentName: '趋势追随者', stance: 'bull', confidence: 68,
-    marketCommentary: '均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。',
-    positionAdvice: '维持6-7成仓位，回调至均线附近加仓，跌破均线减仓保护利润。',
-    riskWarning: '趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
-    recommendedStocks: [
-      { name: '百普赛斯', code: '301080.SZ', role: '趋势标的', reason: '生物制品，趋势向上', chg_pct: 1.5 },
-    ],
-  },
-  quant: {
-    agentId: 'quant', agentName: '量化之翼', stance: 'bull', confidence: 72,
-    marketCommentary: '多因子模型显示成长与动量因子共振向上，生物医药板块因子得分较高。',
-    positionAdvice: '因子模型建议7成仓位，成长因子权重略高，等权配置，动态再平衡。',
-    riskWarning: '量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
-    recommendedStocks: [
-      { name: '本川智能', code: '300964.SZ', role: '因子强势', reason: '元件板块，动量因子得分高', chg_pct: 3.2 },
-    ],
-  },
-  beijing: {
-    agentId: 'beijing', agentName: '北京炒家', stance: 'bull', confidence: 68,
-    marketCommentary: '今日板块情绪高度良好，涨停板数量充足，三有标准命中多只标的，游资活跃。',
-    positionAdvice: '单票1/8仓，优先秒拉板扫单，换手板排单等待，创业板减半至1/16仓。',
-    riskWarning: '高位炸板风险大，严格执行1小时释放法则，T+1高开8%以上直接清仓。',
-    recommendedStocks: [
-      { name: '星辉娱乐', code: '300043.SZ', role: '秒拉板', reason: '游戏板块共振，量比≥3，10:30前封板，三有全满足', chg_pct: 10.0 },
-      { name: '本川智能', code: '300964.SZ', role: '换手板', reason: '元件板块，高换手率，排单进场', chg_pct: 10.0 },
-    ],
-  },
-}
-
-const _demoAnalysis = {
-  jun: '【市场解读】题材炒作情绪回暖，生物制品与化学制药板块受消息面驱动，资金持续关注事件驱动型机会。\n【策略建议】建议维持6-7成仓位，重点关注君实生物、百利天恒等消息面驱动的强势标的，低吸为主不追高。\n【风险提示】市场轮动较快，需警惕高位个股筹码松动风险，止损纪律严格执行。\n推荐关注：君实生物(688180.SH) - A级关注: 生物制品板块，评分66\n推荐关注：百利天恒(688506.SH) - A级关注: 化学制药板块，评分62',
-  qiao: '【市场解读】板块轮动加快，生物医药与游戏板块资金关注度提升，关注主线切换信号。\n【策略建议】维持6-7成仓位，主线持仓为主，关注板块轮动节奏变化，适时切换。\n【风险提示】警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
-  jia: '【市场解读】市场震荡整理，部分优质标的估值回到合理区间，关注低位布局机会。\n【策略建议】建议5-6成仓位，配置低估值标的，左侧布局等待估值修复。\n【风险提示】震荡行情下需严格止损纪律。',
-  speed: '【市场解读】市场情绪分化，涨停板数量减少，打板溢价收窄，保持谨慎。\n【策略建议】收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。\n【风险提示】高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-  trend: '【市场解读】均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。\n【策略建议】维持6-7成仓位，回调至均线附近加仓，跌破均线减仓保护利润。\n【风险提示】趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
-  quant: '【市场解读】多因子模型显示成长与动量因子共振向上，生物医药板块因子得分较高。\n【策略建议】因子模型建议7成仓位，成长因子权重略高，等权配置，动态再平衡。\n【风险提示】量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
-  beijing: '【市场解读】今日板块情绪高度良好，涨停板数量充足，三有标准命中多只标的，游资活跃。\n【策略建议】单票1/8仓严格执行，秒拉板扫单、换手板排单，创业板减半至1/16仓。\n【风险提示】高位炸板风险大，严格执行1小时释放法则，T+1高开8%以上直接清仓。',
-}
-
-/**
- * 演示模式批量分析
- * @param {Function} onStep - 回调({agentId, step, message})
- */
-export async function demoBatchAnalyze(onStep) {
-  const agents = ['jun', 'qiao', 'jia', 'speed', 'trend', 'quant', 'deepseek', 'beijing']
-
-  // 阶段一：并行初始化所有 Agent
-  if (onStep) onStep({ phase: 'init', message: '正在并行初始化 8 个 Agent...' })
-  await new Promise(r => setTimeout(r, 800))
-
-  // 阶段二：并行执行所有 Agent
-  const promises = agents.map(async (agentId) => {
-    for (let i = 1; i <= 5; i++) {
-      await new Promise(r => setTimeout(r, 300))
-      if (onStep) onStep({ agentId, phase: 'step', step: i })
-    }
-    return demoAnalyzeAgent(agentId)
-  })
-
-  const agentResults = await Promise.all(promises)
-
-  // 阶段三：计算共识
-  if (onStep) onStep({ phase: 'consensus', message: '正在聚合共识信号...' })
-  await new Promise(r => setTimeout(r, 600))
-
-  const stances = agentResults.map(r => r.structured?.stance || 'neutral')
-  const bullCount = stances.filter(s => s === 'bull').length
-  const bearCount = stances.filter(s => s === 'bear').length
-  const consensusPct = max(10, min(95, 50 + (bullCount - bearCount) * 10 + 15))
-
-  // TOP 机会
-  const allRecs = agentResults.flatMap(r =>
-    (r.structured?.recommendedStocks || []).map(s => ({
-      ...s, agent: r.agent_name,
-    }))
-  )
-  allRecs.sort((a, b) => b.chg_pct - a.chg_pct)
-
-  const badges = ['龙头共识', '多策略共振', '资金认可']
-  const consensusOpportunities = allRecs.slice(0, 3).map((rec, i) => ({
-    rank: i + 1,
-    title: `${rec.name} (${rec.code})`,
-    badge: badges[i] || '机会标的',
-    badgeKind: i < 2 ? 'primary' : 'muted',
-    meta: `${rec.role} · ${rec.reason?.slice(0, 20)}`,
-    chg: rec.chg_pct,
-    flowLabel: `来源: ${rec.agent}`,
-  }))
-
-  if (!consensusOpportunities.length) {
-    consensusOpportunities.push(
-      { rank: 1, title: '君实生物 (688180.SH)', badge: '消息驱动', badgeKind: 'primary', meta: '生物制品 · 事件催化', chg: 2.5, flowLabel: '来源: 钧哥天下无双' },
-      { rank: 2, title: '百利天恒 (688506.SH)', badge: '业绩超预期', badgeKind: 'primary', meta: '化学制药 · 资金关注', chg: 1.8, flowLabel: '来源: 钧哥天下无双' },
-      { rank: 3, title: '本川智能 (300964.SZ)', badge: '板块轮动', badgeKind: 'muted', meta: '元件板块 · 底部放量', chg: 3.2, flowLabel: '来源: 量化之翼' },
-    )
-  }
-
-  if (onStep) onStep({ phase: 'done' })
-
-  return {
-    success: true,
-    scan_time: new Date().toISOString(),
-    consensus: {
-      consensusPct,
-      bullCount,
-      bearCount,
-      neutralCount: stances.length - bullCount - bearCount,
-      label: bullCount >= 4 ? '乐观看多' : bearCount >= 3 ? '谨慎防御' : '分化震荡',
-      avgConfidence: Math.round(agentResults.reduce((s, r) => s + (r.structured?.confidence || 50), 0) / agentResults.length),
-    },
-    agentResults,
-    consensusOpportunities,
-    lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-  }
-}
-
-function max(a, b) { return Math.max(a, b) }
-function min(a, b) { return Math.min(a, b) }
 
 // ─── JunGeTrader API ─────────────────────────────────────────────────────────
 
@@ -436,4 +248,147 @@ export async function fetchJungeStatus() {
  */
 export async function fetchJungeAiResult() {
   return apiGet(`${BASE}/junge/ai-result`)
+}
+
+// ─── 新架构：Qwen + AKShare + DeepSeek 流式分析 ──────────────────────────────
+
+/**
+ * 意图识别接口
+ * @param {string} userInput - 用户输入
+ * @returns {Promise<object>}
+ */
+export async function analyzeIntent(userInput) {
+  return apiPost(`${BASE}/analyze/intent`, { user_input: userInput })
+}
+
+/**
+ * 新架构流式分析
+ * @param {object} options
+ * @param {string} options.userInput - 用户输入
+ * @param {string[]} options.stockCodes - 关注的股票代码
+ * @param {object} options.context - 额外上下文
+ * @returns {Promise<ReadableStream>} SSE 流
+ */
+export async function analyzeStream({ userInput, stockCodes = [], context = {} }) {
+  const response = await fetch(`${BASE}/analyze/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_input: userInput,
+      stock_codes: stockCodes,
+      context
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.body
+}
+
+/**
+ * 解析 SSE 流
+ * @param {ReadableStream} stream - SSE 流
+ * @param {object} callbacks - 回调函数
+ */
+export function parseStreamEvents(stream, callbacks = {}) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const { onStatus, onIntent, onData, onAnalysis, onThinking, onStructured, onDone, onError } = callbacks
+
+  function processLine(line) {
+    if (!line.startsWith('data: ')) return
+
+    try {
+      const data = JSON.parse(line.slice(6))
+
+      switch (data.type) {
+        case 'status':
+          onStatus?.(data.message)
+          break
+        case 'intent':
+          onIntent?.(data)
+          break
+        case 'data':
+          onData?.(data)
+          break
+        case 'analysis':
+          onAnalysis?.(data.content)
+          break
+        case 'thinking':
+          onThinking?.(data.content)
+          break
+        case 'structured':
+          onStructured?.(data.data)
+          break
+        case 'done':
+          onDone?.(data)
+          break
+        case 'error':
+          onError?.(data.error)
+          break
+        case 'close':
+          return true  // 结束
+      }
+    } catch (e) {
+      console.warn('[parseStreamEvents] Parse error:', e)
+    }
+    return false
+  }
+
+  return new Promise((resolve, reject) => {
+    function read() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          resolve()
+          return
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (processLine(line)) {
+            reader.cancel()
+            resolve()
+            return
+          }
+        }
+
+        read()
+      }).catch(reject)
+    }
+
+    read()
+  })
+}
+
+// ─── Agent 分析历史 ─────────────────────────────────────────────────────────
+
+/**
+ * 获取今日分析结果（如有）
+ * @param {string} agentId
+ * @returns {Promise<object|null>}
+ */
+export async function fetchTodayAnalysis(agentId) {
+  try {
+    const json = await apiGet(`${BASE}/agents/${agentId}/analysis/today`)
+    return json.data || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 获取 Agent Prompt 详情
+ * @param {string} agentId
+ * @returns {Promise<{id, name, role, tagline, adviseType, system_prompt, user_prompt_template}>}
+ */
+export async function fetchAgentInfo(agentId) {
+  const json = await apiGet(`${BASE}/agents/${agentId}/prompt`)
+  return json.data || {}
 }

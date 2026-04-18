@@ -21,6 +21,7 @@ import AISummaryDetail from './views/AISummaryDetail.vue'
 import StrategyAgents from './views/StrategyAgents.vue'
 import AgentHoldings from './views/AgentHoldings.vue'
 import AgentAnalysis from './views/AgentAnalysis.vue'
+import AgentDetailSummary from './views/AgentDetailSummary.vue'
 import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
@@ -49,6 +50,7 @@ const routes = [
   { path: '/strategy/agents', component: StrategyAgents },
   { path: '/strategy/agents/:id', component: AgentHoldings },
   { path: '/strategy/agents/:id/analysis', component: AgentAnalysis },
+  { path: '/strategy/agents/:id/summary', component: AgentDetailSummary },
   { path: '/strategy/backtest', component: Backtest },
   { path: '/strategy/factor-prompt', component: FactorPrompt },
   { path: '/ticai', component: Ticai },

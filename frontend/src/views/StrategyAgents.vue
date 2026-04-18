@@ -177,7 +177,7 @@
       </section>
 
       <p class="agents-disclaimer">
-        以上为产品演示与策略角色设定，非实盘收益承诺；持仓与信号功能将陆续接入。
+        AI 分析结果仅供参考，不构成投资建议。
       </p>
       </template>
 
@@ -275,7 +275,7 @@
         </div>
 
         <p class="agents-disclaimer hist-disclaimer">
-          历史总结为演示数据，非投资建议；正式版本将对接扫描与 AI 报告时间线。
+          AI 分析结果仅供参考，不构成投资建议。
         </p>
       </section>
     </main>

@@ -24,24 +24,6 @@ from utils.feishu_notifier import send_feishu_scan_alert, send_feishu_test
 logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
 
-
-def _strip_json_from_analysis(content: str) -> str:
-    """
-    从模型原始输出中移除 JSON 代码块，只保留 Markdown 总结文字。
-    模型输出格式：```json\n{...}\n``` + Markdown 总结
-    """
-    if not content:
-        return ''
-    import re
-    # 去掉 ```json ... ``` 块
-    result = re.sub(r'```json\s*\n?[\s\S]*?\n?```', '', content)
-    # 去掉 ```json ... ``` 单行变体
-    result = re.sub(r'```json\s*\n?[\s\S]*?```', '', result)
-    result = result.strip()
-    # 如果去掉 JSON 后只剩空内容，返回原始内容
-    return result if result else content
-
-
 # 自定义因子 Prompt 工程 — 与前端 factor_template 对齐
 FACTOR_TEMPLATE_VERSION = '2.4.1'
 FACTOR_CODE_TEMPLATE = """\
@@ -2093,59 +2075,6 @@ def sync_stocks():
     })
 
 
-@strategy_bp.route('/api/stocks/quotes', methods=['POST'])
-def get_stocks_quotes():
-    """
-    批量获取多只股票的实时行情。
-    用于 AI 分析完成后补充缺失的 price / changePct 数据。
-
-    请求体: { "codes": ["600501", "300274", ...] }
-    返回:   { "success": True, "data": { "600501": {close, pct_change, ...}, ... } }
-    """
-    try:
-        data = request.get_json()
-        codes = data.get('codes', [])
-        if not codes:
-            return jsonify({'success': True, 'data': {}})
-
-        codes = [str(c).strip() for c in codes if str(c).strip()]
-        results = {}
-        for code in codes:
-            result = _get_quote_sina(code)
-            if result:
-                results[code] = result
-            else:
-                mkt = "1" if code.startswith(("6", "9")) else "0"
-                try:
-                    resp = requests.get(
-                        "http://push2.eastmoney.com/api/qt/ulist/get",
-                        params={
-                            "fltt": "2", "secids": f"{mkt}.{code}",
-                            "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62",
-                        },
-                        timeout=8,
-                    )
-                    items = resp.json().get('data', {}).get('diff', [])
-                    if items:
-                        item = items[0]
-                        results[code] = {
-                            'code': code, 'name': item.get('f14', ''),
-                            'close': item.get('f2'), 'pct_change': item.get('f3'),
-                            'change': item.get('f4'), 'volume': item.get('f5'),
-                            'amount': item.get('f6'), 'turnover': item.get('f8'),
-                            'qty_ratio': item.get('f10'), 'high': item.get('f15'),
-                            'low': item.get('f16'), 'open': item.get('f17'),
-                            'prev_close': item.get('f18'),
-                        }
-                except Exception:
-                    pass
-
-        return jsonify({'success': True, 'data': results})
-    except Exception as e:
-        logger.error(f"批量获取行情失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
 @strategy_bp.route('/api/stock/<code>/quote')
 def get_stock_quote(code: str):
     """
@@ -2279,65 +2208,6 @@ def _get_quote_sina(code: str) -> Optional[dict]:
         }
     except Exception:
         return None
-
-
-def _enrich_stocks_realtime(structured: dict) -> None:
-    """
-    批量获取推荐股票的实时行情，并回填到 structured['recommendedStocks'] 中。
-    仅补调 price/changePct 为空或 0 的股票，避免覆盖 AI 已给出的合理区间。
-    """
-    recs = structured.get('recommendedStocks', [])
-    if not recs:
-        return
-
-    # 收集需要补调的代码
-    codes_to_fetch = []
-    code_index = {}
-    for i, rec in enumerate(recs):
-        code = str(rec.get('code') or '').strip()
-        if len(code) == 6 and code.isdigit():
-            price = rec.get('price')
-            chg = rec.get('changePct') or rec.get('chg_pct') or rec.get('change_pct')
-            if price in (None, '', 0) or chg in (None, '', 0):
-                codes_to_fetch.append(code)
-                code_index[code] = i
-
-    if not codes_to_fetch:
-        return
-
-    # 批量查询（新浪优先，逐个降级东方财富）
-    for code in codes_to_fetch:
-        q = _get_quote_sina(code)
-        if not q:
-            # 备选东方财富
-            mkt = "1" if code.startswith(("6", "9")) else "0"
-            try:
-                resp = requests.get(
-                    "http://push2.eastmoney.com/api/qt/ulist/get",
-                    params={
-                        "fltt": "2", "secids": f"{mkt}.{code}",
-                        "fields": "f2,f3,f4,f12,f14",
-                    },
-                    timeout=8,
-                )
-                items = resp.json().get('data', {}).get('diff', [])
-                if items:
-                    item = items[0]
-                    q = {
-                        'close': item.get('f2'),
-                        'pct_change': item.get('f3'),
-                        'name': item.get('f14', ''),
-                    }
-            except Exception:
-                pass
-
-        if q and q.get('close'):
-            idx = code_index[code]
-            recs[idx]['price'] = q['close']
-            recs[idx]['changePct'] = q['pct_change']
-            # 如果后端没有 name 但行情有，也补上
-            if not recs[idx].get('name') and q.get('name'):
-                recs[idx]['name'] = q['name']
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2597,14 +2467,12 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
             'riskWarning': str(parsed.get('riskWarning', '')),
             'recommendedStocks': parsed.get('recommendedStocks', []),
         }
-        # 补调实时行情
-        _enrich_stocks_realtime(result['structured'])
         parts = [
             f"【市场解读】{parsed.get('marketCommentary','')}",
             f"【策略建议】{parsed.get('positionAdvice','')}",
             f"【风险提示】{parsed.get('riskWarning','')}",
         ]
-        recs = result['structured'].get('recommendedStocks', [])
+        recs = parsed.get('recommendedStocks', [])
         if recs:
             recs_lines = [f"推荐关注：{r.get('name','')}({r.get('code','')}) - {r.get('role','')}: {r.get('reason','')}"
                           for r in recs[:5]]
@@ -2671,8 +2539,6 @@ def analyze_single_agent_stream(agent_id):
             return _do_web_search(tool_args.get('query', ''))
         elif tool_name == 'get_limit_up_stocks':
             return _get_limit_up_stocks()
-        elif tool_name == 'get_yesterday_limit_up_stocks':
-            return _get_yesterday_limit_up_stocks()
         elif tool_name == 'get_stock_quote':
             return _get_stock_quote(tool_args.get('code', ''))
         elif tool_name == 'get_market_overview':
@@ -2690,78 +2556,13 @@ def analyze_single_agent_stream(agent_id):
             return
 
         try:
-            # ══ 数据获取阶段：分步骤推送每个数据源的获取状态 ═══════════════════
-            yield f"data: {json.dumps({'type': 'cot', 'step': 1, 'total': 5, 'title': '获取市场快照', 'message': '正在拉取大盘指数数据（上证、深证、创业板、科创50）...'})}\n\n"
-            import akshare as ak
-            try:
-                df = ak.stock_zh_index_spot_em()
-                if df is not None and not df.empty:
-                    indices = {'上证指数': '000001', '深证成指': '399001', '创业板': '399006', '科创50': '000688'}
-                    snapshot_lines = []
-                    for name, code in indices.items():
-                        row = df[df['代码'] == code]
-                        if not row.empty:
-                            price = row.iloc[0].get('最新价', 0)
-                            chg = row.iloc[0].get('涨跌幅', 0)
-                            snapshot_lines.append(f"  {name}: {price} ({chg:+.2f}%)")
-                    if snapshot_lines:
-                        yield f"data: {json.dumps({'type': 'cot_data', 'step': 1, 'lines': snapshot_lines})}\n\n"
-            except Exception as snap_err:
-                yield f"data: {json.dumps({'type': 'cot_data', 'step': 1, 'lines': [f'  [警告] 大盘快照获取失败: {snap_err}']})}\n\n"
-
-            yield f"data: {json.dumps({'type': 'cot', 'step': 2, 'total': 5, 'title': '联网搜索市场数据', 'message': '正在联网搜索今日涨停板、连板股、市场情绪、主线题材...'})}\n\n"
-
-            search_result = _call_deepseek_search(
-                prompt=(
-                    f"当前时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}\n\n"
-                    "请联网搜索今日A股市场数据，返回以下信息（用中文）：\n"
-                    "1. 今日涨停板：涨停家数、重点连板股（名称、代码、连板数、涨停原因）\n"
-                    "2. 市场空间板：最高板是谁，龙头股\n"
-                    "3. 市场情绪：赚钱效应（强/中/弱）、亏钱效应（无/局部/扩散）\n"
-                    "4. 主线题材：今日最强题材板块及龙头\n"
-                    "5. 今日重要新闻/政策（影响市场的）"
-                ),
-                model='qwen-plus',
-            )
-
-            if not search_result.success:
-                yield f"data: {json.dumps({'type': 'error', 'error': f'联网搜索失败: {search_result.error}'})}\n\n"
-                return
-
-            search_data = search_result.content
-            yield f"data: {json.dumps({'type': 'cot', 'step': 3, 'total': 5, 'title': '联网搜索完成', 'message': '数据获取成功，开始构建分析策略...'})}\n\n"
-            # 把联网数据分段落打印
-            for para in search_data.split('\n'):
-                if para.strip():
-                    yield f"data: {json.dumps({'type': 'cot_data', 'step': 3, 'lines': [para.strip()]})}\n\n"
-
-            # ══ 任务拆解阶段（COT风格）═════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'cot', 'step': 4, 'total': 5, 'title': '任务拆解（COT推理）', 'message': 'AI 正在拆解分析任务链...'})}\n\n"
-
-            # 发送 COT 思考链步骤
-            cot_steps = [
-                ("[COT-1] 市场理解", "分析当前大盘走势，判断市场所处阶段（启动/发酵/高潮/退潮）"),
-                ("[COT-2] 题材识别", "识别今日最强主线题材，判断题材级别（S/A/B/C级）"),
-                ("[COT-3] 龙头定位", "寻找主线龙头股，判断容量（中军/先锋/跟风）"),
-                ("[COT-4] 资金验证", "验证资金认可度，查看放量情况和板块联动"),
-                ("[COT-5] 策略制定", "制定买入时机、仓位配置、离场预案"),
-            ]
-            for idx, (title, desc) in enumerate(cot_steps, 1):
-                yield f"data: {json.dumps({'type': 'cot_step', 'step': idx, 'title': title, 'desc': desc})}\n\n"
-                import time as _time
-                _time.sleep(0.15)
-
-            yield f"data: {json.dumps({'type': 'cot', 'step': 5, 'total': 5, 'title': '执行策略分析', 'message': '各分析 Agent 正在执行子任务...'})}\n\n"
-
-            # ── 第二步：构建 prompt 并分析 ──────────────────────────────────
-            # 在 market 数据中加入联网搜索结果
+            # 获取市场数据
             market = get_market_snapshot()
-            market['search_data'] = search_data
             prompt = render_prompt(profile, market)
 
-            # 获取 Agent 专属工具（用于分析阶段查个股行情）
+            # 获取 Agent 专属工具
             tools = get_agent_tools(_agent_id)
-
+            
             # 构建消息
             messages = [
                 {"role": "system", "content": profile.get('system_prompt', '')},
@@ -2770,9 +2571,9 @@ def analyze_single_agent_stream(agent_id):
 
             # 流式调用 LLM（带 Function Calling）
             from utils.llm.client import get_client, CallOptions, LLMResponse
-
+            
             client = get_client()
-            model = profile.get('model') or 'deepseek-v3.2'
+            model = profile.get('model') or 'deepseek-chat'
             temperature = profile.get('temperature', 0.3)
             max_tokens = profile.get('max_tokens', 3000)
 
@@ -2826,7 +2627,7 @@ def analyze_single_agent_stream(agent_id):
                         tool_result = execute_tool(tool_name, tool_args)
                         
                         # 发送工具结果
-                        yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': tool_result})}\n\n"
+                        yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': tool_result[:500]})}\n\n"
                         
                         # 添加到消息历史
                         messages.append({
@@ -2852,7 +2653,7 @@ def analyze_single_agent_stream(agent_id):
 
             # 解析 JSON 输出
             parsed = registry.extract_json(final_content)
-
+            
             if parsed:
                 structured = {
                     'agentId': parsed.get('agent_id', _agent_id),
@@ -2876,21 +2677,12 @@ def analyze_single_agent_stream(agent_id):
                     'recommendedStocks': [],
                 }
 
-            # ── 批量补调推荐股票的实时行情 ──────────────────────────────────
-            _enrich_stocks_realtime(structured)
-
-            # 把分析内容分段落实时发送到前端（去掉 JSON 代码块，只留 Markdown）
-            markdown_content = _strip_json_from_analysis(final_content)
-            for para in markdown_content.split('\n'):
-                if para.strip():
-                    yield f"data: {json.dumps({'type': 'content', 'content': para.strip()})}\n\n"
-
             yield f"data: {json.dumps({
                 'type': 'done', 
                 'agent_id': _agent_id, 
                 'agent_name': profile.get('name', ''), 
                 'structured': structured, 
-                'analysis': markdown_content,
+                'analysis': final_content, 
                 'thinking': all_thinking, 
                 'tokens_used': total_tokens
             })}\n\n"
@@ -2924,15 +2716,15 @@ def _call_llm_with_tools(client, model, messages, tools, temperature, max_tokens
     logger = logging.getLogger(__name__)
 
     try:
-        # 判断模型类型：百炼 deepseek 系列走 deepseek 分支，其他走 qwen 分支
-        is_deepseek = 'deepseek' in model.lower()
-
-        if is_deepseek:
-            # 百炼 DeepSeek（禁用思考模式，因为 function calling 仅非思考模式支持）
-            return _call_deepseek_with_tools(client, model, messages, tools, temperature, max_tokens)
-        else:
+        # 判断模型类型
+        is_qwen = 'qwen' in model.lower()
+        
+        if is_qwen:
             # Qwen/DashScope 模型调用
             return _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens)
+        else:
+            # DeepSeek 模型调用
+            return _call_deepseek_with_tools(client, model, messages, tools, temperature, max_tokens)
 
     except Exception as e:
         logger.error(f"[_call_llm_with_tools] error={e}")
@@ -2966,9 +2758,12 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
         
         payload = {
             "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "input": {"messages": messages},
+            "parameters": {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "result_format": "message",
+            }
         }
         
         # Qwen 的 tools 格式不同
@@ -2995,43 +2790,26 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
             )
         
         data = resp.json()
-        # 兼容模式的响应是 OpenAI 格式：choices 在根级别
-        # 旧版百炼 API 格式：choices 在 output 里
-        # 优先用 OpenAI 兼容格式
-        choices = data.get('choices') or data.get('output', {}).get('choices') or []
-        output_msg = data.get('choices', [{}])[0].get('message') if data.get('choices') else (data.get('output', {}).get('choices', [{}])[0].get('message') if data.get('output', {}).get('choices') else None)
-
+        output = data.get('output', {})
+        choices = output.get('choices', [])
+        
         if not choices:
-            logger.warning(f"[_call_dashscope_with_tools] No choices. resp.keys={list(data.keys())}, resp={resp.text[:300]}")
             return SimpleResponse(
                 content='',
                 tokens_used=data.get('usage', {}).get('total_tokens', 0),
                 model=model,
                 provider='dashscope',
                 success=False,
-                error=f"No choices in response: {resp.text[:200]}",
+                error="No choices in response",
                 tool_calls=[],
             )
-
-        # 解析消息内容
-        if output_msg:
-            content = output_msg.get('content', '') or ''
-            raw_calls = output_msg.get('tool_calls', [])
-        else:
-            # fallback
-            first_choice = choices[0] if choices else {}
-            message = first_choice.get('message', {}) if isinstance(first_choice, dict) else {}
-            content = message.get('content', '') or ''
-            raw_calls = message.get('tool_calls', []) or []
-
-        # 兼容：content 可能是数组
-        if isinstance(content, list):
-            content = ''.join(c.get('text', '') for c in content if isinstance(c, dict))
-
-        logger.info(f"[_call_dashscope_with_tools] content len={len(content)}, tool_calls={len(raw_calls)}")
-
-        # 解析 tool_calls
+        
+        message = choices[0].get('message', {})
+        content = message.get('content', [{}])[0].get('text', '') if message.get('content') else ''
+        
+        # 解析 Qwen 的 tool_calls
         tool_calls = []
+        raw_calls = message.get('tool_calls', [])
         for tc in raw_calls:
             func = tc.get('function', {})
             try:
@@ -3043,7 +2821,7 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
                 'name': func.get('name', ''),
                 'arguments': args
             })
-
+        
         return SimpleResponse(
             content=content,
             tokens_used=data.get('usage', {}).get('total_tokens', 0),
@@ -3052,10 +2830,9 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
             success=True,
             tool_calls=tool_calls,
         )
-
+        
     except Exception as e:
-        import traceback
-        logger.error(f"[_call_dashscope_with_tools] error={e}\n{traceback.format_exc()}")
+        logger.error(f"[_call_dashscope_with_tools] error={e}")
         return SimpleResponse(
             content='',
             tokens_used=0,
@@ -3065,765 +2842,3 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
             error=str(e),
             tool_calls=[],
         )
-
-
-def _call_deepseek_search(prompt: str, model: str = 'qwen-plus'):
-    """
-    调用百炼 qwen-plus 联网搜索获取市场数据（不走 Function Calling，纯联网）
-    """
-    import logging
-    import httpx
-    import os
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        for k in list(os.environ.keys()):
-            if 'proxy' in k.lower():
-                del os.environ[k]
-
-        http_client = httpx.Client(trust_env=False, timeout=120.0)
-        from utils.llm.client import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=DASHSCOPE_API_KEY,
-            base_url=DASHSCOPE_BASE_URL,
-            http_client=http_client,
-        )
-
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "你是一个专业的A股市场分析师，擅长联网搜索获取实时数据。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-            extra_body={
-                "enable_search": True,
-            },
-        )
-
-        content = resp.choices[0].message.content or ''
-        tokens = resp.usage.total_tokens if resp.usage else 0
-
-        return SimpleResponse(
-            content=content,
-            tokens_used=tokens,
-            model=model,
-            provider='dashscope',
-            success=True,
-            reasoning_content='',
-            tool_calls=[],
-        )
-
-    except Exception as e:
-        logger.error(f"[_call_deepseek_search] error={e}")
-        return SimpleResponse(
-            content='',
-            tokens_used=0,
-            model=model,
-            provider='dashscope',
-            success=False,
-            error=str(e),
-            reasoning_content='',
-            tool_calls=[],
-        )
-
-
-def _call_deepseek_with_tools(client, model, messages, tools, temperature, max_tokens):
-    """
-    调用百炼 DeepSeek 模型（禁用思考模式 + 支持 Function Calling）
-    """
-    import logging
-    import httpx
-    import os
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        for k in list(os.environ.keys()):
-            if 'proxy' in k.lower():
-                del os.environ[k]
-
-        http_client = httpx.Client(trust_env=False, timeout=300.0)
-        from utils.llm.client import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL
-        from openai import OpenAI
-        ds_client = OpenAI(
-            api_key=DASHSCOPE_API_KEY,
-            base_url=DASHSCOPE_BASE_URL,
-            http_client=http_client,
-        )
-
-        resp = ds_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body={
-                "enable_thinking": False,
-            },
-            tools=tools if tools else None,
-            tool_choice="auto" if tools else None,
-        )
-
-        choice = resp.choices[0]
-        content = choice.message.content or ''
-        reasoning_content = getattr(choice.message, 'reasoning_content', '') or ''
-        tokens = resp.usage.total_tokens if resp.usage else 0
-
-        tool_calls = []
-        raw_tool_calls = choice.message.tool_calls or []
-        for tc in raw_tool_calls:
-            if tc.function:
-                try:
-                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                except:
-                    args = {}
-                tool_calls.append({
-                    'id': tc.id or f"call_{len(tool_calls)}",
-                    'name': tc.function.name,
-                    'arguments': args
-                })
-
-        return SimpleResponse(
-            content=content,
-            tokens_used=tokens,
-            model=model,
-            provider='deepseek',
-            success=True,
-            reasoning_content=reasoning_content,
-            tool_calls=tool_calls,
-        )
-
-    except Exception as e:
-        logger.error(f"[_call_deepseek_with_tools] error={e}")
-        return SimpleResponse(
-            content='',
-            tokens_used=0,
-            model=model,
-            provider='deepseek',
-            success=False,
-            error=str(e),
-            reasoning_content='',
-            tool_calls=[],
-        )
-
-
-class SimpleResponse:
-    """简单响应对象，包含 tool_calls 支持"""
-    def __init__(self, content='', tokens_used=0, model='', provider='',
-                 success=True, error='', reasoning_content='', tool_calls=None):
-        self.content = content
-        self.tokens_used = tokens_used
-        self.model = model
-        self.provider = provider
-        self.success = success
-        self.error = error
-        self.reasoning_content = reasoning_content
-        self.tool_calls = tool_calls or []
-
-
-
-def _do_web_search(query: str) -> str:
-    """搜索实时市场信息"""
-    import requests
-    import re
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    if not query or not query.strip():
-        return "查询为空，请提供有效的搜索关键词。"
-
-    try:
-        # 清除代理，避免超时
-        for k in list(os.environ.keys()):
-            if 'proxy' in k.lower():
-                del os.environ[k]
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-        }
-        url = f"https://www.baidu.com/s?wd={requests.utils.quote(query)}&rn=10"
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        if resp.status_code == 200 and len(resp.text) > 10000:
-            results = []
-            pattern = r'<h3[^>]*>(.*?)</h3>'
-            matches = re.findall(pattern, resp.text, re.DOTALL)
-            for m in matches[:15]:
-                clean = re.sub(r'<[^>]+>', '', m).strip()
-                if len(clean) > 10 and any('\u4e00' <= c <= '\u9fff' for c in clean):
-                    results.append(clean)
-            
-            seen = set()
-            unique_results = []
-            for r in results:
-                if r not in seen and len(r) > 10:
-                    seen.add(r)
-                    unique_results.append(r)
-            
-            if unique_results:
-                return '\n'.join([f"{i+1}. {r}" for i, r in enumerate(unique_results[:8])])
-    except Exception as e:
-        logger.warning("[WebSearch] 百度搜索失败: %s", e)
-
-    return f"搜索「{query}」暂无结果，请尝试其他关键词。"
-
-
-def _get_limit_up_stocks() -> str:
-    """获取今日涨停板数据"""
-    import requests
-    import logging
-    logger = logging.getLogger(__name__)
-
-    # 清除代理，避免超时
-    for k in list(os.environ.keys()):
-        if 'proxy' in k.lower():
-            del os.environ[k]
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Referer': 'https://data.eastmoney.com/',
-    }
-    
-    url = 'https://push2.eastmoney.com/api/qt/clist/get'
-    params = {
-        'pn': 1, 'pz': 50, 'po': 1, 'np': 1,
-        'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-        'fltt': 2, 'invt': 2, 'fid': 'f3',
-        'fs': 'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
-        'fields': 'f12,f14,f2,f3,f4,f5,f6',
-    }
-    
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'data' in data and data['data']:
-                stocks = data['data'].get('diff', [])
-                lines = [f"今日涨停股票共 {len(stocks)} 只:\n"]
-                for i, s in enumerate(stocks[:30], 1):
-                    code = s.get('f12', '')
-                    name = s.get('f14', '')
-                    price = s.get('f2', 0)
-                    change = s.get('f3', 0)
-                    amount = s.get('f6', 0)
-                    amount_wan = amount / 10000 if amount else 0
-                    lines.append(f"{i}. {name}({code}) | 现价:{price} | 涨幅:{change}% | 成交:{amount_wan:.0f}万")
-                return '\n'.join(lines)
-    except Exception as e:
-        logger.warning("[LimitUp] 获取涨停数据失败: %s", e)
-    
-    return "暂时无法获取涨停板数据"
-
-
-def _get_yesterday_limit_up_stocks() -> str:
-    """获取昨日涨停板数据（用于分析参考）"""
-    import requests
-    from datetime import datetime, timedelta
-    import logging
-    logger = logging.getLogger(__name__)
-
-    for k in list(os.environ.keys()):
-        if 'proxy' in k.lower():
-            del os.environ[k]
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Referer': 'https://data.eastmoney.com/',
-    }
-
-    # 获取昨日日期
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-
-    # 东方财富 涨停板历史数据接口
-    url = 'https://data.eastmoney.com/DataCenter/PageApi/RealTimeTrend/GetZTPool'
-
-    try:
-        # 尝试获取昨日涨停池数据
-        params = {
-            'sortColumns': 'SECURITY_CODE',
-            'sortTypes': 1,
-            'pageSize': 100,
-            'pageNumber': 1,
-            'reportName': 'RPT_LIMIT_UP_POOL_HISTORY_DETAILS',
-            'filter': f"(TRADE_DATE='{yesterday}')",
-            'columns': 'ALL',
-        }
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            rows = data.get('data', {}).get('result', {}).get('data', []) or []
-            if rows:
-                lines = [f"昨日({yesterday})涨停股票共 {len(rows)} 只:\n"]
-                for i, row in enumerate(rows[:50], 1):
-                    code = row.get('SECURITY_CODE', '')
-                    name = row.get('SECURITY_NAME_ABBR', '')
-                    change_pct = row.get('CHANGE_RATE', 0)
-                    amount_wan = (row.get('TURNOVER', 0) or 0) / 10000
-                    reason = row.get('CONTINUOUS_COUNT', '') or ''
-                    lines.append(f"{i}. {name}({code}) | 涨幅:{change_pct:.2f}% | 成交:{amount_wan:.0f}万 | {reason}")
-                return '\n'.join(lines)
-    except Exception as e:
-        logger.warning("[YesterdayLimitUp] 获取昨日涨停数据失败: %s", e)
-
-    # Fallback: 用今日涨停数据作为参考（如果昨日数据获取失败）
-    today_data = _get_limit_up_stocks()
-    return f"（未能获取昨日涨停数据，以下为今日涨停参考：）\n{today_data}"
-
-
-def _get_stock_quote(code: str) -> str:
-    """获取个股行情"""
-    import requests
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    if not code:
-        return "股票代码不能为空"
-    
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn/',
-        }
-        url = f'https://hq.sinajs.cn/list={code}'
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        if resp.status_code == 200:
-            text = resp.text
-            # 解析格式: var hq_str_sh600000="名称,现价,昨收,今开,最高,最低,..."
-            match = text.split('"')[1] if '"' in text else ''
-            if match:
-                parts = match.split(',')
-                if len(parts) >= 32:
-                    name = parts[0]
-                    price = parts[3]   # 现价
-                    yclose = parts[2]   # 昨收
-                    open_p = parts[1]   # 今开
-                    high = parts[33]    # 最高
-                    low = parts[34]     # 最低
-                    vol = parts[8]      # 成交量
-                    amount = parts[9]   # 成交额
-                    change = float(price) - float(yclose) if price and yclose else 0
-                    pct = (change / float(yclose) * 100) if yclose and float(yclose) > 0 else 0
-                    
-                    return (f"{name}({code}) 行情:\n"
-                           f"现价: {price} | 涨跌: {change:+.2f} ({pct:+.2f}%)\n"
-                           f"今开: {open_p} | 最高: {high} | 最低: {low}\n"
-                           f"成交量: {vol} | 成交额: {amount}")
-    except Exception as e:
-        logger.warning("[StockQuote] 获取行情失败: %s", e)
-    
-    return f"暂时无法获取 {code} 的行情数据"
-
-
-def _get_market_overview() -> str:
-    """获取市场概览"""
-    import requests
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn/',
-        }
-        # 上证指数和深证成指
-        url = 'https://hq.sinajs.cn/list=s_sh000001,s_sh000300,s_sz399001,s_sz399006'
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        if resp.status_code == 200:
-            lines = []
-            texts = resp.text.split('\n')
-            names = ['上证指数', '沪深300', '深证成指', '创业板指']
-            indices = ['sh000001', 'sh000300', 'sz399001', 'sz399006']
-            
-            for i, idx in enumerate(indices):
-                for line in texts:
-                    if idx in line:
-                        match = line.split('"')[1] if '"' in line else ''
-                        if match:
-                            parts = match.split(',')
-                            if len(parts) >= 4:
-                                name = names[i]
-                                price = parts[1] if parts[1] else '0'
-                                change = parts[2] if parts[2] else '0'
-                                pct = parts[3] if parts[3] else '0'
-                                lines.append(f"{name}: {price} | {float(change):+.2f} ({float(pct):+.2f}%)")
-                        break
-            
-            if lines:
-                return '\n'.join(lines)
-    except Exception as e:
-        logger.warning("[MarketOverview] 获取市场概览失败: %s", e)
-    
-    return "暂时无法获取市场概览数据"
-
-
-@strategy_bp.route('/api/agents/batch', methods=['POST'])
-def batch_analyze_agents():
-    """
-    批量分析全部 6 个 Agent，并计算共识结果。
-    并行调用，超时保护。
-    """
-    registry = get_agent_registry()
-    agent_ids = [a['id'] for a in registry.list_agents()]
-
-    # 并行执行所有 Agent
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    results = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(analyze_single_agent, aid): aid for aid in agent_ids}
-        for future in as_completed(futures, timeout=120):
-            try:
-                r = future.result()
-                results.append(r)
-            except Exception as e:
-                aid = futures[future]
-                results.append({'agent_id': aid, 'success': False, 'error': str(e)})
-
-    # 保证顺序与 agent_ids 一致
-    results.sort(key=lambda r: agent_ids.index(r['agent_id']))
-
-    # 计算共识
-    stances = [r.get('structured', {}).get('stance', 'neutral') for r in results if r.get('success')]
-    confidences = [r.get('structured', {}).get('confidence', 50) for r in results if r.get('success')]
-    bull_count = sum(1 for s in stances if s == 'bull')
-    bear_count = sum(1 for s in stances if s == 'bear')
-    neutral_count = sum(1 for s in stances if s == 'neutral')
-    total = len(stances) or 1
-    avg_conf = sum(confidences) / len(confidences) if confidences else 50
-
-    # 共识百分比：bull→高分，bear→低分
-    consensus_pct = max(10, min(95, int(50 + (bull_count - bear_count) / total * 50 + avg_conf / 4)))
-
-    # 共识标签
-    if bull_count >= 4:
-        consensus_label = '乐观看多'
-    elif bear_count >= 3:
-        consensus_label = '谨慎防御'
-    elif neutral_count >= 4:
-        consensus_label = '中性观望'
-    else:
-        consensus_label = '分化震荡'
-
-    # 聚合 TOP 机会（从各 Agent 推荐中取涨幅最大的前 3）
-    all_recs = []
-    for r in results:
-        if r.get('success'):
-            for s in r.get('structured', {}).get('recommendedStocks', []):
-                chg = s.get('chg_pct')
-                if chg is None:
-                    chg = s.get('changePct') or s.get('change_pct') or 0
-                all_recs.append({
-                    'name': s.get('name', ''),
-                    'code': s.get('code', ''),
-                    'role': s.get('role') or s.get('adviseType') or s.get('grade') or '',
-                    'reason': s.get('reason') or s.get('signal') or s.get('meta') or '',
-                    'chg_pct': float(chg or 0),
-                    'agent': r.get('agent_name', ''),
-                })
-    all_recs.sort(key=lambda x: x['chg_pct'], reverse=True)
-    top_recs = all_recs[:3]
-
-    # 构建共识机会列表
-    badges = ['龙头共识', '多策略共振', '资金认可']
-    badge_kinds = ['primary', 'primary', 'muted']
-    consensus_opportunities = []
-    for i, rec in enumerate(top_recs):
-        sentiment_tag = '看多' if rec['chg_pct'] > 5 else '轮动'
-        consensus_opportunities.append({
-            'rank': i + 1,
-            'title': f"{rec['name']} ({rec['code']})",
-            'badge': badges[i] if i < len(badges) else '机会标的',
-            'badgeKind': badge_kinds[i] if i < len(badge_kinds) else 'muted',
-            'meta': f"{rec['role']} · {rec['reason'][:20]}" if rec['reason'] else rec['role'],
-            'chg': rec['chg_pct'],
-            'flowLabel': f"来源: {rec['agent']}",
-        })
-
-    return jsonify({
-        'success': True,
-        'scan_time': datetime.now().isoformat(),
-        'consensus': {
-            'consensusPct': consensus_pct,
-            'bullCount': bull_count,
-            'bearCount': bear_count,
-            'neutralCount': neutral_count,
-            'label': consensus_label,
-            'avgConfidence': round(avg_conf, 1),
-        },
-        'agentResults': results,
-        'consensusOpportunities': consensus_opportunities,
-        'lastUpdated': datetime.now().strftime('%H:%M:%S'),
-    })
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# JunGeTrader API - 钧哥智能交易员
-# 使用 register_junge_routes 模式，避免循环导入
-# ══════════════════════════════════════════════════════════════════════════════
-try:
-    from junge_trader import register_junge_routes
-    register_junge_routes(strategy_bp, get, set, invalidate, db)
-    logger.info("JunGeTrader 路由注册成功")
-except ImportError as e:
-    logger.warning(f"JunGeTrader 路由注册失败: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 量化回测 API
-# ══════════════════════════════════════════════════════════════════════════════
-
-@strategy_bp.route('/api/backtest/catalog', methods=['GET'])
-def backtest_catalog():
-    """返回内置策略模板列表（含参数定义），前端据此渲染配置表单。"""
-    from utils.backtest_engine import TEMPLATE_CATALOG
-    return jsonify({'success': True, 'data': TEMPLATE_CATALOG})
-
-
-@strategy_bp.route('/api/backtest/run', methods=['POST'])
-def backtest_run():
-    """
-    执行量化回测。
-
-    请求体：
-    {
-        "stock_code": "600519",
-        "template_id": "ma_cross",
-        "params": {"fast_ma": 5, "slow_ma": 20},
-        "start_date": "2025-01-01",   // 可选，默认近 days 天
-        "end_date": "2026-04-01",     // 可选，默认今天
-        "days": 120,                  // 可选，默认 120
-        "initial_cash": 100000.0,    // 可选，默认 10 万
-        "commission_pct": 0.001      // 可选，默认千 1
-    }
-
-    返回：回测结果（含 K 线 + 买卖点 + 权益曲线 + 统计指标）
-    """
-    try:
-        data = request.get_json() or {}
-    except Exception:
-        return jsonify({'success': False, 'error': '请求体必须是 JSON'}), 400
-
-    code = (data.get('stock_code') or '').strip()
-    if not code or len(code) != 6 or not code.isdigit():
-        return jsonify({'success': False, 'error': '无效的 stock_code（需 6 位数字）'}), 400
-
-    template_id = (data.get('template_id') or '').strip()
-    if not template_id:
-        return jsonify({'success': False, 'error': '缺少 template_id'}), 400
-
-    params = data.get('params') or {}
-    days = int(data.get('days', 120))
-    initial_cash = float(data.get('initial_cash', 100000.0))
-    commission_pct = float(data.get('commission_pct', 0.001))
-
-    start_date = data.get('start_date')
-    end_date = data.get('end_date')
-
-    try:
-        from utils.backtest_engine import execute_backtest, TEMPLATE_CATALOG
-        valid_ids = {t['id'] for t in TEMPLATE_CATALOG}
-        if template_id not in valid_ids:
-            return jsonify({'success': False, 'error': f'未知策略模板: {template_id}'}), 400
-
-        result = execute_backtest(
-            stock_code=code,
-            template_id=template_id,
-            params=params,
-            start_date=start_date,
-            end_date=end_date,
-            days=min(days, 800),       # 上限 800 天（约 3 年）
-            initial_cash=initial_cash,
-            commission_pct=commission_pct,
-        )
-        if not result.get('success'):
-            return jsonify({'success': False, 'error': result.get('error', '回测失败')}), 422
-
-        # 安全序列化（过滤 NaN/Inf）
-        def _safe_json(obj):
-            return json.loads(
-                json.dumps(obj, ensure_ascii=False, default=lambda v: (
-                    None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
-                ))
-            )
-
-        return jsonify({'success': True, 'data': _safe_json(result)})
-    except Exception as e:
-        logger.exception('backtest_run failed')
-        return jsonify({'success': False, 'error': f'回测异常: {e}'}), 500
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 新架构：Qwen + AKShare + DeepSeek 流式分析接口
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@strategy_bp.route('/api/analyze/stream', methods=['POST'])
-def analyze_stream():
-    """
-    新架构流式分析接口 v2 - 结合现有 Agent Prompt 工程
-
-    架构：
-        IntentClassifier → 选择合适的 Agent
-        DataProvider → Qwen + AKShare 获取数据
-        Agent Prompt → 使用现有的专业 Prompt
-        DeepSeek/Agent → 生成分析报告
-    """
-    from flask import Response
-    import asyncio
-
-    # 在请求上下文中解析数据
-    req_data = request.get_json() or {}
-    user_input = req_data.get('user_input', '')
-    stock_codes = req_data.get('stock_codes', [])
-    preferred_agents = req_data.get('preferred_agents', [])
-    context = req_data.get('context', {})
-
-    if not user_input:
-        return jsonify({'success': False, 'error': '缺少 user_input'}), 400
-
-    def generate():
-        try:
-            yield "data: {\"type\": \"status\", \"message\": \"开始分析...\"}\n\n"
-
-            from utils.llm.deepseek_analyzer import AnalysisRequest, get_deepseek_analyzer
-
-            analysis_request = AnalysisRequest(
-                user_input=user_input,
-                stock_codes=stock_codes,
-                preferred_agents=preferred_agents,
-                context=context
-            )
-
-            analyzer = get_deepseek_analyzer()
-            result = analyzer.analyze_sync(analysis_request)
-
-            if result.success:
-                yield f"data: {{\"type\": \"analysis\", \"content\": {json.dumps(_strip_json_from_analysis(result.content))}}}\n\n"
-
-                if result.thinking:
-                    yield f"data: {{\"type\": \"thinking\", \"content\": {json.dumps(result.thinking)}}}\n\n"
-
-                if result.structured:
-                    yield f"data: {{\"type\": \"structured\", \"data\": {json.dumps(result.structured)}}}\n\n"
-
-                yield f"data: {{\"type\": \"done\", \"agent_id\": \"{result.agent_id}\", \"agent_name\": \"{result.agent_name}\", \"tokens_used\": {result.tokens_used}, \"time_ms\": {result.execution_time_ms}}}\n\n"
-            else:
-                yield f"data: {{\"type\": \"error\", \"error\": {json.dumps(result.error)}}}\n\n"
-
-        except Exception as e:
-            logger.exception('[Stream] analyze_stream error')
-            yield f"data: {{\"type\": \"error\", \"error\": {json.dumps(str(e))}}}\n\n"
-
-        yield "data: {\"type\": \"close\"}\n\n"
-
-    return Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no',
-        }
-    )
-
-
-@strategy_bp.route('/api/analyze/multi', methods=['POST'])
-def analyze_multi_agent():
-    """
-    多 Agent 协作分析接口
-
-    请求体：
-    {
-        "user_input": "分析今日AI板块机会",
-        "stock_codes": ["000001"],
-        "agent_ids": ["beijing", "jun", "qiao"]  // 可选
-    }
-
-    返回：
-    {
-        "success": true,
-        "data": {
-            "results": [
-                {"agent_id": "beijing", "agent_name": "北京炒家", "content": "...", "structured": {}},
-                ...
-            ]
-        }
-    }
-    """
-    import asyncio
-
-    try:
-        req_data = request.get_json() or {}
-        user_input = req_data.get('user_input', '')
-        stock_codes = req_data.get('stock_codes', [])
-        agent_ids = req_data.get('agent_ids', [])
-
-        if not user_input:
-            return jsonify({'success': False, 'error': '缺少 user_input'}), 400
-
-        from utils.llm.deepseek_analyzer import AnalysisRequest, get_deepseek_analyzer
-
-        request_obj = AnalysisRequest(
-            user_input=user_input,
-            stock_codes=stock_codes
-        )
-
-        analyzer = get_deepseek_analyzer()
-        results = asyncio.run(analyzer.multi_agent_analyze(request_obj, agent_ids))
-
-        return jsonify({
-            'success': True,
-            'data': {
-                'results': [r.to_dict() for r in results]
-            }
-        })
-
-    except Exception as e:
-        logger.exception('analyze_multi_agent error')
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@strategy_bp.route('/api/analyze/intent', methods=['POST'])
-def analyze_intent():
-    """
-    意图识别接口（测试用）
-
-    请求体：
-    {
-        "user_input": "分析今日AI板块机会"
-    }
-
-    返回：
-    {
-        "success": true,
-        "data": {
-            "intent": "thematic",
-            "primary_source": "qwen",
-            "required_tools": [...],
-            "confidence": 0.8,
-            "reasoning": "..."
-        }
-    }
-    """
-    try:
-        data = request.get_json() or {}
-        user_input = data.get('user_input', '')
-
-        if not user_input:
-            return jsonify({'success': False, 'error': '缺少 user_input'}), 400
-
-        from utils.llm.intent_classifier import classify_intent
-
-        result = classify_intent(user_input)
-        result['intent'] = result['intent'].value  # Enum -> str
-
-        return jsonify({'success': True, 'data': result})
-
-    except Exception as e:
-        logger.exception('analyze_intent error')
-        return jsonify({'success': False, 'error': str(e)}), 500

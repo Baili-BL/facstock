@@ -1925,6 +1925,42 @@ def get_latest_agent_analysis(agent_id: str) -> Optional[Dict]:
         return d
 
 
+def get_today_agent_analysis(agent_id: str) -> Optional[Dict]:
+    """获取某 Agent 今日分析记录（含持仓快照和分析结果），无则返回 None"""
+    import json as _json
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cols = _get_table_columns(cursor, 'agent_analysis_history')
+        sel_cols = []
+        for c in ['id', 'agent_id', 'report_date', 'scan_id',
+                  'holdings_snapshot_json', 'analysis_result_json',
+                  'raw_response_text', 'thinking_text', 'stance', 'confidence',
+                  'tokens_used', 'model', 'report_time']:
+            if c in cols:
+                sel_cols.append(c)
+        if not sel_cols:
+            return None
+
+        sql = (f"SELECT {', '.join(sel_cols)} FROM agent_analysis_history "
+               f"WHERE agent_id = %s AND report_date = %s ORDER BY report_time DESC LIMIT 1")
+        cursor.execute(sql, (agent_id, today))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row) if not isinstance(row, dict) else row
+        d['holdings_snapshot'] = _json.loads(d.pop('holdings_snapshot_json') or '[]') if d.get('holdings_snapshot_json') else []
+        d['analysis_result']   = _json.loads(d.pop('analysis_result_json') or '{}')   if d.get('analysis_result_json')  else {}
+        rd = d.get('report_date')
+        if hasattr(rd, 'isoformat'):
+            d['report_date'] = rd.isoformat()
+        rt = d.get('report_time')
+        if isinstance(rt, datetime):
+            d['report_time'] = rt.strftime('%Y-%m-%d %H:%M:%S')
+        return d
+
+
 # 初始化新闻缓存表
 try:
     init_news_cache_table()

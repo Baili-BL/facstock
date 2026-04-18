@@ -212,6 +212,31 @@ def get_agent_prompts():
         return jsonify({"success": False, "error": str(e)})
 
 
+@app.route('/api/agents/<agent_id>/prompt')
+def get_agent_prompt_detail(agent_id):
+    """返回单个 Agent 的 system_prompt 和 user_prompt_template（供前端展示）"""
+    try:
+        from utils.llm import get_agent_registry
+        registry = get_agent_registry()
+        agent = registry.get(agent_id)
+        if not agent:
+            return jsonify({"success": False, "error": f"未知 Agent ID: {agent_id}"}), 404
+        return jsonify({
+            "success": True,
+            "data": {
+                "id": agent.get("id"),
+                "name": agent.get("name"),
+                "role": agent.get("role"),
+                "tagline": agent.get("tagline", ""),
+                "adviseType": agent.get("adviseType", ""),
+                "system_prompt": agent.get("system_prompt", ""),
+                "user_prompt_template": agent.get("user_prompt_template", ""),
+            }
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
 @app.route('/api/agents/analyze/<agent_id>', methods=['POST'])
 def analyze_with_agent(agent_id):
     """
@@ -311,8 +336,13 @@ def analyze_with_agent(agent_id):
         tools = [
             {"type": "function", "function": {
                 "name": "web_search",
-                "description": "Search the web for real-time A-share market data",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+                "description": "Search the web for real-time A-share market news and information",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query in Chinese"}}, "required": ["query"]}
+            }},
+            {"type": "function", "function": {
+                "name": "get_limit_up_stocks",
+                "description": "Get today's A-share limit-up (涨停) stocks data from East Money, including stock code, name, price, change percentage, and trading volume",
+                "parameters": {"type": "object", "properties": {}}
             }}
         ]
 
@@ -358,6 +388,13 @@ def analyze_with_agent(agent_id):
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": search_result or "未找到相关数据",
+                        })
+                    elif func_name == 'get_limit_up_stocks':
+                        stocks = _get_limit_up_stocks()
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": stocks,
                         })
                     else:
                         messages.append({
@@ -472,81 +509,590 @@ def analyze_with_agent(agent_id):
         return jsonify({"success": False, "error": str(e)})
 
 
+@app.route('/api/agents/analyze/<agent_id>/stream', methods=['POST'])
+def analyze_with_agent_stream(agent_id):
+    """
+    流式版本：使用 Server-Sent Events 实时返回 LLM 输出。
+    前端可逐块接收并显示，实现实时打印效果。
+    """
+    from flask import Response, stream_with_context
+
+    def generate():
+        try:
+            from utils.llm import get_client, get_agent_registry
+            from ai_service import fetch_market_news, fetch_junge_enhanced_news
+            from junge_trader import format_holdings_for_prompt, format_scan_data_for_prompt
+            from openai import OpenAI
+            from datetime import datetime
+            import json as _json
+
+            logger.info(f"[Stream] agent_id={agent_id} 开始流式分析")
+
+            registry = get_agent_registry()
+            agent_config = registry.get(agent_id)
+            if not agent_config:
+                err = f'未知 Agent ID: {agent_id}'
+                logger.error(f"[Stream] {err}")
+                yield f"data: {_json.dumps({'type': 'error', 'error': err})}\n\n"
+                return
+
+            data = request.get_json() or {}
+            from utils.llm.client import DASHSCOPE_API_KEY as _DEFAULT_KEY
+            api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '') or _DEFAULT_KEY
+            DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+            model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'deepseek-chat')
+            if not api_key:
+                err = '请提供 API Key'
+                logger.error(f"[Stream] {err}")
+                yield f"data: {_json.dumps({'type': 'error', 'error': err})}\n\n"
+                return
+            logger.info(f"[Stream] api_key 长度={len(api_key)}, model={model}")
+
+            # 发送准备阶段信息
+            yield f"data: {_json.dumps({'type': 'status', 'message': '正在准备数据...'})}\n\n"
+
+            latest_scan = db.get_latest_scan()
+            all_stocks = []
+            if latest_scan:
+                results_dict = latest_scan.get('results', {})
+                for sector_name, sector_data in results_dict.items():
+                    if isinstance(sector_data, dict):
+                        for stock in sector_data.get('stocks', []):
+                            if isinstance(stock, dict):
+                                stock['sector'] = sector_name
+                                all_stocks.append(stock)
+                scan_data_text = format_scan_data_for_prompt(all_stocks) if all_stocks else ""
+                scan_date = latest_scan.get('scan_time', '')[:10]
+            else:
+                scan_data_text = ""
+                scan_date = ""
+
+            if agent_id == 'jun':
+                news_list = fetch_junge_enhanced_news(scan_date)
+            else:
+                news_list = fetch_market_news(scan_date)
+
+            news_lines = []
+            for idx, n in enumerate((news_list or [])[:8], 1):
+                news_lines.append(
+                    f"【新闻{idx}】「[{n.get('time','')}] {n.get('title','')}」（{n.get('source','')}）"
+                )
+            news_text = "\n".join(news_lines) if news_lines else "【暂无最新消息】"
+
+            try:
+                holdings = db.get_holdings_by_agent(agent_id)
+                holdings_text = format_holdings_for_prompt(holdings)
+            except Exception:
+                holdings_text = "【暂无历史持仓数据】"
+
+            current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+            user_prompt = registry.build_user_prompt(
+                agent_id=agent_id,
+                scan_data=scan_data_text,
+                news_data=news_text,
+                holdings_data=holdings_text,
+                current_time=current_time,
+                scan_date=scan_date,
+            )
+            system_content = agent_config.get('system_prompt', '')
+
+            yield f"data: {_json.dumps({'type': 'status', 'message': '正在调用 AI 分析...'})}\n\n"
+
+            client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=300)
+            extra_body = {
+                "thinking": {"type": "enabled"},
+                "enable_search": True,
+            }
+            tools = [
+                {"type": "function", "function": {
+                    "name": "web_search",
+                    "description": "Search the web for real-time A-share market news and information",
+                    "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query in Chinese"}}, "required": ["query"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "get_limit_up_stocks",
+                    "description": "Get today's A-share limit-up stocks data from East Money",
+                    "parameters": {"type": "object", "properties": {}}
+                }}
+            ]
+
+
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            # 处理工具调用循环
+            MAX_TOOL_CALLS = 5
+            content = ""
+            reasoning_content = ""
+            usage = None
+
+            for _ in range(MAX_TOOL_CALLS):
+                logger.info(f"[Stream] agent_id={agent_id} 调用 LLM (第{_+1}轮)")
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=agent_config.get('temperature', 0.3),
+                        max_tokens=agent_config.get('max_tokens', 3000),
+                        extra_body=extra_body,
+                        tools=tools,
+                        tool_choice="auto",
+                        stream=True,  # 启用流式
+                    )
+                except Exception as llm_err:
+                    logger.exception(f"[Stream] LLM 调用失败: {llm_err}")
+                    yield f"data: {_json.dumps({'type': 'error', 'error': f'LLM 调用失败: {llm_err}'})}\n\n"
+                    return
+
+                chunk_content = ""
+                chunk_reasoning = ""
+                tool_calls_buffer = []
+
+                for chunk in response:
+                    # 发送推理内容（thinking）
+                    if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                        rc = chunk.choices[0].delta.reasoning_content
+                        chunk_reasoning += rc
+                        yield f"data: {_json.dumps({'type': 'thinking', 'content': rc})}\n\n"
+
+                    # 发送正文内容
+                    if chunk.choices[0].delta.content:
+                        cc = chunk.choices[0].delta.content
+                        chunk_content += cc
+                        yield f"data: {_json.dumps({'type': 'content', 'content': cc})}\n\n"
+
+                    # 处理工具调用
+                    if chunk.choices[0].delta.tool_calls:
+                        for tc in chunk.choices[0].delta.tool_calls:
+                            # 累积工具调用信息
+                            if tc.function and tc.function.arguments:
+                                tool_calls_buffer.append({
+                                    'id': tc.id,
+                                    'name': tc.function.name,
+                                    'arguments': tc.function.arguments
+                                })
+
+                # 流结束后处理
+                content += chunk_content
+                reasoning_content += chunk_reasoning
+
+                # 判断是否需要工具调用
+                if tool_calls_buffer:
+                    # 执行工具调用
+                    for tc in tool_calls_buffer:
+                        func_name = tc['name']
+                        func_args = tc['arguments']
+                        if func_name == 'web_search':
+                            args = _json.loads(func_args)
+                            query = args.get('query', '')
+                            search_result = _do_web_search(query)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc['id'],
+                                "content": search_result or "未找到相关数据",
+                            })
+                        elif func_name == 'get_limit_up_stocks':
+                            stocks = _get_limit_up_stocks()
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc['id'],
+                                "content": stocks,
+                            })
+                        else:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc['id'],
+                                "content": f"未知工具: {func_name}",
+                            })
+                    # 继续下一轮
+                    continue
+                else:
+                    # 没有工具调用，结束
+                    usage = response.usage if hasattr(response, 'usage') else None
+                    break
+
+            thinking_text = reasoning_content
+
+            yield f"data: {_json.dumps({'type': 'status', 'message': '正在解析结果...'})}\n\n"
+
+            structured = registry.extract_json(content)
+
+            if structured:
+                structured = registry.sanitize(
+                    structured,
+                    all_stocks,
+                    default_advise_type=agent_config.get('adviseType', '波段'),
+                )
+                structured = _enrich_stocks_with_scan_data(structured, all_stocks)
+
+            yield f"data: {_json.dumps({'type': 'status', 'message': '正在保存历史记录...'})}\n\n"
+
+            # 保存历史
+            try:
+                report_date = datetime.now().strftime('%Y-%m-%d')
+                rec_stocks = structured.get('recommendedStocks', []) if structured else []
+                ar_payload = {
+                    'structured': structured,
+                    'raw_text': content,
+                    'thinking': thinking_text,
+                    'marketCommentary': structured.get('marketCommentary', '') if structured else '',
+                    'positionAdvice': structured.get('positionAdvice', '') if structured else '',
+                    'riskWarning': structured.get('riskWarning', '') if structured else '',
+                    'stance': structured.get('stance', '') if structured else '',
+                    'confidence': structured.get('confidence', 0) if structured else 0,
+                    'recommendedStocks': rec_stocks,
+                }
+
+                if rec_stocks:
+                    snap = db.snapshot_rows_from_recommended_stocks(rec_stocks)
+                else:
+                    snap = db.snapshot_rows_from_db_holdings(db.get_holdings_by_agent(agent_id))
+                db.save_agent_analysis_history(
+                    agent_id=agent_id,
+                    report_date=report_date,
+                    holdings_snapshot=snap,
+                    analysis_result=ar_payload,
+                    raw_response=content or '',
+                    thinking=thinking_text,
+                    stance=structured.get('stance', '') if structured else '',
+                    confidence=int(structured.get('confidence', 0)) if structured else 0,
+                    tokens_used=usage.total_tokens if usage else 0,
+                )
+
+                rec_stocks = structured.get('recommendedStocks', []) if structured else []
+                if rec_stocks:
+                    for s in rec_stocks:
+                        pass  # 日志可忽略
+                    try:
+                        saved = db.save_recommended_stocks_as_holdings(agent_id, rec_stocks)
+                    except Exception as save_err:
+                        logger.error(f"[AgentAnalyzeStream] agent_id={agent_id} 写入 holdings 失败: {save_err}")
+            except Exception as hist_err:
+                logger.warning(f"[AgentAnalyzeStream] agent_id={agent_id} 保存分析历史失败: {hist_err}")
+
+            # 发送最终结果
+            yield f"data: {_json.dumps({'type': 'done', 'success': True, 'agent_id': agent_id, 'agent_name': agent_config.get('name', agent_id), 'structured': structured, 'analysis': content, 'thinking': thinking_text, 'tokens_used': usage.total_tokens if usage else 0})}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
 @app.route('/api/agents/batch', methods=['POST'])
 def batch_analyze_agents():
     """
-    批量运行全部 6 个智能体（并行）
-    POST body: { "api_key": "..." }
+    批量运行全部智能体（并行或层次化）
+    POST body: {
+        "api_key": "...",
+        "mode": "parallel" | "hierarchical"  # 默认 parallel
+    }
+
     返回：
       - consensus: 全局共识数据（供 AISummaryDetail 环形图）
       - agentResults[]: 每个 Agent 的结构化输出（供主力头寸卡片）
       - consensusOpportunities[]: TOP 3 共识股票（供核心投资机会区块）
+      - master（仅 hierarchical 模式）: 主控 Agent 分析结果
+      - synthesis（仅 hierarchical 模式）: 综合建议
     """
     try:
-        import concurrent.futures
-        from agent_prompts import AGENTS, build_messages, extract_json_from_response, compute_consensus, sanitize_parsed_agent_output
-        from ai_service import fetch_market_news
-        from datetime import datetime
-        from openai import OpenAI
-
         data = request.get_json() or {}
-        from utils.llm.client import DASHSCOPE_API_KEY as _DEFAULT_KEY
-        api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '') or _DEFAULT_KEY
-        model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'deepseek-chat')
-        if not api_key:
-            return jsonify({"success": False, "error": "请提供 API Key"})
+        mode = data.get('mode', 'parallel')
 
-        # DeepSeek 配置
-        DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+        if mode == 'hierarchical':
+            return _hierarchical_batch_analyze(data)
+        else:
+            return _parallel_batch_analyze(data)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)})
 
-        latest_scan = db.get_latest_scan()
-        if not latest_scan:
-            return jsonify({"success": False, "error": "没有可分析的扫描数据"})
-        results_dict = latest_scan.get('results', {})
-        all_stocks = []
-        for sector_name, sector_data in results_dict.items():
-            if isinstance(sector_data, dict):
-                for stock in sector_data.get('stocks', []):
-                    if isinstance(stock, dict):
-                        stock['sector'] = sector_name
-                        all_stocks.append(stock)
-        if not all_stocks:
-            return jsonify({"success": False, "error": "扫描结果为空"})
 
-        scan_data_text = _format_scan_data_for_agent(all_stocks)
-        scan_date = latest_scan.get('scan_time', '')[:10]
-        news_list = fetch_market_news(scan_date)
-        news_text = _format_news_for_agent(news_list)
-        current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+def _hierarchical_batch_analyze(data: dict):
+    """
+    层次化批量分析：
+    1. 主控 Agent 分析市场核心意图
+    2. 根据优先级并行调用子 Agent
+    3. 聚合输出，生成综合建议
+    """
+    from utils.llm import get_client, get_agent_registry, AgentOrchestrator
+    from ai_service import fetch_market_news
+    from junge_trader import format_holdings_for_prompt, format_scan_data_for_prompt
 
-        client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=300)
-        tools = [
-            {"type": "function", "function": {
-                "name": "web_search",
-                "description": "Search the web for real-time information",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
-            }}
-        ]
+    api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '')
+    model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'deepseek-chat')
+    if not api_key:
+        return jsonify({"success": False, "error": "请提供 API Key"})
 
-        def call_one(agent):
+    DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+    # 获取扫描数据
+    latest_scan = db.get_latest_scan()
+    if not latest_scan:
+        return jsonify({"success": False, "error": "没有可分析的扫描数据"})
+
+    results_dict = latest_scan.get('results', {})
+    all_stocks = []
+    for sector_name, sector_data in results_dict.items():
+        if isinstance(sector_data, dict):
+            for stock in sector_data.get('stocks', []):
+                if isinstance(stock, dict):
+                    stock['sector'] = sector_name
+                    all_stocks.append(stock)
+
+    if not all_stocks:
+        return jsonify({"success": False, "error": "扫描结果为空"})
+
+    scan_data_text = format_scan_data_for_prompt(all_stocks)
+    scan_date = latest_scan.get('scan_time', '')[:10]
+    news_list = fetch_market_news(scan_date)
+    news_text = _format_news_for_agent(news_list)
+    current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+
+    # 获取持仓数据
+    try:
+        holdings = db.get_all_holdings()
+        holdings_text = format_holdings_for_prompt(holdings)
+    except Exception:
+        holdings_text = "【暂无历史持仓数据】"
+
+    # 创建 OpenAI 客户端（兼容现有代码）
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=300)
+
+    # 创建包装器以兼容 orchestrator
+    class ClientWrapper:
+        def __init__(self, client):
+            self._client = client
+
+        def call_messages(self, messages, options=None):
+            tools = [
+                {"type": "function", "function": {
+                    "name": "web_search",
+                    "description": "Search the web for real-time A-share market news and information",
+                    "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query in Chinese"}}, "required": ["query"]}
+                }},
+                {"type": "function", "function": {
+                    "name": "get_limit_up_stocks",
+                    "description": "Get today's A-share limit-up stocks data from East Money",
+                    "parameters": {"type": "object", "properties": {}}
+                }}
+            ]
+
+            extra_body = {
+                "thinking": {"type": "enabled"},
+                "enable_search": True,
+            }
+
+            for _ in range(5):
+                response = self._client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=options.temperature if options else 0.2,
+                    max_tokens=options.max_tokens if options else 2000,
+                    extra_body=extra_body,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+                choice = response.choices[0]
+                msg = choice.message
+
+                if msg.content and msg.content.strip():
+                    return type('Response', (), {
+                        'success': True,
+                        'content': msg.content,
+                        'reasoning_content': getattr(msg, 'reasoning_content', '') or '',
+                        'tokens_used': response.usage.total_tokens if response.usage else 0,
+                        'error': None
+                    })()
+
+                tool_calls = msg.tool_calls or []
+                if tool_calls:
+                    for tc in tool_calls:
+                        func_name = tc.function.name
+                        func_args = tc.function.arguments
+                        if func_name == 'web_search':
+                            import json as _json
+                            args = _json.loads(func_args)
+                            query = args.get('query', '')
+                            search_result = _do_web_search(query)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": search_result or "未找到相关数据",
+                            })
+                        elif func_name == 'get_limit_up_stocks':
+                            stocks = _get_limit_up_stocks()
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": stocks,
+                            })
+                    continue
+                else:
+                    return type('Response', (), {
+                        'success': True,
+                        'content': msg.content or '',
+                        'reasoning_content': getattr(msg, 'reasoning_content', '') or '',
+                        'tokens_used': response.usage.total_tokens if response.usage else 0,
+                        'error': None
+                    })()
+
+            return type('Response', (), {
+                'success': False,
+                'content': '',
+                'reasoning_content': '',
+                'tokens_used': 0,
+                'error': 'Maximum tool calls exceeded'
+            })()
+
+    wrapper = ClientWrapper(client)
+    registry = get_agent_registry()
+    orchestrator = AgentOrchestrator(wrapper, registry)
+
+    from utils.llm import CallOptions
+    options = CallOptions(temperature=0.2, max_tokens=2000)
+
+    # 执行层次化分析
+    result = orchestrator.analyze_hierarchical(
+        scan_data=scan_data_text,
+        news_data=news_text,
+        holdings_data=holdings_text,
+        current_time=current_time,
+        scan_date=scan_date,
+        options=options,
+    )
+
+    # 转换结果为前端兼容格式
+    agent_results = []
+    for agent_id, res in result.agent_results.items():
+        structured = res.get('structured') or {}
+        agent_config = registry.get(agent_id)
+
+        # 清洗和丰富数据
+        if structured:
+            structured = registry.sanitize(
+                structured,
+                all_stocks,
+                default_advise_type=agent_config.get('adviseType', '波段') if agent_config else '波段',
+            )
+            structured = _enrich_stocks_with_scan_data(structured, all_stocks)
+
+        agent_results.append({
+            "agent_id": agent_id,
+            "agent_name": agent_config.get('name', agent_id) if agent_config else agent_id,
+            "success": res.get('success', False),
+            "structured": structured,
+            "analysis": res.get('raw_response', ''),
+            "thinking": res.get('thinking', ''),
+            "tokens_used": res.get('tokens_used', 0),
+        })
+
+    # 持久化分析历史
+    report_date = datetime.now().strftime('%Y-%m-%d')
+    for r in agent_results:
+        if r.get('success'):
+            _save_agent_analysis_result(r, report_date, all_stocks)
+
+    return jsonify({
+        "success": True,
+        "scan_time": scan_date,
+        "mode": "hierarchical",
+        "master": {
+            "marketCoreIntent": result.master.market_core_intent if result.master else "",
+            "marketPhase": result.master.market_phase if result.master else "",
+            "riskAppetite": result.master.risk_appetite if result.master else "",
+            "agentPriority": result.master.agent_priority if result.master else [],
+            "keyTheme": result.master.key_theme if result.master else "",
+            "riskFactors": result.master.risk_factors if result.master else [],
+            "coordinationNotes": result.master.coordination_notes if result.master else "",
+        } if result.master else None,
+        "consensus": result.consensus,
+        "agentResults": agent_results,
+        "consensusOpportunities": result.top_opportunities,
+        "synthesis": result.synthesis,
+        "lastUpdated": current_time,
+    })
+
+
+def _parallel_batch_analyze(data: dict):
+    """
+    并行批量分析（原有逻辑）
+    """
+    import concurrent.futures
+    from agent_prompts import AGENTS, build_messages, extract_json_from_response, compute_consensus, sanitize_parsed_agent_output
+    from ai_service import fetch_market_news
+    from junge_trader import format_holdings_for_prompt
+
+    api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '')
+    model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'deepseek-chat')
+    if not api_key:
+        return jsonify({"success": False, "error": "请提供 API Key"})
+
+    DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+    latest_scan = db.get_latest_scan()
+    if not latest_scan:
+        return jsonify({"success": False, "error": "没有可分析的扫描数据"})
+
+    results_dict = latest_scan.get('results', {})
+    all_stocks = []
+    for sector_name, sector_data in results_dict.items():
+        if isinstance(sector_data, dict):
+            for stock in sector_data.get('stocks', []):
+                if isinstance(stock, dict):
+                    stock['sector'] = sector_name
+                    all_stocks.append(stock)
+
+    if not all_stocks:
+        return jsonify({"success": False, "error": "扫描结果为空"})
+
+    from junge_trader import format_scan_data_for_prompt
+    scan_data_text = format_scan_data_for_prompt(all_stocks)
+    scan_date = latest_scan.get('scan_time', '')[:10]
+    news_list = fetch_market_news(scan_date)
+    news_text = _format_news_for_agent(news_list)
+    current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=300)
+    tools = [
+        {"type": "function", "function": {
+            "name": "web_search",
+            "description": "Search the web for real-time A-share market news and information",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query in Chinese"}}, "required": ["query"]}
+        }},
+        {"type": "function", "function": {
+            "name": "get_limit_up_stocks",
+            "description": "Get today's A-share limit-up stocks data from East Money",
+            "parameters": {"type": "object", "properties": {}}
+        }}
+    ]
+
+    def call_one(agent):
+        try:
             try:
-                try:
-                    from junge_trader import format_holdings_for_prompt
-                    holdings_text = format_holdings_for_prompt(db.get_holdings_by_agent(agent['id']))
-                except Exception:
-                    holdings_text = "【暂无历史持仓数据】"
-                messages = build_messages(agent, scan_data_text, news_text, holdings_text, current_time, scan_date)
-                # 提取 system 和 user 内容
-                system_content = ''
-                user_content = ''
-                for msg in messages:
-                    if msg.get('role') == 'system':
-                        system_content = msg.get('content', '')
-                    elif msg.get('role') == 'user':
-                        user_content = msg.get('content', '')
+                holdings_text = format_holdings_for_prompt(db.get_holdings_by_agent(agent['id']))
+            except Exception:
+                holdings_text = "【暂无历史持仓数据】"
+            messages = build_messages(agent, scan_data_text, news_text, holdings_text, current_time, scan_date)
+            system_content = ''
+            user_content = ''
+            for msg in messages:
+                if msg.get('role') == 'system':
+                    system_content = msg.get('content', '')
+                elif msg.get('role') == 'user':
+                    user_content = msg.get('content', '')
 
-                msgs = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
+            msgs = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
 
+            # 处理工具调用循环
+            MAX_TOOL_CALLS = 5
+            for _ in range(MAX_TOOL_CALLS):
                 response = client.chat.completions.create(
                     model=model,
                     messages=msgs,
@@ -560,143 +1106,186 @@ def batch_analyze_agents():
                     tool_choice="auto",
                 )
                 choice = response.choices[0]
-                content = choice.message.content or ''
-                thinking_text = choice.message.reasoning_content or ''
-                usage = response.usage
-                logger.info("[Batch] agent_id=%s model=%s response_len=%d usage=%s thinking_len=%d",
-                            agent['id'], model, len(content) if content else 0,
-                            usage.total_tokens if usage else 0, len(thinking_text))
-                structured = extract_json_from_response(content) if content else None
-                if structured:
-                    logger.info("[Batch] agent_id=%s parsed stance=%s confidence=%s recommendedStocks_count=%d",
-                                agent['id'], structured.get('stance'), structured.get('confidence'),
-                                len(structured.get('recommendedStocks') or []))
-                    structured = sanitize_parsed_agent_output(
-                        structured, all_stocks, default_advise_type=agent['adviseType'])
-                    structured = _enrich_stocks_with_scan_data(structured, all_stocks)
-                    logger.info("[Batch] agent_id=%s after_sanitize recommendedStocks_count=%d",
-                                agent['id'], len(structured.get('recommendedStocks') or []))
-                else:
-                    logger.warning("[Batch] agent_id=%s JSON 解析失败，raw content 前200字: %.200s",
-                                  agent['id'], content[:200] if content else '')
-                return {
-                    "agent_id": agent['id'],
-                    "agent_name": agent['name'],
-                    "success": True,
-                    "structured": structured,
-                    "analysis": content or '',
-                    "thinking": thinking_text,
-                    "tokens_used": usage.total_tokens if usage else 0,
-                }
-            except Exception as e:
-                return {"agent_id": agent['id'], "success": False, "error": str(e)}
+                msg = choice.message
 
-        results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-            futures = {executor.submit(call_one, a): a_id for a_id, a in AGENTS.items()}
-            for future in concurrent.futures.as_completed(futures):
-                r = future.result()
-                results[r['agent_id']] = r
+                # 有内容
+                if msg.content and msg.content.strip():
+                    content = msg.content
+                    thinking_text = msg.reasoning_content or ''
+                    usage = response.usage
+                    break
 
-        agent_list = [results[aid] for aid in AGENTS]
-
-        # 计算全局共识
-        valid_structured = [r['structured'] for r in agent_list if r.get('success') and r.get('structured')]
-        consensus = compute_consensus(valid_structured)
-
-        # 聚合 TOP 3：统计各股票被多少 Agent 推荐，取前 3
-        stock_votes = {}
-        for out in valid_structured:
-            for s in out.get('recommendedStocks', []):
-                key = s.get('code') or ''
-                if not key:
+                # 有工具调用
+                tool_calls = msg.tool_calls or []
+                if tool_calls:
+                    for tc in tool_calls:
+                        func_name = tc.function.name
+                        if func_name == 'web_search':
+                            import json as _json
+                            args = _json.loads(tc.function.arguments)
+                            query = args.get('query', '')
+                            search_result = _do_web_search(query)
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": search_result or "未找到相关数据",
+                            })
+                        elif func_name == 'get_limit_up_stocks':
+                            stocks = _get_limit_up_stocks()
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": stocks,
+                            })
+                        else:
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": f"未知工具: {func_name}",
+                            })
                     continue
-                if key not in stock_votes:
-                    stock_votes[key] = {
-                        "code": key,
-                        "name": s.get('name', key),
-                        "sector": s.get('sector', ''),
-                        "score": s.get('score', 0),
-                        "changePct": s.get('changePct', 0),
-                        "voteCount": 0,
-                        "agents": [],
-                        "badge": _badge_from_stance(out.get('stance', 'bull')),
-                        "badgeKind": "primary",
-                        "meta": "",
-                    }
-                stock_votes[key]['voteCount'] += 1
-                agent_name = out.get('agentName', '')
-                if agent_name and agent_name not in stock_votes[key]['agents']:
-                    stock_votes[key]['agents'].append(agent_name)
+                else:
+                    content = msg.content or ''
+                    thinking_text = msg.reasoning_content or ''
+                    usage = response.usage
+                    break
+            else:
+                content = ''
+                thinking_text = ''
+                usage = None
+            logger.info("[Batch] agent_id=%s model=%s response_len=%d usage=%s thinking_len=%d",
+                        agent['id'], model, len(content) if content else 0,
+                        usage.total_tokens if usage else 0, len(thinking_text))
+            structured = extract_json_from_response(content) if content else None
+            if structured:
+                logger.info("[Batch] agent_id=%s parsed stance=%s confidence=%s recommendedStocks_count=%d",
+                            agent['id'], structured.get('stance'), structured.get('confidence'),
+                            len(structured.get('recommendedStocks') or []))
+                structured = sanitize_parsed_agent_output(
+                    structured, all_stocks, default_advise_type=agent['adviseType'])
+                structured = _enrich_stocks_with_scan_data(structured, all_stocks)
+                logger.info("[Batch] agent_id=%s after_sanitize recommendedStocks_count=%d",
+                            agent['id'], len(structured.get('recommendedStocks') or []))
+            else:
+                logger.warning("[Batch] agent_id=%s JSON 解析失败，raw content 前200字: %.200s",
+                              agent['id'], content[:200] if content else '')
+            return {
+                "agent_id": agent['id'],
+                "agent_name": agent['name'],
+                "success": True,
+                "structured": structured,
+                "analysis": content or '',
+                "thinking": thinking_text,
+                "tokens_used": usage.total_tokens if usage else 0,
+            }
+        except Exception as e:
+            return {"agent_id": agent['id'], "success": False, "error": str(e)}
 
-        sorted_stocks = sorted(stock_votes.values(), key=lambda x: (x['voteCount'], x['score']), reverse=True)
-        top3 = []
-        for i, s in enumerate(sorted_stocks[:3]):
-            agents_str = "、".join(s['agents']) if s['agents'] else ""
-            top3.append({
-                "rank": f"0{i+1}",
-                "title": s['name'],
-                "badge": _badge_from_tag(s['score']),
-                "badgeKind": "primary" if s['score'] >= 70 else "muted",
-                "meta": f"共识智能体: {agents_str}" if agents_str else "",
-                "chg": s['changePct'],
-                "flowLabel": "资金关注" if s['changePct'] >= 0 else "资金流出",
-            })
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(call_one, a): a_id for a_id, a in AGENTS.items()}
+        for future in concurrent.futures.as_completed(futures):
+            r = future.result()
+            results[r['agent_id']] = r
 
-        # 持久化每个 Agent 的分析历史
-        report_date = datetime.now().strftime('%Y-%m-%d')
-        for r in agent_list:
-            if r.get('success'):
-                try:
-                    s = r.get('structured') or {}
-                    ar_payload = {
-                        'structured': s,
-                        'raw_text': r.get('analysis'),
-                        # 前端 AgentHoldings.vue 期望的顶层字段
-                        'marketCommentary': s.get('marketCommentary', ''),
-                        'positionAdvice': s.get('positionAdvice', ''),
-                        'riskWarning': s.get('riskWarning', ''),
-                        'stance': s.get('stance', ''),
-                        'confidence': s.get('confidence', 0),
-                        # recommendedStocks 也要在顶层，方便前端兜底读取
-                        'recommendedStocks': s.get('recommendedStocks', []),
-                    }
-                    snap = db.build_analysis_holdings_snapshot(
-                        db.get_holdings_by_agent(r.get('agent_id', '')), ar_payload
-                    )
-                    db.save_agent_analysis_history(
-                        agent_id=r.get('agent_id', ''),
-                        report_date=report_date,
-                        holdings_snapshot=snap,
-                        analysis_result=ar_payload,
-                        raw_response=r.get('analysis', ''),
-                        stance=s.get('stance', '') if s else '',
-                        confidence=int(s.get('confidence', 0)) if s else 0,
-                        tokens_used=r.get('tokens_used', 0),
-                    )
-                    # 自动把 recommendedStocks 写入持仓表
-                    rec_stocks = s.get('recommendedStocks', []) or []
-                    if rec_stocks:
-                        try:
-                            saved = db.save_recommended_stocks_as_holdings(r.get('agent_id', ''), rec_stocks)
-                            logger.info(f"[BatchAnalyze] agent_id={r.get('agent_id')} recommendedStocks 已写入 holdings，共 {saved} 条")
-                        except Exception as save_err:
-                            logger.warning(f"[BatchAnalyze] 保存推荐股到持仓失败 {r.get('agent_id')}: {save_err}")
-                except Exception as hist_err:
-                    logger.warning(f"[BatchAnalyze] 保存 Agent 历史失败 {r.get('agent_id')}: {hist_err}")
+    agent_list = [results[aid] for aid in AGENTS]
 
-        return jsonify({
-            "success": True,
-            "scan_time": scan_date,
-            "consensus": consensus,
-            "agentResults": agent_list,
-            "consensusOpportunities": top3,
-            "lastUpdated": current_time,
+    # 计算全局共识
+    valid_structured = [r['structured'] for r in agent_list if r.get('success') and r.get('structured')]
+    consensus = compute_consensus(valid_structured)
+
+    # 聚合 TOP 3
+    stock_votes = {}
+    for out in valid_structured:
+        for s in out.get('recommendedStocks', []):
+            key = s.get('code') or ''
+            if not key:
+                continue
+            if key not in stock_votes:
+                stock_votes[key] = {
+                    "code": key,
+                    "name": s.get('name', key),
+                    "sector": s.get('sector', ''),
+                    "score": s.get('score', 0),
+                    "changePct": s.get('changePct', 0),
+                    "voteCount": 0,
+                    "agents": [],
+                    "badge": _badge_from_stance(out.get('stance', 'bull')),
+                    "badgeKind": "primary",
+                    "meta": "",
+                }
+            stock_votes[key]['voteCount'] += 1
+            agent_name = out.get('agentName', '')
+            if agent_name and agent_name not in stock_votes[key]['agents']:
+                stock_votes[key]['agents'].append(agent_name)
+
+    sorted_stocks = sorted(stock_votes.values(), key=lambda x: (x['voteCount'], x['score']), reverse=True)
+    top3 = []
+    for i, s in enumerate(sorted_stocks[:3]):
+        agents_str = "、".join(s['agents']) if s['agents'] else ""
+        top3.append({
+            "rank": f"0{i+1}",
+            "title": s['name'],
+            "badge": _badge_from_tag(s['score']),
+            "badgeKind": "primary" if s['score'] >= 70 else "muted",
+            "meta": f"共识智能体: {agents_str}" if agents_str else "",
+            "chg": s['changePct'],
+            "flowLabel": "资金关注" if s['changePct'] >= 0 else "资金流出",
         })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)})
+
+    # 持久化分析历史
+    report_date = datetime.now().strftime('%Y-%m-%d')
+    for r in agent_list:
+        if r.get('success'):
+            _save_agent_analysis_result(r, report_date, all_stocks)
+
+    return jsonify({
+        "success": True,
+        "scan_time": scan_date,
+        "mode": "parallel",
+        "consensus": consensus,
+        "agentResults": agent_list,
+        "consensusOpportunities": top3,
+        "lastUpdated": current_time,
+    })
+
+
+def _save_agent_analysis_result(r: dict, report_date: str, all_stocks: list):
+    """保存 Agent 分析结果到数据库"""
+    try:
+        s = r.get('structured') or {}
+        ar_payload = {
+            'structured': s,
+            'raw_text': r.get('analysis'),
+            'marketCommentary': s.get('marketCommentary', ''),
+            'positionAdvice': s.get('positionAdvice', ''),
+            'riskWarning': s.get('riskWarning', ''),
+            'stance': s.get('stance', ''),
+            'confidence': s.get('confidence', 0),
+            'recommendedStocks': s.get('recommendedStocks', []),
+        }
+        snap = db.build_analysis_holdings_snapshot(
+            db.get_holdings_by_agent(r.get('agent_id', '')), ar_payload
+        )
+        db.save_agent_analysis_history(
+            agent_id=r.get('agent_id', ''),
+            report_date=report_date,
+            holdings_snapshot=snap,
+            analysis_result=ar_payload,
+            raw_response=r.get('analysis', ''),
+            stance=s.get('stance', '') if s else '',
+            confidence=int(s.get('confidence', 0)) if s else 0,
+            tokens_used=r.get('tokens_used', 0),
+        )
+        rec_stocks = s.get('recommendedStocks', []) or []
+        if rec_stocks:
+            try:
+                saved = db.save_recommended_stocks_as_holdings(r.get('agent_id', ''), rec_stocks)
+                logger.info(f"[BatchAnalyze] agent_id={r.get('agent_id')} recommendedStocks 已写入 holdings，共 {saved} 条")
+            except Exception as save_err:
+                logger.warning(f"[BatchAnalyze] 保存推荐股到持仓失败 {r.get('agent_id')}: {save_err}")
+    except Exception as hist_err:
+        logger.warning(f"[BatchAnalyze] 保存 Agent 历史失败 {r.get('agent_id')}: {hist_err}")
 
 
 def _enrich_stocks_with_scan_data(structured: dict, all_stocks: list) -> dict:
@@ -828,6 +1417,7 @@ def _fetch_realtime_quotes_safe(codes: list) -> dict:
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import akshare as ak
+    import datetime as dt
 
     result = {}
 
@@ -1119,6 +1709,31 @@ def api_get_agent_performance(agent_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/agents/<agent_id>/analysis/today', methods=['GET'])
+def api_get_today_agent_analysis(agent_id):
+    """获取某 Agent 今日分析记录，无则返回 None（不报错）"""
+    try:
+        record = db.get_today_agent_analysis(agent_id)
+        if record is None:
+            return jsonify({'success': True, 'data': None})
+        if record.get('holdings_snapshot'):
+            record['holdings_snapshot'] = [
+                {
+                    'name': h.get('stock_name', h.get('name', '')),
+                    'code': h.get('stock_code', h.get('code', '')),
+                    'price': h.get('current_price', h.get('price', 0)),
+                    'changePct': h.get('profit_loss_pct', h.get('changePct', 0)),
+                    'sector': h.get('sector', ''),
+                }
+                for h in record['holdings_snapshot']
+            ]
+        return jsonify({'success': True, 'data': record})
+    except Exception as e:
+        import traceback
+        logging.error(f"获取今日分析失败 [{agent_id}]: {e}\n{traceback.format_exc()}")
+        return jsonify({'success': False, 'error': f'服务器内部错误: {str(e)}'}), 500
+
+
 @app.route('/api/agents/<agent_id>/analysis/latest', methods=['GET'])
 def api_get_latest_agent_analysis(agent_id):
     """获取某 Agent 最新一次分析记录（含持仓快照和分析结果）"""
@@ -1175,7 +1790,6 @@ def api_get_agent_analysis_history(agent_id):
 def api_get_agent_holdings(agent_id):
     """
     获取某 Agent 的持仓（独立接口，直接从最新分析快照返回，数据最准确）。
-    优先：最新分析快照 → 兜底：静态 mock 数据
     """
     try:
         import akshare as ak
@@ -1258,6 +1872,122 @@ def api_get_agent_holdings(agent_id):
         import traceback
         logger.error(f"[AgentHoldings] 获取持仓失败 [{agent_id}]: {e}\n{traceback.format_exc()}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _get_limit_up_stocks() -> str:
+    """
+    获取东方财富实时涨停板数据
+    """
+    import requests
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Referer': 'https://data.eastmoney.com/',
+    }
+    
+    url = 'https://push2.eastmoney.com/api/qt/clist/get'
+    params = {
+        'pn': 1,
+        'pz': 100,
+        'po': 1,
+        'np': 1,
+        'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+        'fltt': 2,
+        'invt': 2,
+        'fid': 'f3',
+        'fs': 'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
+        'fields': 'f12,f14,f2,f3,f4,f5,f6,f62,f184',
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'data' in data and data['data']:
+                stocks = data['data'].get('diff', [])
+                lines = [f"今日涨停股票共 {len(stocks)} 只:\n"]
+                for i, s in enumerate(stocks[:50], 1):
+                    code = s.get('f12', '')
+                    name = s.get('f14', '')
+                    price = s.get('f2', 0)
+                    change = s.get('f3', 0)
+                    amount = s.get('f6', 0)
+                    amount_wan = amount / 10000 if amount else 0
+                    lines.append(f"{i}. {name}({code}) | 现价:{price} | 涨幅:{change}% | 成交额:{amount_wan:.0f}万")
+                return '\n'.join(lines)
+    except Exception as e:
+        logger.warning("[LimitUp] 获取涨停数据失败: %s", e)
+    
+    return "暂时无法获取涨停板数据"
+
+
+def _do_web_search(query: str) -> str:
+    """
+    使用百度搜索获取实时信息
+    """
+    if not query or not query.strip():
+        return "查询为空，请提供有效的搜索关键词。"
+
+    logger.info("[WebSearch] query=%s", query)
+
+    try:
+        import requests
+        import re
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        }
+        url = f"https://www.baidu.com/s?wd={requests.utils.quote(query)}&rn=10"
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200 and len(resp.text) > 10000:
+            results = []
+            pattern1 = r'<h3[^>]*>(.*?)</h3>'
+            matches1 = re.findall(pattern1, resp.text, re.DOTALL)
+            for m in matches1[:15]:
+                clean = re.sub(r'<[^>]+>', '', m).strip()
+                if len(clean) > 10 and any('\u4e00' <= c <= '\u9fff' for c in clean):
+                    results.append(clean)
+            
+            seen = set()
+            unique_results = []
+            for r in results:
+                if r not in seen and len(r) > 10:
+                    seen.add(r)
+                    unique_results.append(r)
+            
+            if unique_results:
+                return '\n'.join([f"{i+1}. {r}" for i, r in enumerate(unique_results[:8])])
+    except Exception as e:
+        logger.warning("[WebSearch] 百度搜索失败: %s", e)
+
+    # 降级：使用 DuckDuckGo
+    try:
+        import requests
+        params = {
+            "q": query,
+            "kl": "zh-cn",
+            "format": "json",
+            "no_redirect": "1",
+            "no_html": "1",
+        }
+        resp = requests.get(
+            "https://duckduckgo.com/ac/",
+            params=params,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            suggestions = resp.json()
+            if isinstance(suggestions, list) and suggestions:
+                lines = []
+                for i, s in enumerate(suggestions[:5], 1):
+                    text = s.get("phrase") or s.get("text") or str(s)
+                    lines.append(f"{i}. {text}")
+                return "\n".join(lines) if lines else "未找到相关搜索建议。"
+    except:
+        pass
+
+    return f"搜索「{query}」暂时无法获取结果。请根据您已有的市场知识进行判断。"
 
 
 if __name__ == '__main__':
