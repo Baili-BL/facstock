@@ -318,7 +318,6 @@
             </div>
           </div>
         </section>
-
       </template>
 
     </main>
@@ -503,6 +502,7 @@ const favAdded = ref({})
 const showPromptModal = ref(false)
 const thinkingLines = ref([])
 const liveReportLines = ref([])
+const normalBuffer = []
 const liveEl = ref(null)
 let thinkingBuffer = ''
 const realPrompts = ref({ systemPrompt: '', userPrompt: '' })
@@ -705,6 +705,15 @@ async function favoriteStock(s) {
   }
 }
 
+// 合并普通内容缓冲区：积累的短句合并成一段输出
+function flushNormalBuffer() {
+  if (!normalBuffer.length) return
+  const text = normalBuffer.join(' ')
+  thinkingLines.value.push(text)
+  liveReportLines.value.push({ text, type: 'normal' })
+  normalBuffer.length = 0
+}
+
 // ── 分析执行 ────────────────────────────────────────────────────────────────
 async function runAnalysis() {
   if (isRunning.value) return
@@ -715,6 +724,7 @@ async function runAnalysis() {
   thinkingLines.value = []
   liveReportLines.value = []
   thinkingBuffer = ''
+  normalBuffer.length = 0
   cotSteps.value = []
   currentCotStep.value = 0
 
@@ -824,6 +834,7 @@ function handleStreamEvent(data) {
     }
 
     case 'cot_step': {
+      flushNormalBuffer()
       cotSteps.value.push({
         step: data.step,
         title: data.title,
@@ -835,6 +846,7 @@ function handleStreamEvent(data) {
     }
 
     case 'cot_data': {
+      flushNormalBuffer()
       const lines = data.lines || []
       for (const line of lines) {
         cotDataLines.value.push({ step: data.step, text: line })
@@ -844,20 +856,31 @@ function handleStreamEvent(data) {
     }
 
     case 'thinking': {
-      // 格式化输出到实时报告区
+      // 合并连续内容：每遇到【标题或特殊标记时，flush 之前的普通内容
       const raw = data.content || ''
       for (const ch of raw) {
         thinkingBuffer += ch
         if (ch === '\n') {
           let text = thinkingBuffer.trim()
-          // 去掉重复的"思考中:"前缀
+          // 去掉重复前缀
           while (text.startsWith('思考中:') || text.startsWith('思考中 ')) {
             text = text.replace(/^思考中[:：]\s*/, '')
           }
-          if (text) {
-            const type = text.startsWith('【') ? 'section' : 'normal'
-            liveReportLines.value.push({ text, type })
+          if (!text) { thinkingBuffer = ''; continue }
+
+          if (text.startsWith('【')) {
+            // 标题行：先 flush 之前的普通内容
+            flushNormalBuffer()
             thinkingLines.value.push(text)
+            liveReportLines.value.push({ text, type: 'section' })
+          } else if (text.startsWith('[阶段]') || text.startsWith('[调用]') || text.startsWith('[结果]')) {
+            // 特殊标记：独立一行
+            flushNormalBuffer()
+            thinkingLines.value.push(text)
+            liveReportLines.value.push({ text, type: 'normal' })
+          } else {
+            // 积累到普通缓冲区
+            normalBuffer.push(text)
           }
           thinkingBuffer = ''
           scrollLive()
@@ -888,6 +911,7 @@ function handleStreamEvent(data) {
 
     case 'tool_call':
       // 展示正在调用的工具及参数
+      flushNormalBuffer()
       const args = data.args || {}
       thinkingLines.value.push(`[调用] ${data.tool} → 参数: ${JSON.stringify(args)}`)
       break
@@ -934,7 +958,8 @@ function handleStreamEvent(data) {
         tokens_used: data.tokens_used,
       }
       isDone.value = true
-      // 分析完成：将所有 COT 步骤标记为已完成
+      // 分析完成：将所有 COT 步骤标记为已完成，flush 剩余缓冲区
+      flushNormalBuffer()
       cotSteps.value = cotSteps.value.map(s => ({ ...s, done: true }))
       break
 
@@ -953,6 +978,7 @@ function resetAnalysis() {
   thinkingLines.value = []
   liveReportLines.value = []
   thinkingBuffer = ''
+  normalBuffer.length = 0
   cotSteps.value = []
   currentCotStep.value = 0
   totalCotSteps.value = 5

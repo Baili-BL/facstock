@@ -62,7 +62,7 @@
       </div>
 
       <!-- AI 全场总结 -->
-      <router-link to="/strategy/ai/summary" class="agents-hero">
+      <router-link to="/strategy/ai/macro-summary" class="agents-hero">
         <div class="agents-hero__top">
           <div class="agents-hero__left">
             <div class="agents-hero__icon-wrap">
@@ -252,7 +252,7 @@
               </div>
               <span class="hist-card__linktxt">{{ rec.linkedLabel }}</span>
             </div>
-            <button type="button" class="hist-card__cta" @click="$router.push('/strategy/ai')">
+            <button type="button" class="hist-card__cta" @click="$router.push('/strategy/macro')">
               查看完整报告
               <span class="hist-card__cta-arrow" aria-hidden="true">→</span>
             </button>
@@ -269,7 +269,7 @@
               当前历史数据显示，「钧哥」与「林叔」的情绪在重大市场突破前有 92% 的相关性。是否需要进行深度历史同步分析？
             </p>
           </div>
-          <button type="button" class="hist-ai-cta__btn" @click="$router.push('/strategy/ai')">
+          <button type="button" class="hist-ai-cta__btn" @click="$router.push('/strategy/macro')">
             生成深度回顾报告
           </button>
         </div>

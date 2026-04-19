@@ -17,6 +17,7 @@ import BollingerScanRecommendations from './views/BollingerScanRecommendations.v
 import BollingerAlertList from './views/BollingerAlertList.vue'
 import BollingerAlertEdit from './views/BollingerAlertEdit.vue'
 import AIStrategy from './views/AIStrategy.vue'
+import MacroFlashReport from './views/MacroFlashReport.vue'
 import AISummaryDetail from './views/AISummaryDetail.vue'
 import StrategyAgents from './views/StrategyAgents.vue'
 import AgentHoldings from './views/AgentHoldings.vue'
@@ -45,8 +46,9 @@ const routes = [
   { path: '/strategy/bollinger/alerts', component: BollingerAlertList },
   { path: '/strategy/bollinger/alert/:id', component: BollingerAlertEdit },
   { path: '/strategy/bollinger', component: Bollinger },
-  { path: '/strategy/ai/summary', component: AISummaryDetail },
+  { path: '/strategy/ai/macro-summary', component: AISummaryDetail },
   { path: '/strategy/ai', component: AIStrategy },
+  { path: '/strategy/macro', component: MacroFlashReport },
   { path: '/strategy/agents', component: StrategyAgents },
   { path: '/strategy/agents/:id', component: AgentHoldings },
   { path: '/strategy/agents/:id/analysis', component: AgentAnalysis },

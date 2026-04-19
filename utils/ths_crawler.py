@@ -469,13 +469,6 @@ def _requests_no_proxy():
     return s
 
 
-def get_index_intraday_em(code: str, market: str) -> Optional[list]:
-    """
-    获取指数近3天5分钟K线（东方财富），用于画分时迷你走势图。
-    返回 [{time, price, avg_price, volume}, ...] 或 None
-    """
-
-
 def get_today_realtime_bar(stock_code: str) -> Optional[Dict]:
     """
     获取股票当日实时行情（东方财富 push2），补充到日线最后一条。

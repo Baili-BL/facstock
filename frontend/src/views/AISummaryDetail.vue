@@ -53,7 +53,7 @@
             <span class="asd-sync__dot" aria-hidden="true" />
             <span>实时数据已同步</span>
           </div>
-          <button type="button" class="asd-btn-primary" @click="$router.push('/strategy/ai')">
+          <button type="button" class="asd-btn-primary" @click="$router.push('/strategy/macro')">
             更新研报
           </button>
         </div>

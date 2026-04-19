@@ -6,7 +6,7 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M11.67 3.87L9.9 2.1 0 12l9.9 9.9 1.77-1.77L3.54 12z"/></svg>
         </button>
         <div class="bb-header__brand">
-          <h1 class="bb-header__title">跟着量化基金经理买股票</h1>
+          <h1 class="bb-header__title">布林带收缩策略</h1>
         </div>
         <div class="bb-header__tools">
           <button type="button" class="bb-ghost-btn" @click="$router.push('/strategy/bollinger/history')">
@@ -18,82 +18,72 @@
     </header>
 
     <main class="bb-main">
+      <!-- 策略 Header Card -->
+      <section class="bb-header-card">
+        <div class="bb-header-card__left">
+          <h1 class="bb-header-card__title">布林带收缩策略</h1>
+          <p class="bb-header-card__desc">通过布林带收口检测，提前发现蓄势突破标的</p>
+          <div class="bb-header-card__tags">
+            <span class="bb-header-card__tag">量化指标</span>
+            <span class="bb-header-card__tag">技术形态</span>
+            <span class="bb-header-card__tag">趋势结构</span>
+          </div>
+        </div>
+        <div class="bb-header-card__right">
+          <div class="bb-header-card__stats">
+            <div class="bb-header-card__stat">
+              <span class="bb-header-card__stat-val">{{ statsScans }}</span>
+              <span class="bb-header-card__stat-lbl">扫描</span>
+            </div>
+            <div class="bb-header-card__stat-divider" />
+            <div class="bb-header-card__stat">
+              <span class="bb-header-card__stat-val">{{ statsHits }}</span>
+              <span class="bb-header-card__stat-lbl">命中</span>
+            </div>
+            <div class="bb-header-card__stat-divider" />
+            <div class="bb-header-card__stat">
+              <span class="bb-header-card__stat-val">{{ statsSectors }}</span>
+              <span class="bb-header-card__stat-lbl">覆盖</span>
+            </div>
+          </div>
+          <button type="button" class="bb-header-card__cta" @click="openCreateModal">
+            开始创建策略
+          </button>
+        </div>
+      </section>
+
+      <!-- 扫描配置入口 -->
       <section class="bb-config">
         <div class="bb-config__head">
           <div>
             <h2 class="bb-config__title">扫描配置</h2>
             <p class="bb-config__hint">调整参数以发现技术形态</p>
           </div>
-          <button type="button" class="bb-primary-pill" :disabled="scanning" @click="startScan">
-            {{ scanning ? '启动中…' : '开始分析' }}
+          <button type="button" class="bb-config__edit-btn" @click="openConfigModal">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+            编辑参数
           </button>
         </div>
-        <div class="bb-sliders">
-          <div class="bb-slider-block">
-            <div class="bb-slider-block__row">
-              <label class="bb-slider-block__label">板块数量</label>
-              <span class="bb-slider-block__val">{{ params.sectors }}</span>
-            </div>
-            <input
-              type="range"
-              class="bb-range"
-              v-model.number="params.sectors"
-              min="1"
-              max="12"
-              step="1"
-              :style="{ '--range-fill': rangeFillSectors }"
-            >
-            <div class="bb-slider-block__ticks"><span>1</span><span>12</span></div>
-          </div>
-          <div class="bb-slider-block">
-            <div class="bb-slider-block__row">
-              <label class="bb-slider-block__label">挤压天数</label>
-              <span class="bb-slider-block__val">{{ params.minDays }}</span>
-            </div>
-            <input
-              type="range"
-              class="bb-range"
-              v-model.number="params.minDays"
-              min="0"
-              max="20"
-              step="1"
-              :style="{ '--range-fill': rangeFillMinDays }"
-            >
-            <div class="bb-slider-block__ticks"><span>0</span><span>20</span></div>
-            <p class="bb-slider-block__hint">连续收缩天数下限，越高越严；无结果时可调低。</p>
-          </div>
-          <div class="bb-slider-block">
-            <div class="bb-slider-block__row">
-              <label class="bb-slider-block__label">分析周期</label>
-              <span class="bb-slider-block__val">{{ params.period }}天</span>
-            </div>
-            <input
-              type="range"
-              class="bb-range"
-              v-model.number="params.period"
-              min="20"
-              max="180"
-              step="5"
-              :style="{ '--range-fill': rangeFillPeriod }"
-            >
-            <div class="bb-slider-block__ticks"><span>20天</span><span>180天</span></div>
-          </div>
-          <div class="bb-slider-block">
-            <div class="bb-slider-block__row">
-              <label class="bb-slider-block__label">窄幅区间</label>
-              <span class="bb-slider-block__val">{{ params.bbWidthMax }}%</span>
-            </div>
-            <input
-              type="range"
-              class="bb-range"
-              v-model.number="params.bbWidthMax"
-              min="5"
-              max="50"
-              step="5"
-              :style="{ '--range-fill': rangeFillBbWidth }"
-            >
-            <div class="bb-slider-block__ticks"><span>5%</span><span>50%</span></div>
-            <p class="bb-slider-block__hint">仅展示布林带宽度 ≤ 此值的股票。</p>
+
+        <!-- 参数预览 -->
+        <div class="bb-config__preview">
+          <div class="bb-config__preview-row">
+            <span class="bb-config__preview-item">
+              <span class="bb-config__preview-lbl">板块数量</span>
+              <span class="bb-config__preview-val">{{ params.sectors }}</span>
+            </span>
+            <span class="bb-config__preview-item">
+              <span class="bb-config__preview-lbl">挤压天数</span>
+              <span class="bb-config__preview-val">{{ params.minDays }}</span>
+            </span>
+            <span class="bb-config__preview-item">
+              <span class="bb-config__preview-lbl">分析周期</span>
+              <span class="bb-config__preview-val">{{ params.period }}天</span>
+            </span>
+            <span class="bb-config__preview-item">
+              <span class="bb-config__preview-lbl">窄幅区间</span>
+              <span class="bb-config__preview-val">{{ params.bbWidthMax }}%</span>
+            </span>
           </div>
         </div>
       </section>
@@ -161,9 +151,9 @@
             <div v-else class="bb-stock-list">
               <article
                 v-for="s in displayStockList"
-              :key="s.code + '-' + (s.sector_name || '')"
-              class="bb-stock"
-              :class="{ 'bb-stock--leader': truthy(s.is_leader) || Number(s.leader_rank) > 0 }"
+                :key="s.code + '-' + (s.sector_name || '')"
+                class="bb-stock"
+                :class="{ 'bb-stock--leader': truthy(s.is_leader) || Number(s.leader_rank) > 0 }"
                 @click="showDetail(s)"
               >
                 <button
@@ -218,21 +208,84 @@
                 </div>
               </article>
             </div>
-
-            <BollingerAiSummaryPanel
-              v-if="currentScanId"
-              variant="embed"
-              :scan-id="currentScanId"
-              :flat-stocks="flatStocks"
-            />
           </div>
+
+          <BollingerAiSummaryPanel
+            v-if="currentScanId"
+            variant="embed"
+            :scan-id="currentScanId"
+            :flat-stocks="flatStocks"
+          />
+
+          <!-- VRR 波动回归率推荐区 -->
+          <div v-if="vrrStocks.length" class="bb-vrr-section">
+            <div class="bb-vrr-header">
+              <div class="bb-vrr-header__left">
+                <svg class="bb-vrr-header__ico" viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+                <div>
+                  <h3 class="bb-vrr-header__title">VRR 波动回归推荐</h3>
+                  <p class="bb-vrr-header__sub">布林带收缩 + SVRR 回归因子</p>
+                </div>
+              </div>
+              <div class="bb-vrr-header__legend">
+                <span class="bb-vrr-legend-item bb-vrr-legend-item--strong">
+                  <span class="bb-vrr-legend-dot" style="background:#16a34a"/>
+                  回归明显 ({{ vrrStrongCount }}只)
+                </span>
+                <span class="bb-vrr-legend-item bb-vrr-legend-item--weak">
+                  <span class="bb-vrr-legend-dot" style="background:#f59e0b"/>
+                  弱回归 ({{ vrrWeakCount }}只)
+                </span>
+                <span class="bb-vrr-legend-item bb-vrr-legend-item--break">
+                  <span class="bb-vrr-legend-dot" style="background:#ef4444"/>
+                  突破预警 ({{ vrrBreakCount }}只)
+                </span>
+              </div>
+            </div>
+
+            <div class="bb-vrr-grid">
+              <div
+                v-for="s in vrrStocks"
+                :key="s.code"
+                class="bb-vrr-card"
+                @click="showDetail(s)"
+              >
+                <div class="bb-vrr-card__top">
+                  <span class="bb-vrr-card__name">{{ s.name }}</span>
+                  <span class="bb-vrr-card__code">{{ s.code }}</span>
+                </div>
+                <div class="bb-vrr-card__sig" :class="vrrSignalClass(s)">
+                  <span class="bb-vrr-card__sig-dot" />
+                  {{ vrrSignalLabel(s) }}
+                </div>
+                <div class="bb-vrr-card__metrics">
+                  <span class="bb-vrr-card__m">
+                    <span class="bb-vrr-card__m-lbl">带宽</span>
+                    <span class="bb-vrr-card__m-val">{{ fmtBandwidth(s) }}</span>
+                  </span>
+                  <span class="bb-vrr-card__m">
+                    <span class="bb-vrr-card__m-lbl">SVRR</span>
+                    <span class="bb-vrr-card__m-val" :class="svrrValClass(s)">{{ fmtSvrr(s) }}</span>
+                  </span>
+                  <span class="bb-vrr-card__m">
+                    <span class="bb-vrr-card__m-lbl">评分</span>
+                    <span class="bb-vrr-card__m-val">{{ fmtScore(s) }}</span>
+                  </span>
+                </div>
+                <div v-if="s.sector_name" class="bb-vrr-card__sector">{{ s.sector_name }}</div>
+              </div>
+            </div>
+          </div>
+
         </template>
+
         <div v-else class="bb-empty-page">
           <svg class="icon bb-empty-page__ic" viewBox="0 0 24 24"><use href="#icon-analytics"/></svg>
           暂无扫描结果
         </div>
       </section>
     </main>
+
 
     <!-- 股票详情弹窗 -->
     <div class="detail-modal" :class="{ active: stockModalVisible }" @click.self="closeDetail">
@@ -361,6 +414,91 @@
 
     <!-- Toast -->
     <div class="toast" :class="[toastType, { show: toastVisible }]">{{ toastMsg }}</div>
+
+    <!-- 创建策略弹窗 -->
+    <div v-if="createModalVisible" class="bb-modal-overlay" @click.self="closeCreateModal">
+      <div class="bb-modal">
+        <div class="bb-modal__hd">
+          <h2 class="bb-modal__ttl">创建策略</h2>
+          <button class="bb-modal__x" @click="closeCreateModal">
+            <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+        <div class="bb-modal__bd">
+          <div class="bb-modal__field">
+            <label class="bb-modal__lbl">策略名称</label>
+            <input v-model="createForm.name" class="bb-modal__input" placeholder="请输入策略名称" />
+          </div>
+          <div class="bb-modal__field">
+            <label class="bb-modal__lbl">市场筛选</label>
+            <div class="bb-modal__chips">
+              <button
+                v-for="opt in marketOptions"
+                :key="opt.value"
+                type="button"
+                class="bb-chip"
+                :class="{ 'bb-chip--on': createForm.markets.includes(opt.value) }"
+                @click="toggleMarket(opt.value)"
+              >{{ opt.label }}</button>
+            </div>
+          </div>
+        </div>
+        <div class="bb-modal__ft">
+          <button class="bb-modal__cancel" @click="closeCreateModal">取消</button>
+          <button class="bb-modal__confirm" @click="confirmCreate">下一步</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 配置参数弹窗 -->
+    <div v-if="configModalVisible" class="bb-modal-overlay" @click.self="closeConfigModal">
+      <div class="bb-modal">
+        <div class="bb-modal__hd">
+          <h2 class="bb-modal__ttl">参数设置</h2>
+          <button class="bb-modal__x" @click="closeConfigModal">
+            <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+        <div class="bb-modal__bd">
+          <div class="bb-modal__field">
+            <div class="bb-modal__row">
+              <label class="bb-modal__lbl">板块数量</label>
+              <span class="bb-modal__val">{{ params.sectors }}</span>
+            </div>
+            <input type="range" class="bb-range" v-model.number="params.sectors" min="1" max="12" step="1" :style="{ '--range-fill': rangeFillSectors }">
+            <div class="bb-modal__ticks"><span>1</span><span>12</span></div>
+          </div>
+          <div class="bb-modal__field">
+            <div class="bb-modal__row">
+              <label class="bb-modal__lbl">挤压天数</label>
+              <span class="bb-modal__val">{{ params.minDays }}</span>
+            </div>
+            <input type="range" class="bb-range" v-model.number="params.minDays" min="0" max="20" step="1" :style="{ '--range-fill': rangeFillMinDays }">
+            <div class="bb-modal__ticks"><span>0</span><span>20</span></div>
+          </div>
+          <div class="bb-modal__field">
+            <div class="bb-modal__row">
+              <label class="bb-modal__lbl">分析周期</label>
+              <span class="bb-modal__val">{{ params.period }}天</span>
+            </div>
+            <input type="range" class="bb-range" v-model.number="params.period" min="20" max="180" step="5" :style="{ '--range-fill': rangeFillPeriod }">
+            <div class="bb-modal__ticks"><span>20天</span><span>180天</span></div>
+          </div>
+          <div class="bb-modal__field">
+            <div class="bb-modal__row">
+              <label class="bb-modal__lbl">窄幅区间</label>
+              <span class="bb-modal__val">{{ params.bbWidthMax }}%</span>
+            </div>
+            <input type="range" class="bb-range" v-model.number="params.bbWidthMax" min="5" max="50" step="5" :style="{ '--range-fill': rangeFillBbWidth }">
+            <div class="bb-modal__ticks"><span>5%</span><span>50%</span></div>
+          </div>
+        </div>
+        <div class="bb-modal__ft">
+          <button class="bb-modal__cancel" @click="closeConfigModal">取消</button>
+          <button class="bb-modal__confirm" @click="confirmConfig">开始分析</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -392,6 +530,41 @@ const resultsError = ref('')
 const resultsTime = ref('')
 /** 当前展示的扫描记录 id（用于 DeepSeek 小结缓存与「再解读」） */
 const currentScanId = ref(null)
+
+// ─── Hero 卡片统计 ───
+const statsScans = ref(0)
+const statsHits = ref(0)
+const statsSectors = ref(0)
+
+// ─── 创建策略弹窗 ───
+const createModalVisible = ref(false)
+const createForm = ref({ name: '', markets: ['A股'] })
+const marketOptions = [
+  { label: 'A股', value: 'A' },
+  { label: '港股', value: 'HK' },
+  { label: '美股', value: 'US' },
+]
+const toggleMarket = (val) => {
+  const idx = createForm.value.markets.indexOf(val)
+  if (idx >= 0) createForm.value.markets.splice(idx, 1)
+  else createForm.value.markets.push(val)
+}
+const openCreateModal = () => { createModalVisible.value = true }
+const closeCreateModal = () => { createModalVisible.value = false }
+const confirmCreate = () => {
+  if (!createForm.value.name.trim()) { showToast('请输入策略名称', 'error'); return }
+  closeCreateModal()
+  openConfigModal()
+}
+
+// ─── 配置参数弹窗 ───
+const configModalVisible = ref(false)
+const openConfigModal = () => { configModalVisible.value = true }
+const closeConfigModal = () => { configModalVisible.value = false }
+const confirmConfig = () => {
+  closeConfigModal()
+  if (!scanning.value) startScan()
+}
 
 const filterTab = ref('all')
 const selectedSector = ref('')
@@ -445,6 +618,52 @@ const rangeFillBbWidth = computed(() => {
   const v = params.value.bbWidthMax
   return `${((v - 5) / (50 - 5)) * 100}%`
 })
+
+// ─── VRR 波动回归率推荐 ───
+const vrrStocks = computed(() => {
+  return flatStocks.value
+    .filter(s => {
+      const svrr = Number(s.svrr)
+      const bw = Number(s.bb_width_pct)
+      // 有 svrr 数据的按正常逻辑；无 svrr 时认为无法判断，排除
+      if (!Number.isFinite(svrr)) return false
+      return svrr > 0 || (svrr <= 0 && svrr >= -0.3)
+    })
+    .sort((a, b) => {
+      const sa = Number(a.vrr_score ?? 0) + Number(a.combo_score ?? 0)
+      const sb = Number(b.vrr_score ?? 0) + Number(b.combo_score ?? 0)
+      return sb - sa
+    })
+    .slice(0, 12)
+})
+
+const vrrStrongCount = computed(() => vrrStocks.value.filter(s => Number(s.svrr) > 0.3).length)
+const vrrWeakCount = computed(() => vrrStocks.value.filter(s => Number(s.svrr) > 0 && Number(s.svrr) <= 0.3).length)
+const vrrBreakCount = computed(() => vrrStocks.value.filter(s => Number(s.svrr) < 0).length)
+
+const vrrSignalLabel = (s) => {
+  const v = Number(s.svrr)
+  if (v > 0.3) return '回归明显'
+  if (v > 0) return '弱回归'
+  return '突破预警'
+}
+const vrrSignalClass = (s) => {
+  const v = Number(s.svrr)
+  if (v > 0.3) return 'bb-vrr-sig--strong'
+  if (v > 0) return 'bb-vrr-sig--weak'
+  return 'bb-vrr-sig--break'
+}
+const svrrValClass = (s) => {
+  const v = Number(s.svrr)
+  if (v > 0.3) return 'svrr-strong'
+  if (v > 0) return 'svrr-weak'
+  return 'svrr-break'
+}
+const fmtSvrr = (s) => {
+  const v = Number(s.svrr)
+  if (!Number.isFinite(v)) return '—'
+  return (v >= 0 ? '+' : '') + v.toFixed(3)
+}
 
 // 当前选中板块的股票：受 Tab 筛选；板块胶囊切换当前板块
 const activeSectorStocks = computed(() => {
@@ -636,6 +855,26 @@ async function cancelScan() {
   } catch {}
 }
 
+// ─── Hero 卡片统计 ───
+async function loadHeroStats() {
+  try {
+    const json = await scan.results()
+    if (!json.success || !json.results || Object.keys(json.results).length === 0) {
+      statsScans.value = 0; statsHits.value = 0; statsSectors.value = 0
+      return
+    }
+    const allStocks = []
+    for (const [sectorName, stocks] of Object.entries(json.results)) {
+      for (const s of (stocks || [])) allStocks.push({ ...s, sector_name: sectorName })
+    }
+    statsScans.value = Object.keys(json.results).length
+    statsHits.value = allStocks.length
+    statsSectors.value = Object.keys(json.results).length
+  } catch {
+    statsScans.value = 0; statsHits.value = 0; statsSectors.value = 0
+  }
+}
+
 // ─── 结果 ───
 async function loadResults() {
   resultsLoading.value = true
@@ -645,6 +884,7 @@ async function loadResults() {
     if (!json.success || !json.results || Object.keys(json.results).length === 0) {
       results.value = {}
       currentScanId.value = null
+      await loadHeroStats()
       return
     }
     results.value = json.results
@@ -652,6 +892,7 @@ async function loadResults() {
     resultsTime.value = json.last_update ? '更新于 ' + fmtDate(json.last_update) : ''
     filterTab.value = 'all'
     await refreshWatchlistCodes()
+    await loadHeroStats()
   } catch (e) {
     resultsError.value = e.message || '加载失败'
   } finally {
@@ -1705,4 +1946,165 @@ onUnmounted(stopPolling)
 }
 .detail-goto-hint:active { background: var(--apple-gray6); }
 .detail-goto-hint .icon { fill: var(--apple-blue); }
+
+/* ─── Hero Header Card ─── */
+.bb-header-card {
+  display: flex; align-items: center; justify-content: space-between;
+  background: linear-gradient(135deg, #0a1a4a 0%, #0d3c8c 50%, #1a6be8 100%);
+  border-radius: 20px; padding: 28px 32px; margin-bottom: 20px;
+  box-shadow: 0 4px 24px rgba(10, 26, 74, 0.35);
+}
+.bb-header-card__left { flex: 1; }
+.bb-header-card__title { font-size: 26px; font-weight: 700; color: #fff; margin: 0 0 6px; }
+.bb-header-card__desc { font-size: 14px; color: rgba(255,255,255,0.6); margin: 0 0 14px; }
+.bb-header-card__tags { display: flex; gap: 8px; flex-wrap: wrap; }
+.bb-header-card__tag {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 20px; padding: 3px 10px; font-size: 11px; color: rgba(255,255,255,0.7);
+}
+.bb-header-card__right { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }
+.bb-header-card__stats { display: flex; align-items: center; gap: 0; }
+.bb-header-card__stat { text-align: center; padding: 0 20px; }
+.bb-header-card__stat-val { display: block; font-size: 28px; font-weight: 700; color: #fff; line-height: 1.1; }
+.bb-header-card__stat-lbl { display: block; font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 2px; }
+.bb-header-card__stat-divider { width: 1px; height: 36px; background: rgba(255,255,255,0.15); }
+.bb-header-card__cta {
+  background: #fff; color: #0a0a0a; border: none; border-radius: 24px;
+  padding: 10px 24px; font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.bb-header-card__cta:active { transform: scale(0.97); }
+
+/* ─── Config Section ─── */
+.bb-config {
+  background: var(--apple-card); border-radius: 16px; padding: 20px 24px;
+  margin-bottom: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+}
+.bb-config__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.bb-config__title { font-size: 17px; font-weight: 600; color: var(--apple-text); margin: 0 0 2px; }
+.bb-config__hint { font-size: 12px; color: var(--apple-text2); margin: 0; }
+.bb-config__edit-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--apple-gray6); border: none; border-radius: 20px;
+  padding: 7px 14px; font-size: 13px; color: var(--apple-text2);
+  cursor: pointer; transition: background 0.15s;
+}
+.bb-config__edit-btn .icon { width: 14px; height: 14px; }
+.bb-config__edit-btn:active { background: var(--apple-gray5); }
+.bb-config__preview { background: var(--apple-gray6); border-radius: 12px; padding: 14px 16px; }
+.bb-config__preview-row { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.bb-config__preview-item { display: flex; flex-direction: column; }
+.bb-config__preview-lbl { font-size: 11px; color: var(--apple-text2); }
+.bb-config__preview-val { font-size: 15px; font-weight: 600; color: var(--apple-text); }
+
+/* ─── Range slider ─── */
+.bb-range {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+  border-radius: 2px; outline: none; background: linear-gradient(
+    to right, var(--apple-blue) var(--range-fill, 50%), var(--apple-gray5) var(--range-fill, 50%)
+  );
+}
+.bb-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 18px; height: 18px;
+  border-radius: 50%; background: #fff; border: 2px solid var(--apple-blue);
+  cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+/* ─── Modals ─── */
+.bb-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999; padding: 16px;
+}
+.bb-modal {
+  background: var(--apple-bg); border-radius: 20px; width: 100%; max-width: 440px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden;
+}
+.bb-modal__hd {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 20px 24px 0;
+}
+.bb-modal__ttl { font-size: 18px; font-weight: 700; color: var(--apple-text); margin: 0; }
+.bb-modal__x {
+  width: 30px; height: 30px; border-radius: 50%; background: var(--apple-gray6);
+  border: none; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.bb-modal__x .icon { width: 14px; height: 14px; fill: var(--apple-text2); }
+.bb-modal__bd { padding: 20px 24px; }
+.bb-modal__field { margin-bottom: 20px; }
+.bb-modal__field:last-child { margin-bottom: 0; }
+.bb-modal__row { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.bb-modal__lbl { font-size: 14px; font-weight: 600; color: var(--apple-text); }
+.bb-modal__val { font-size: 14px; font-weight: 700; color: var(--apple-blue); }
+.bb-modal__input {
+  width: 100%; padding: 10px 14px; border: 1px solid var(--apple-gray5);
+  border-radius: 10px; font-size: 14px; background: var(--apple-gray6);
+  color: var(--apple-text); box-sizing: border-box; outline: none;
+  transition: border-color 0.15s;
+}
+.bb-modal__input:focus { border-color: var(--apple-blue); }
+.bb-modal__chips { display: flex; gap: 8px; margin-top: 8px; }
+.bb-chip {
+  padding: 6px 16px; border-radius: 20px; border: 1px solid var(--apple-gray5);
+  background: var(--apple-gray6); font-size: 13px; color: var(--apple-text2);
+  cursor: pointer; transition: all 0.15s;
+}
+.bb-chip--on { background: var(--apple-blue); color: #fff; border-color: var(--apple-blue); }
+.bb-modal__ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--apple-text2); margin-top: 4px; }
+.bb-modal__ft { display: flex; gap: 10px; padding: 0 24px 20px; }
+.bb-modal__cancel {
+  flex: 1; padding: 12px; border-radius: 12px; border: 1px solid var(--apple-gray5);
+  background: var(--apple-gray6); font-size: 15px; font-weight: 600;
+  color: var(--apple-text2); cursor: pointer; transition: background 0.15s;
+}
+.bb-modal__cancel:active { background: var(--apple-gray5); }
+.bb-modal__confirm {
+  flex: 2; padding: 12px; border-radius: 12px; border: none;
+  background: var(--apple-blue); font-size: 15px; font-weight: 600;
+  color: #fff; cursor: pointer; transition: opacity 0.15s;
+}
+.bb-modal__confirm:active { opacity: 0.85; }
+
+/* ─── VRR Section ─── */
+.bb-vrr-section {
+  background: var(--apple-card); border-radius: 16px; padding: 20px;
+  margin-top: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+}
+.bb-vrr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+.bb-vrr-header__left { display: flex; align-items: center; gap: 10px; }
+.bb-vrr-header__ico { width: 20px; height: 20px; color: var(--apple-blue); }
+.bb-vrr-header__title { font-size: 16px; font-weight: 700; color: var(--apple-text); margin: 0; }
+.bb-vrr-header__sub { font-size: 11px; color: var(--apple-text2); margin: 0; }
+.bb-vrr-header__legend { display: flex; gap: 12px; flex-wrap: wrap; }
+.bb-vrr-legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--apple-text2); }
+.bb-vrr-legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.bb-vrr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.bb-vrr-card {
+  background: var(--apple-gray6); border-radius: 12px; padding: 12px;
+  cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
+}
+.bb-vrr-card:active { transform: scale(0.98); }
+.bb-vrr-card__top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.bb-vrr-card__name { font-size: 14px; font-weight: 600; color: var(--apple-text); }
+.bb-vrr-card__code { font-size: 11px; color: var(--apple-text2); }
+.bb-vrr-card__sig {
+  display: inline-flex; align-items: center; gap: 5px;
+  border-radius: 12px; padding: 3px 8px; font-size: 11px; font-weight: 600;
+  margin-bottom: 8px;
+}
+.bb-vrr-card__sig-dot { width: 6px; height: 6px; border-radius: 50%; }
+.bb-vrr-sig--strong { background: rgba(22,163,74,0.15); color: #16a34a; }
+.bb-vrr-sig--strong .bb-vrr-card__sig-dot { background: #16a34a; }
+.bb-vrr-sig--weak { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.bb-vrr-sig--weak .bb-vrr-card__sig-dot { background: #f59e0b; }
+.bb-vrr-sig--break { background: rgba(239,68,68,0.15); color: #ef4444; }
+.bb-vrr-sig--break .bb-vrr-card__sig-dot { background: #ef4444; }
+.bb-vrr-card__metrics { display: flex; gap: 8px; flex-wrap: wrap; }
+.bb-vrr-card__m { display: flex; flex-direction: column; }
+.bb-vrr-card__m-lbl { font-size: 10px; color: var(--apple-text2); }
+.bb-vrr-card__m-val { font-size: 13px; font-weight: 600; color: var(--apple-text); }
+.svrr-strong { color: #16a34a; }
+.svrr-weak { color: #f59e0b; }
+.svrr-break { color: #ef4444; }
+.bb-vrr-card__sector { font-size: 10px; color: var(--apple-text2); margin-top: 6px; }
 </style>

@@ -22,6 +22,7 @@ const hideBottomNav = computed(
   () =>
     route.path.startsWith('/ticai') ||
     route.path.startsWith('/strategy/ai') ||
+    route.path.startsWith('/strategy/macro') ||
     route.path.startsWith('/strategy/bollinger') ||
     route.path.startsWith('/strategy/factor-prompt') ||
     route.path.startsWith('/strategy/agents') ||

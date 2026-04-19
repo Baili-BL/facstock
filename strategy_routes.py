@@ -649,8 +649,15 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int, bb_widt
                         'bb_width_pct': round(float(latest['bb_width_pct']), 2),
                         'ma_bullish': bool(latest.get('ma_bullish', False)),
                         'cross_above_ma5': bool(latest.get('cross_above_ma5', False)),
+                        'ma_full_bullish': bool(latest.get('ma_full_bullish', False)),
                         'macd_golden': bool(latest.get('macd_golden', False)),
+                        'macd_hist_positive': bool(latest.get('macd_hist_positive', False)),
                         'cmf_bullish': bool(latest.get('cmf_bullish', False)),
+                        'cmf_strong_bullish': bool(latest.get('cmf_strong_bullish', False)),
+                        'cmf_rising': bool(latest.get('cmf_rising', False)),
+                        'rsv': round(float(latest['rsv']), 2) if pd.notna(latest.get('rsv')) else 50.0,
+                        'rsv_recovering': bool(latest.get('rsv_recovering', False)),
+                        'rsv_golden': bool(latest.get('rsv_golden', False)),
                         'is_volume_up': bool(latest.get('is_volume_up', False)),
                         'is_volume_price_up': bool(latest.get('is_volume_price_up', False)),
                         'low_volatility': bool(latest.get('low_volatility', False)),
@@ -722,6 +729,11 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int, bb_widt
                         tags.append("先锋")
 
                     result['tags'] = tags
+                    # VRR 波动回归率
+                    result['vrr'] = round(float(latest['vrr']), 4) if pd.notna(latest.get('vrr')) else 0
+                    result['svrr'] = round(float(latest['svrr']), 4) if pd.notna(latest.get('svrr')) else 0
+                    result['vrr_score'] = int(latest['vrr_score']) if pd.notna(latest.get('vrr_score')) else 0
+                    result['combo_score'] = int(latest['combo_score']) if pd.notna(latest.get('combo_score')) else 0
 
                     analyzed_results.append(result)
                 

@@ -313,13 +313,30 @@ function loadRecord(record, fromHistory = false) {
   steps.push({ message: '持仓信号生成', status: 'done', time: timeStr(100) })
   steps.push({ message: '策略建议输出', status: 'done', time: '' })
 
-  // 如果有 thinking 文本，分段加入
+  // 如果有 thinking 文本，分段合并后替换默认步骤
   const thinking = ar.thinking || record.thinking_text || ''
   if (thinking) {
     const paras = thinking.split('\n').filter(l => l.trim())
-    paras.slice(0, 3).forEach((p, i) => {
+    // 合并连续的非【段落，只保留标题行和合并后的正文
+    const merged = []
+    let buffer = ''
+    for (const p of paras) {
+      if (p.trim().startsWith('【')) {
+        if (buffer) {
+          merged.push(buffer.trim())
+          buffer = ''
+        }
+        merged.push(p.trim())
+      } else {
+        buffer += (buffer ? ' ' : '') + p.trim()
+      }
+    }
+    if (buffer) merged.push(buffer.trim())
+
+    // 用合并后的内容替换默认步骤
+    merged.slice(0, 5).forEach((text, i) => {
       if (steps[i]) {
-        steps[i].message = p.slice(0, 60)
+        steps[i].message = text.slice(0, 80)
       }
     })
   }
