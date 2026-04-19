@@ -112,6 +112,11 @@ export const watchlist = {
   check: (code) => apiFetch(`/api/watchlist/check/${code}`),
 }
 
+/** 清空所有缓存 */
+export const cache = {
+  clear: () => postJson('/api/cache/clear', {}),
+}
+
 /** 自选列表 + TA-Lib / pandas 技术指标扫描 */
 export const watchlistStrategy = {
   catalog: () =>
@@ -134,7 +139,7 @@ export const watchlistStrategy = {
 }
 
 export const stock = {
-  detail: (code) => apiFetch(`/api/stock/${code}`),
+  detail: (code, interval = 'daily') => apiFetch(`/api/stock/${code}?interval=${encodeURIComponent(interval)}`),
   quote: (code) => apiFetch(`/api/stock/${code}/quote`),
 }
 

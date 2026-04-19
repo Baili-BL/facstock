@@ -17,8 +17,6 @@ Author: facSstock
 
 import time
 import random
-import re
-import json as _json
 from functools import partial
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
@@ -624,135 +622,29 @@ def format_holdings_for_prompt(holdings: List[Dict]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI 增强（对接 agent_prompts.py）
+# AI 增强（统一使用 utils.llm 模块）
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _llm_call(messages: List[Dict], temperature: float = 0.25,
-              max_tokens: int = 3000) -> Tuple[str, int]:
-    """
-    调用 LLM（复用 strategy_routes.py 中的 _llm_invoke 逻辑）
-    返回 (content, tokens_used)
-    """
-    try:
-        import os
-
-        LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'deepseek')
-        HUNYUAN_API_KEY = os.environ.get('HUNYUAN_API_KEY', '')
-        DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-f288fe90b4694dbbb841d439936b48ab')
-        LLM_MODEL_MAP = {
-            'tencent': 'hunyuan-pro',
-            'zhipu': 'glm-4-flash',
-        }
-        model = LLM_MODEL_MAP.get(LLM_PROVIDER, 'hunyuan-pro')
-
-        if LLM_PROVIDER == 'deepseek' and DEEPSEEK_API_KEY:
-            import requests as _req
-            logger.info("[LLM] provider=deepseek model=deepseek-chat temperature=%s max_tokens=%s messages_count=%d",
-                        temperature, max_tokens, len(messages))
-            resp = _req.post(
-                'https://api.deepseek.com/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=120,
-            )
-            result = resp.json()
-            logger.info("[LLM] deepseek raw_response_len=%d usage=%s", len(resp.text), result.get('usage', {}))
-        elif LLM_PROVIDER == 'tencent' and HUNYUAN_API_KEY:
-            import urllib.request, urllib.parse
-
-            payload = _json.dumps({
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }).encode('utf-8')
-
-            req = urllib.request.Request(
-                'https://api.hunyuan.cloud.tencent.com/v1/chat/completions',
-                data=payload,
-                headers={
-                    'Authorization': f'Bearer {HUNYUAN_API_KEY}',
-                    'Content-Type': 'application/json',
-                },
-                method='POST'
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = _json.loads(resp.read())
-        else:
-            import requests as _req
-            HUNYUAN_KEY = HUNYUAN_API_KEY or 'sk-YDYlUOiUi5VzumSjhppTWry9bBfWJFbN7IsCLN0XpD1ysM0Z'
-            resp = _req.post(
-                'https://api.hunyuan.cloud.tencent.com/v1/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {HUNYUAN_KEY}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    "model": "hunyuan-lite",
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=60
-            )
-            result = resp.json()
-
-        if 'choices' in result and len(result['choices']) > 0:
-            content = result['choices'][0]['message']['content']
-            tokens = result.get('usage', {}).get('total_tokens', 0)
-            return content, tokens
-
-    except Exception as e:
-        logger.error(f"LLM 调用失败: {e}")
-
-    return '', 0
-
-
-def _extract_json(text: str) -> Optional[Dict]:
-    """从 LLM 返回中提取 JSON"""
-    patterns = [
-        r"```json\s*\n?([\s\S]+?)\n?```",
-        r"```\s*\n?([\s\S]+?)\n?```",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, text)
-        if m:
-            try:
-                return _json.loads(m.group(1).strip())
-            except Exception:
-                pass
-    try:
-        return _json.loads(text.strip())
-    except Exception:
-        return None
-
 
 def enhance_with_ai(candidates: List[Dict], news: List[Dict],
                     current_time: str) -> Optional[Dict]:
     """
-    使用 agent_prompts.py 中的统一 Prompt 工程增强扫描结果。
+    使用统一 LLM 模块增强扫描结果。
 
     流程：
-    1. 格式化扫描数据 + 新闻
-    2. 构建 messages（system + user）
-    3. 调用 LLM
-    4. 解析 JSON 返回
+    1. 格式化扫描数据 + 新闻 + 持仓
+    2. 通过 AgentRegistry 构建 messages
+    3. 通过 LLMClient 调用 LLM
+    4. 通过 AgentRegistry 解析 JSON 并清洗输出
+    5. 持久化分析历史
 
-    返回结构化结果（对齐 AgentOutput）：
-      { agentId, agentName, stance, confidence, marketCommentary,
-        positionAdvice, riskWarning, recommendedStocks[], analysis, tokens_used }
+    返回结构化结果（对齐 AgentOutput）。
     """
-    from agent_prompts import SYSTEM_JUNGE, USER_COMMON_HEADER, AGENTS, sanitize_parsed_agent_output
+    from utils.llm import get_client, get_agent_registry
 
-    agent = AGENTS.get('jun', {})
+    registry = get_agent_registry()
+    client = get_client()
+    agent = registry.get('jun')
+
     if not agent:
         logger.warning("未找到 jun agent 配置")
         return None
@@ -767,8 +659,10 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
         holdings_text = format_holdings_for_prompt(holdings_list)
     except Exception as e:
         logger.warning(f"读取持仓数据失败: {e}")
+        holdings_list = []
         holdings_text = "【暂无历史持仓数据】"
 
+    # 格式化新闻
     news_lines = []
     for idx, n in enumerate((news or [])[:8], 1):
         news_lines.append(
@@ -776,44 +670,41 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
         )
     news_text = "\n".join(news_lines) if news_lines else "【暂无最新消息】"
 
-    # 构建 system prompt
-    system_content = SYSTEM_JUNGE
-
-    # 构建 user prompt
-    user_content = USER_COMMON_HEADER.format(
-        agent_name=agent['name'],
-        agent_id=agent['id'],
-        advise_type=agent['adviseType'],
-        current_time=current_time,
-        scan_date=current_time[:10],
+    # 构建 messages 并调用 LLM（通过统一客户端）
+    messages = registry.build_messages(
+        agent_id='jun',
+        scan_data=scan_text,
         news_data=news_text,
         holdings_data=holdings_text,
-        scan_data=scan_text,
+        current_time=current_time,
+        scan_date=current_time[:10] if current_time else None,
     )
 
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_content},
-    ]
+    from utils.llm import CallOptions
+    options = CallOptions(
+        temperature=agent.get('temperature', 0.25),
+        max_tokens=agent.get('max_tokens', 3000),
+    )
 
-    raw, tokens = _llm_call(messages,
-                             temperature=agent.get('temperature', 0.25),
-                             max_tokens=agent.get('max_tokens', 3000))
+    resp = client.call_messages(messages, options)
 
-    if not raw:
-        logger.warning("LLM 返回为空，跳过 AI 增强")
+    if not resp.success or not resp.content:
+        logger.warning("LLM 调用失败: %s，跳过 AI 增强", resp.error)
         return None
 
-    logger.info("[JUN-AI] raw_response_len=%d tokens=%d content_preview=%.100s...",
-                len(raw), tokens, raw[:100])
+    logger.info(
+        "[JUN-AI] raw_response_len=%d tokens=%d content_preview=%.100s...",
+        len(resp.content), resp.tokens_used, resp.content[:100]
+    )
 
-    parsed = _extract_json(raw)
+    # 解析 JSON
+    parsed = registry.extract_json(resp.content)
 
     if parsed:
         logger.info("[JUN-AI] parsed stance=%s confidence=%s recommendedStocks_count=%d",
                     parsed.get('stance'), parsed.get('confidence'),
                     len(parsed.get('recommendedStocks') or []))
-        parsed = sanitize_parsed_agent_output(
+        parsed = registry.sanitize(
             parsed,
             candidates,
             default_advise_type=agent.get('adviseType', '低吸'),
@@ -821,47 +712,21 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
         logger.info("[JUN-AI] after_sanitize recommendedStocks_count=%d",
                     len(parsed.get('recommendedStocks') or []))
     else:
-        logger.warning("[JUN-AI] JSON 解析失败，raw 前200字: %.200s", raw[:200])
+        logger.warning("[JUN-AI] JSON 解析失败，raw 前200字: %.200s", resp.content[:200])
 
-    if not parsed:
-        logger.warning("JSON 解析失败，使用原始分析文本")
-        try:
-            report_date = current_time[:10]
-            snap_fail = _db.build_analysis_holdings_snapshot(holdings_list, None)
-            _db.save_agent_analysis_history(
-                agent_id='jun',
-                report_date=report_date,
-                holdings_snapshot=snap_fail,
-                analysis_result={'raw_text': raw},
-                raw_response=raw,
-                tokens_used=tokens,
-            )
-        except Exception as hist_err:
-            logger.warning(f"[JUN-AI] 保存分析历史失败: {hist_err}")
-        return {
-            'agentId': 'jun',
-            'agentName': agent['name'],
-            'success': True,
-            'raw_response': raw,
-            'structured': None,
-            'analysis': raw,
-            'tokens_used': tokens,
-        }
-
-    # 规范化结构（对齐 AgentOutput）
+    # 构建推荐股列表（确保数据格式一致，0 值不被误判为无效）
     recommended = []
     for s in (parsed.get('recommendedStocks') or [])[:3]:
-        # 尝试从扫描结果中补充完整字段
         code = s.get('code', '')
         src = next((c for c in candidates if c.get('code') == code), {})
-
         recommended.append({
             'code': s.get('code', '') or src.get('code', ''),
             'name': s.get('name', '') or src.get('name', ''),
             'sector': s.get('sector', '') or src.get('sector', ''),
-            'price': s.get('price', 0) or src.get('price', 0),
-            'changePct': s.get('changePct', 0) or src.get('changePct', 0),
-            'score': s.get('score', 0) or src.get('score', 0),
+            # 使用 if is not None 判断，保留 0 这样的有效值
+            'price': s.get('price') if s.get('price') is not None else src.get('price', 0),
+            'changePct': s.get('changePct') if s.get('changePct') is not None else src.get('changePct', 0),
+            'score': s.get('score') if s.get('score') is not None else src.get('score', 0),
             'grade': s.get('grade', '') or src.get('grade', ''),
             'buyRange': s.get('buyRange', '') or src.get('buyRange', ''),
             'stopLoss': s.get('stopLoss', '') or src.get('stopLoss', ''),
@@ -878,37 +743,72 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
 
     # 持久化分析历史（Agent+日期唯一，历史锁定）
     try:
-        report_date = current_time[:10]
-        analysis_payload = {
-            'agentId': parsed.get('agentId', 'jun'),
-            'agentName': parsed.get('agentName', agent['name']),
-            'stance': parsed.get('stance', 'neutral'),
-            'confidence': int(parsed.get('confidence', 50)),
-            'marketCommentary': str(parsed.get('marketCommentary', '')),
-            'positionAdvice': str(parsed.get('positionAdvice', '')),
-            'riskWarning': str(parsed.get('riskWarning', '')),
-            'recommendedStocks': recommended,
-        }
-        snap = _db.build_analysis_holdings_snapshot(holdings_list, analysis_payload)
-        _db.save_agent_analysis_history(
-            agent_id='jun',
-            report_date=report_date,
-            holdings_snapshot=snap,
-            analysis_result=analysis_payload,
-            raw_response=raw,
-            stance=parsed.get('stance', 'neutral'),
-            confidence=int(parsed.get('confidence', 50)),
-            tokens_used=tokens,
-        )
+        import database as _db
+        report_date = current_time[:10] if current_time else ""
+        if parsed:
+            analysis_payload = {
+                'agentId': parsed.get('agentId', 'jun'),
+                'agentName': parsed.get('agentName', agent['name']),
+                'stance': parsed.get('stance', 'neutral'),
+                'confidence': int(parsed.get('confidence', 50)),
+                'marketCommentary': str(parsed.get('marketCommentary', '')),
+                'positionAdvice': str(parsed.get('positionAdvice', '')),
+                'riskWarning': str(parsed.get('riskWarning', '')),
+                'recommendedStocks': recommended,
+            }
+            # 快照优先级：AI推荐 > DB持仓（与 app.py 保持一致）
+            snap = _db.build_analysis_holdings_snapshot(holdings_list, analysis_payload)
+            _db.save_agent_analysis_history(
+                agent_id='jun',
+                report_date=report_date,
+                holdings_snapshot=snap,
+                analysis_result=analysis_payload,
+                raw_response=resp.content,
+                stance=parsed.get('stance', 'neutral'),
+                confidence=int(parsed.get('confidence', 50)),
+                tokens_used=resp.tokens_used,
+            )
+        else:
+            # JSON 解析失败，保存原始文本
+            snap_fail = _db.snapshot_rows_from_db_holdings(holdings_list)
+            _db.save_agent_analysis_history(
+                agent_id='jun',
+                report_date=report_date,
+                holdings_snapshot=snap_fail,
+                analysis_result={'raw_text': resp.content},
+                raw_response=resp.content,
+                tokens_used=resp.tokens_used,
+            )
         logger.info(f"[JUN-AI] 历史已写入 agent_analysis_history agent=jun date={report_date}")
+
+        # 同步推荐股票到持仓表（与 /api/agents/analyze/jun 保持一致）
+        if recommended:
+            try:
+                import database as _db
+                saved = _db.save_recommended_stocks_as_holdings('jun', recommended)
+                logger.info(f"[JUN-AI] 推荐股票已写入 holdings 表，共 {saved} 条")
+            except Exception as sync_err:
+                logger.warning(f"[JUN-AI] 同步推荐股票到持仓表失败: {sync_err}")
+
     except Exception as hist_err:
         logger.warning(f"[JUN-AI] 保存分析历史失败: {hist_err}")
+
+    if not parsed:
+        return {
+            'agentId': 'jun',
+            'agentName': agent['name'],
+            'success': True,
+            'raw_response': resp.content,
+            'structured': None,
+            'analysis': resp.content,
+            'tokens_used': resp.tokens_used,
+        }
 
     return {
         'agentId': parsed.get('agentId', 'jun'),
         'agentName': parsed.get('agentName', agent['name']),
         'success': True,
-        'raw_response': raw,
+        'raw_response': resp.content,
         'structured': {
             'agentId': parsed.get('agentId', 'jun'),
             'agentName': parsed.get('agentName', agent['name']),
@@ -920,7 +820,7 @@ def enhance_with_ai(candidates: List[Dict], news: List[Dict],
             'recommendedStocks': recommended,
         },
         'analysis': _build_report_text(parsed, recommended),
-        'tokens_used': tokens,
+        'tokens_used': resp.tokens_used,
     }
 
 
@@ -1121,9 +1021,9 @@ class JunGeTrader:
         # 5. 精选推荐（扫描层）
         recommendations = self._generate_recommendations(unique_candidates)
 
-        # 6. AI 增强（可选）
+        # 6. AI 增强（可选）- 即使扫描数据为空也执行，让 AI 基于市场知识推荐
         ai_result = None
-        if enhance and unique_candidates:
+        if enhance:
             logger.info("🤖 启动 AI 增强分析...")
             news = self.get_news()
             ai_result = enhance_with_ai(unique_candidates, news, start_time.isoformat())

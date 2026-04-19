@@ -10,10 +10,14 @@ const DEF_TTL = 30_000   // 默认 30s
 
 function cached(key, ttl = DEF_TTL, fetchFn) {
   const hit = _cache.get(key)
-  if (hit && Date.now() - hit.ts < ttl) return hit.data
+  if (hit && Date.now() - hit.ts < ttl && !hit.data.then) return hit.data
+  if (hit && hit.data && hit.data.then) return hit.data
   const prom = fetchFn().then(d => {
     _cache.set(key, { data: d, ts: Date.now() })
     return d
+  }).catch(err => {
+    _cache.delete(key)
+    throw err
   })
   _cache.set(key, { data: prom, ts: Date.now() })
   return prom
@@ -51,6 +55,8 @@ export const market = {
     () => apiFetch(`/api/market/sectors/main-fund-flow?kind=${encodeURIComponent(kind)}`, `market/sectors/main-fund-flow/${kind}`)
   ),
   summary:   () => cached('market/summary',   30_000, () => apiFetch('/api/market/summary',      'market/summary')),
+  /** 三大指数近3天分时数据 */
+  indexMini: () => cached('market/index-mini', 60_000, () => apiFetch('/api/market/index-mini', 'market/index-mini')),
   invalidate,
 }
 
@@ -59,3 +65,6 @@ export const hotSectors = () => cached('market/hot-sectors', 30_000,
 
 export const macroSummary = () => cached('macro/summary', 60_000,
     () => apiFetch('/api/macro/summary', 'macro/summary'))
+
+export const macroFlashReport = () => cached('macro/flash-report', 60_000,
+    () => apiFetch('/api/macro/flash-report', 'macro/flash-report'))

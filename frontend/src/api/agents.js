@@ -42,35 +42,89 @@ export async function fetchAgentPrompts() {
  * @returns {Promise<{structured: object, analysis: string, tokens_used: number}>}
  */
 export async function analyzeWithAgent(agentId) {
-  return apiPost(`${BASE}/agents/analyze/${agentId}`)
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 180_000)
+  let res
+  try {
+    res = await fetch(`${BASE}/agents/analyze/${agentId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: ctrl.signal,
+    })
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('分析超时（超过 3 分钟），请稍后重试')
+    }
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+  let json
+  try {
+    json = await res.json()
+  } catch {
+    throw new Error('服务器返回非 JSON')
+  }
+  if (!json.success) throw new Error(json.error || '请求失败')
+  if (json.agent_success === false) {
+    const err = new Error(json.error || '智能体分析失败，请稍后重试')
+    err.name = 'AgentBackendError'
+    err.payload = json
+    throw err
+  }
+  const { success: _s, agent_success: _a, error: _e, ...rest } = json
+  return rest
 }
 
 // ─── 批量分析（全场共识）─────────────────────────────────────────────────
 
 /**
- * 并行跑全部 6 个 Agent，返回共识 + 头寸卡片 + TOP 3
+ * 并行跑全部 Agent 或层次化分析
  *
+ * @param {object} options
+ * @param {string} options.mode - 'parallel' | 'hierarchical'
  * @returns {Promise<{
  *   scan_time: string,
- *   consensus: { consensusPct, bullCount, bearCount, neutralCount },
+ *   mode: string,
+ *   consensus: { consensusPct, bullCount, bearCount, neutralCount, weightedConfidence },
  *   agentResults: Array<{
- *     agent_id, agent_name, success,
+ *     agent_id, agent_name, success, status,
  *     structured: {
  *       agentId, agentName, stance, confidence,
  *       marketCommentary, positionAdvice, riskWarning,
  *       recommendedStocks: Array<StockRecommendation>
  *     },
  *     analysis: string,
- *     tokens_used: number
+ *     thinking: string,
+ *     tokens_used: number,
+ *     execution_time_ms: number,
+ *     retry_count: number,
  *   }>,
  *   consensusOpportunities: Array<{
- *     rank, title, badge, badgeKind, meta, chg, flowLabel
+ *     rank, title, code, badge, badgeKind, meta, chg, flowLabel,
+ *     adviseTypes: string[], signals: string[]
  *   }>,
+ *   master: {
+ *     marketCoreIntent: string,
+ *     marketPhase: string,
+ *     riskAppetite: string,
+ *     agentPriority: string[],
+ *     keyTheme: string,
+ *     riskFactors: string[],
+ *     coordinationNotes: string,
+ *   } | null,
+ *   synthesis: string,
+ *   execution_log: Array<{
+ *     timestamp, phase, agent_id, status, message
+ *   }>,
+ *   success_rate: number,
  *   lastUpdated: string
  * }>}
  */
-export async function batchAnalyzeAgents() {
-  return apiPost(`${BASE}/agents/batch`)
+export async function batchAnalyzeAgents(options = {}) {
+  const mode = options.mode || 'parallel'
+  return apiPost(`${BASE}/agents/batch`, { mode })
 }
 
 // ─── 共识计算工具（前端 fallback）────────────────────────────────────────
@@ -130,199 +184,6 @@ export function cached(key, fn) {
 export function clearCache() {
   _cache.clear()
 }
-
-// ─── 演示模式 API ──────────────────────────────────────────────────────────
-
-/**
- * 演示模式：不调后端 LLM，直接用预设数据展示流程
- * @param {string} agentId
- * @param {Function} onStep - 回调(step: {step, message, data})
- */
-export async function demoAnalyzeAgent(agentId, onStep) {
-  const steps = [
-    { step: 1, message: '正在准备市场数据...', delay: 600 },
-    { step: 2, message: '正在加载 Agent Prompt 模板...', delay: 400 },
-    { step: 3, message: `正在调用 AI 模型分析「${agentId}」...`, delay: 1200 },
-    { step: 4, message: '正在解析结构化分析结果...', delay: 500 },
-    { step: 5, message: '正在聚合共识信号...', delay: 400 },
-  ]
-
-  // 逐步回调
-  for (const s of steps) {
-    await new Promise(r => setTimeout(r, s.delay))
-    if (onStep) onStep(s)
-  }
-
-  // 返回模拟结果
-  return {
-    success: true,
-    agent_id: agentId,
-    agent_name: _agentNameMap[agentId] || agentId,
-    name_brand: _agentBrandMap[agentId] || agentId,
-    role_subtitle: _roleMap[agentId] || '',
-    structured: _demoStructured[agentId] || _demoStructured.jun,
-    analysis: _demoAnalysis[agentId] || _demoAnalysis.jun,
-    tokens_used: 0,
-  }
-}
-
-const _agentNameMap = {
-  jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
-  speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
-}
-const _agentBrandMap = {
-  jun: '钧哥', qiao: '乔帮主', jia: '炒股养家',
-  speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
-}
-const _roleMap = {
-  jun: '龙头战法', qiao: '板块轮动', jia: '低位潜伏',
-  speed: '打板专家', trend: '中线波段', quant: '算法回测',
-}
-
-const _demoStructured = {
-  jun: {
-    agentId: 'jun', agentName: '钧哥天下无双', stance: 'bull', confidence: 82,
-    marketCommentary: '市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。',
-    positionAdvice: '维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。',
-    riskWarning: '警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。',
-    recommendedStocks: [
-      { name: '龙头股份', code: '600630.SH', role: '龙头', reason: '板块龙头连板，人气极高', chg_pct: 10.0 },
-      { name: '宁德时代', code: '300750.SZ', role: '中军', reason: '行业龙头，机构锁仓', chg_pct: 5.5 },
-    ],
-  },
-  qiao: {
-    agentId: 'qiao', agentName: '乔帮主', stance: 'bull', confidence: 74,
-    marketCommentary: '板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。',
-    positionAdvice: '维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。',
-    riskWarning: '警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
-    recommendedStocks: [
-      { name: '北方华创', code: '002371.SZ', role: '轮动龙头', reason: '半导体主线，业绩超预期', chg_pct: 4.8 },
-    ],
-  },
-  jia: {
-    agentId: 'jia', agentName: '炒股养家', stance: 'neutral', confidence: 65,
-    marketCommentary: '市场高位震荡，安全边际有所下降，建议控制仓位，适度防御。',
-    positionAdvice: '建议5-6成仓位，配置低估值高股息标的，左侧布局等待估值修复。',
-    riskWarning: '高位震荡风险加大，左侧布局需严格止损纪律。',
-    recommendedStocks: [
-      { name: '长江电力', code: '600900.SH', role: '防御配置', reason: '高股息，低波动', chg_pct: 0.5 },
-    ],
-  },
-  speed: {
-    agentId: 'speed', agentName: '极速先锋', stance: 'bear', confidence: 60,
-    marketCommentary: '打板情绪高潮，炸板率上升，隔夜溢价收窄，当前非理想打板时机。',
-    positionAdvice: '收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。',
-    riskWarning: '高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-    recommendedStocks: [],
-  },
-  trend: {
-    agentId: 'trend', agentName: '趋势追随者', stance: 'bull', confidence: 72,
-    marketCommentary: '均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。',
-    positionAdvice: '维持7成仓位，回调至均线附近加仓，跌破20日线减仓保护利润。',
-    riskWarning: '趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
-    recommendedStocks: [
-      { name: '宁德时代', code: '300750.SZ', role: '趋势跟随', reason: '均线多头，趋势完好', chg_pct: 3.2 },
-    ],
-  },
-  quant: {
-    agentId: 'quant', agentName: '量化之翼', stance: 'bull', confidence: 68,
-    marketCommentary: '多因子模型显示成长与动量因子共振向上，波动率处于中等偏低区间。',
-    positionAdvice: '因子模型建议8成仓位，成长因子权重略高，等权配置，动态再平衡。',
-    riskWarning: '量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
-    recommendedStocks: [
-      { name: '迈瑞医疗', code: '300760.SZ', role: '因子强势', reason: '动量因子得分高', chg_pct: 2.1 },
-    ],
-  },
-}
-
-const _demoAnalysis = {
-  jun: '【市场解读】市场情绪亢奋，龙头股联动效应显著，连板个股情绪高涨，适合聚焦主线龙头。\n【策略建议】维持8成仓位，重点配置当前主线龙头与连板强势股，跟随主力资金方向，积极参与情绪溢价。\n【风险提示】警惕高位分歧加大，随时关注炸板率变化，做好隔夜仓控管理。\n推荐关注：龙头股份(600630.SH) - 龙头: 板块龙头连板，人气极高\n推荐关注：宁德时代(300750.SZ) - 中军: 行业龙头，机构锁仓',
-  qiao: '【市场解读】板块轮动有序，科技与消费交替上行，市场风格偏向成长，轮动节奏良好。\n【策略建议】维持7成仓位，主线持仓为主，辅以波段降本，关注板块轮动节奏变化。\n【风险提示】警惕风格快速切换，保持组合灵活性，注意高位板块补跌风险。',
-  jia: '【市场解读】市场高位震荡，安全边际有所下降，建议控制仓位，适度防御。\n【策略建议】建议5-6成仓位，配置低估值高股息标的，左侧布局等待估值修复。\n【风险提示】高位震荡风险加大，左侧布局需严格止损纪律。',
-  speed: '【市场解读】打板情绪高潮，炸板率上升，隔夜溢价收窄，当前非理想打板时机。\n【策略建议】收缩打板仓位至2成以下，优选首板与题材龙头，缩短持仓周期。\n【风险提示】高位打板风险极大，务必严格执行止损，隔夜仓不超3成。',
-  trend: '【市场解读】均线系统保持多头排列，中期上升趋势未破坏，回调是加仓机会。\n【策略建议】维持7成仓位，回调至均线附近加仓，跌破20日线减仓保护利润。\n【风险提示】趋势破坏风险，若指数有效跌破均线系统需果断降仓。',
-  quant: '【市场解读】多因子模型显示成长与动量因子共振向上，波动率处于中等偏低区间。\n【策略建议】因子模型建议8成仓位，成长因子权重略高，等权配置，动态再平衡。\n【风险提示】量化模型存在失效风险，关注因子轮动信号，做好风险对冲。',
-}
-
-/**
- * 演示模式批量分析
- * @param {Function} onStep - 回调({agentId, step, message})
- */
-export async function demoBatchAnalyze(onStep) {
-  const agents = ['jun', 'qiao', 'jia', 'speed', 'trend', 'quant']
-
-  // 阶段一：并行初始化所有 Agent
-  if (onStep) onStep({ phase: 'init', message: '正在并行初始化 6 个 Agent...' })
-  await new Promise(r => setTimeout(r, 800))
-
-  // 阶段二：并行执行所有 Agent
-  const promises = agents.map(async (agentId) => {
-    for (let i = 1; i <= 5; i++) {
-      await new Promise(r => setTimeout(r, 300))
-      if (onStep) onStep({ agentId, phase: 'step', step: i })
-    }
-    return demoAnalyzeAgent(agentId)
-  })
-
-  const agentResults = await Promise.all(promises)
-
-  // 阶段三：计算共识
-  if (onStep) onStep({ phase: 'consensus', message: '正在聚合共识信号...' })
-  await new Promise(r => setTimeout(r, 600))
-
-  const stances = agentResults.map(r => r.structured?.stance || 'neutral')
-  const bullCount = stances.filter(s => s === 'bull').length
-  const bearCount = stances.filter(s => s === 'bear').length
-  const consensusPct = max(10, min(95, 50 + (bullCount - bearCount) * 10 + 15))
-
-  // TOP 机会
-  const allRecs = agentResults.flatMap(r =>
-    (r.structured?.recommendedStocks || []).map(s => ({
-      ...s, agent: r.agent_name,
-    }))
-  )
-  allRecs.sort((a, b) => b.chg_pct - a.chg_pct)
-
-  const badges = ['龙头共识', '多策略共振', '资金认可']
-  const consensusOpportunities = allRecs.slice(0, 3).map((rec, i) => ({
-    rank: i + 1,
-    title: `${rec.name} (${rec.code})`,
-    badge: badges[i] || '机会标的',
-    badgeKind: i < 2 ? 'primary' : 'muted',
-    meta: `${rec.role} · ${rec.reason?.slice(0, 20)}`,
-    chg: rec.chg_pct,
-    flowLabel: `来源: ${rec.agent}`,
-  }))
-
-  if (!consensusOpportunities.length) {
-    consensusOpportunities.push(
-      { rank: 1, title: '宁德时代 (300750.SZ)', badge: '龙头共识', badgeKind: 'primary', meta: '主线龙头 · 资金持续流入', chg: 5.8, flowLabel: '来源: 钧哥天下无双' },
-      { rank: 2, title: '北方华创 (002371.SZ)', badge: '多策略共振', badgeKind: 'primary', meta: '趋势跟随 · 均线多头排列', chg: 4.2, flowLabel: '来源: 乔帮主' },
-      { rank: 3, title: '比亚迪 (002594.SZ)', badge: '资金认可', badgeKind: 'muted', meta: '板块轮动 · 底部放量', chg: 3.1, flowLabel: '来源: 量化之翼' },
-    )
-  }
-
-  if (onStep) onStep({ phase: 'done' })
-
-  return {
-    success: true,
-    scan_time: new Date().toISOString(),
-    consensus: {
-      consensusPct,
-      bullCount,
-      bearCount,
-      neutralCount: stances.length - bullCount - bearCount,
-      label: bullCount >= 4 ? '乐观看多' : bearCount >= 3 ? '谨慎防御' : '分化震荡',
-      avgConfidence: Math.round(agentResults.reduce((s, r) => s + (r.structured?.confidence || 50), 0) / agentResults.length),
-    },
-    agentResults,
-    consensusOpportunities,
-    lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-  }
-}
-
-function max(a, b) { return Math.max(a, b) }
-function min(a, b) { return Math.min(a, b) }
 
 // ─── JunGeTrader API ─────────────────────────────────────────────────────────
 
@@ -387,4 +248,147 @@ export async function fetchJungeStatus() {
  */
 export async function fetchJungeAiResult() {
   return apiGet(`${BASE}/junge/ai-result`)
+}
+
+// ─── 新架构：Qwen + AKShare + DeepSeek 流式分析 ──────────────────────────────
+
+/**
+ * 意图识别接口
+ * @param {string} userInput - 用户输入
+ * @returns {Promise<object>}
+ */
+export async function analyzeIntent(userInput) {
+  return apiPost(`${BASE}/analyze/intent`, { user_input: userInput })
+}
+
+/**
+ * 新架构流式分析
+ * @param {object} options
+ * @param {string} options.userInput - 用户输入
+ * @param {string[]} options.stockCodes - 关注的股票代码
+ * @param {object} options.context - 额外上下文
+ * @returns {Promise<ReadableStream>} SSE 流
+ */
+export async function analyzeStream({ userInput, stockCodes = [], context = {} }) {
+  const response = await fetch(`${BASE}/analyze/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_input: userInput,
+      stock_codes: stockCodes,
+      context
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.body
+}
+
+/**
+ * 解析 SSE 流
+ * @param {ReadableStream} stream - SSE 流
+ * @param {object} callbacks - 回调函数
+ */
+export function parseStreamEvents(stream, callbacks = {}) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const { onStatus, onIntent, onData, onAnalysis, onThinking, onStructured, onDone, onError } = callbacks
+
+  function processLine(line) {
+    if (!line.startsWith('data: ')) return
+
+    try {
+      const data = JSON.parse(line.slice(6))
+
+      switch (data.type) {
+        case 'status':
+          onStatus?.(data.message)
+          break
+        case 'intent':
+          onIntent?.(data)
+          break
+        case 'data':
+          onData?.(data)
+          break
+        case 'analysis':
+          onAnalysis?.(data.content)
+          break
+        case 'thinking':
+          onThinking?.(data.content)
+          break
+        case 'structured':
+          onStructured?.(data.data)
+          break
+        case 'done':
+          onDone?.(data)
+          break
+        case 'error':
+          onError?.(data.error)
+          break
+        case 'close':
+          return true  // 结束
+      }
+    } catch (e) {
+      console.warn('[parseStreamEvents] Parse error:', e)
+    }
+    return false
+  }
+
+  return new Promise((resolve, reject) => {
+    function read() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          resolve()
+          return
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (processLine(line)) {
+            reader.cancel()
+            resolve()
+            return
+          }
+        }
+
+        read()
+      }).catch(reject)
+    }
+
+    read()
+  })
+}
+
+// ─── Agent 分析历史 ─────────────────────────────────────────────────────────
+
+/**
+ * 获取今日分析结果（如有）
+ * @param {string} agentId
+ * @returns {Promise<object|null>}
+ */
+export async function fetchTodayAnalysis(agentId) {
+  try {
+    const json = await apiGet(`${BASE}/agents/${agentId}/analysis/today`)
+    return json.data || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 获取 Agent Prompt 详情
+ * @param {string} agentId
+ * @returns {Promise<{id, name, role, tagline, adviseType, system_prompt, user_prompt_template}>}
+ */
+export async function fetchAgentInfo(agentId) {
+  const json = await apiGet(`${BASE}/agents/${agentId}/prompt`)
+  return json.data || {}
 }

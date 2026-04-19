@@ -62,7 +62,7 @@
       </div>
 
       <!-- AI 全场总结 -->
-      <router-link to="/strategy/ai/summary" class="agents-hero">
+      <router-link to="/strategy/ai/macro-summary" class="agents-hero">
         <div class="agents-hero__top">
           <div class="agents-hero__left">
             <div class="agents-hero__icon-wrap">
@@ -108,7 +108,7 @@
           <div class="agent-card__head">
             <div class="agent-card__who">
               <div class="agent-card__img-wrap">
-                <img :src="a.avatar" :alt="a.name" class="agent-card__img" loading="lazy" />
+                <span class="agent-card__img agent-card__img--text" :aria-label="a.name">{{ agentCardInitial(a) }}</span>
                 <span
                   class="agent-card__dot"
                   :class="{
@@ -177,7 +177,7 @@
       </section>
 
       <p class="agents-disclaimer">
-        以上为产品演示与策略角色设定，非实盘收益承诺；持仓与信号功能将陆续接入。
+        AI 分析结果仅供参考，不构成投资建议。
       </p>
       </template>
 
@@ -252,7 +252,7 @@
               </div>
               <span class="hist-card__linktxt">{{ rec.linkedLabel }}</span>
             </div>
-            <button type="button" class="hist-card__cta" @click="$router.push('/strategy/ai')">
+            <button type="button" class="hist-card__cta" @click="$router.push('/strategy/macro')">
               查看完整报告
               <span class="hist-card__cta-arrow" aria-hidden="true">→</span>
             </button>
@@ -269,13 +269,13 @@
               当前历史数据显示，「钧哥」与「林叔」的情绪在重大市场突破前有 92% 的相关性。是否需要进行深度历史同步分析？
             </p>
           </div>
-          <button type="button" class="hist-ai-cta__btn" @click="$router.push('/strategy/ai')">
+          <button type="button" class="hist-ai-cta__btn" @click="$router.push('/strategy/macro')">
             生成深度回顾报告
           </button>
         </div>
 
         <p class="agents-disclaimer hist-disclaimer">
-          历史总结为演示数据，非投资建议；正式版本将对接扫描与 AI 报告时间线。
+          AI 分析结果仅供参考，不构成投资建议。
         </p>
       </section>
     </main>
@@ -295,17 +295,31 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { STRATEGY_AGENTS } from '@/data/strategyAgents.js'
 
 const router = useRouter()
 
-/** 演示数据：与产品设计稿一致，后续可接 API */
 const tab = ref('active')
 const calendarHint = ref(false)
 
 const consensusPct = ref(89)
+
+// 从后端拉取各 Agent 真实胜率/收益率，覆盖静态数据
+const agentPerf = ref({})
+
+async function fetchAgentPerformance() {
+  const ids = STRATEGY_AGENTS.map(a => a.id)
+  await Promise.allSettled(ids.map(async (id) => {
+    try {
+      const res = await fetch(`/api/agents/${id}/performance`).then(r => r.json())
+      if (res.success && res.data) agentPerf.value[id] = res.data
+    } catch {}
+  }))
+}
+
+onMounted(fetchAgentPerformance)
 
 /** 历史总结页 — 绩效区 */
 const perfWinRate = ref('84.2')
@@ -382,7 +396,19 @@ const heroAvatars = [
 
 const agents = STRATEGY_AGENTS
 
-const visibleAgents = computed(() => agents.filter((a) => a.status !== 'offline'))
+const visibleAgents = computed(() =>
+  agents
+    .filter((a) => a.status !== 'offline')
+    .map((a) => {
+      const perf = agentPerf.value[a.id]
+      if (!perf) return a
+      return {
+        ...a,
+        winRate: perf.analysisCount > 0 ? perf.winRate : a.winRate,
+        returnPct: perf.analysisCount > 0 ? perf.returnPct : a.returnPct,
+      }
+    })
+)
 
 const insightHtml =
   '当前市场情绪处于<span class="agents-insight__quote">「极度亢奋」</span>阶段，建议重点关注 <strong>钧哥天下无双</strong> 的龙头标的选择，并在高位配合 <strong>量化之翼</strong> 的回撤预警。'
@@ -399,6 +425,11 @@ function goToHoldings(a) {
 
 function goToAnalysis(a) {
   router.push(`/strategy/agents/${a.id}/analysis`)
+}
+
+function agentCardInitial(a) {
+  const s = String(a?.analysisBrand || a?.name || '?').trim()
+  return s[0] || '?'
 }
 </script>
 
@@ -803,6 +834,17 @@ function goToAnalysis(a) {
   height: 56px;
   border-radius: 12px;
   object-fit: cover;
+}
+.agent-card__img--text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-mid) 100%);
+  letter-spacing: -0.02em;
+  user-select: none;
 }
 
 .agent-card__dot {

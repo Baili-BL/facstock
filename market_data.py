@@ -102,7 +102,7 @@ def _ak_sina_direct():
 
 # 缓存相关
 _cache = {}
-_cache_timeout = 300  # 5分钟缓存
+_cache_timeout = 30  # 30秒，与 Redis TTL 保持一致
 
 
 def _get_cached(key: str) -> Optional[any]:
@@ -134,65 +134,64 @@ def _safe_float(val, default: float = 0.0) -> float:
 def get_market_overview() -> List[Dict]:
     """
     获取大盘指数概览（上证、深证、创业板、科创板等）
-    使用 stock_zh_index_spot_sina 获取实时指数数据（新浪，数据源稳定）
+    使用新浪API作为主数据源
     """
     cached = _get_cached('market_overview')
     if isinstance(cached, list) and len(cached) > 0:
         return cached
 
     result = []
+    needed = {
+        'sh000001': '上证指数',
+        'sz399001': '深证成指',
+        'sz399006': '创业板指',
+        'sh000688': '科创50',
+        'sh000300': '沪深300',
+        'sh000016': '上证50',
+        'sh000905': '中证500',
+        'sh000852': '中证1000',
+    }
+
+    # 使用新浪API
     try:
-        df = _get_ak().stock_zh_index_spot_sina()
-        if df is None or df.empty:
-            return []
-
-        needed = {
-            'sh000001': '上证指数',
-            'sz399001': '深证成指',
-            'sz399006': '创业板指',
-            'sh000688': '科创50',
-            'sh000300': '沪深300',
-            'sh000016': '上证50',
-            'sh000905': '中证500',
-            'sh000852': '中证1000',
-        }
-
-        for code, name in needed.items():
-            rows = df[df['代码'] == code]
-            if rows.empty:
+        # 直接构造URL参数，不用params，让逗号保持原样
+        codes_str = ','.join(needed.keys())
+        url = 'https://hq.sinajs.cn/list=' + codes_str
+        from curl_cffi import requests as cr
+        resp = cr.get(url, impersonate='chrome110',
+                      headers={'Referer': 'https://finance.sina.com.cn'}, timeout=10)
+        text = resp.text
+        import re
+        # 解析每个hq_str_xxx="data"格式
+        pattern = r'hq_str_([a-z]+)(\d+)="([^"]+)"'
+        matches = re.findall(pattern, text)
+        for prefix, code, data_str in matches:
+            key = f'{prefix}{code}'
+            if key not in needed:
                 continue
-            r = rows.iloc[0]
-            result.append({
-                'name': name,
-                'code': code,
-                'price': _safe_float(r.get('最新价')),
-                'change': _safe_float(r.get('涨跌幅')),
-                'change_amount': _safe_float(r.get('涨跌额')),
-                'volume': _safe_float(r.get('成交量')),
-                'amount': _safe_float(r.get('成交额')),
-                'high': _safe_float(r.get('最高')),
-                'low': _safe_float(r.get('最低')),
-                'open': _safe_float(r.get('今开')),
-                'prev_close': _safe_float(r.get('昨收')),
-            })
-
-        # 获取上涨/下跌家数（多源兜底）
-        df_em = _fetch_spot_em_dataframe()
-        if df_em is not None and not df_em.empty:
-            ch_col = next((c for c in ('涨跌幅',) if c in df_em.columns), None)
-            if ch_col:
-                total = len(df_em)
-                up = int((pd.to_numeric(df_em[ch_col], errors='coerce') > 0).sum())
-                down = int((pd.to_numeric(df_em[ch_col], errors='coerce') < 0).sum())
-                flat = total - up - down
-                sh = next((x for x in result if x['name'] == '上证指数'), None)
-                if sh:
-                    sh['up_count'] = up
-                    sh['down_count'] = down
-                    sh['flat_count'] = flat
-
+            parts = data_str.split(',')
+            if len(parts) >= 5:
+                name = needed[key]
+                price = float(parts[1]) if parts[1] else 0
+                prev_close = float(parts[2]) if len(parts) > 2 and parts[2] else price
+                change = ((price - prev_close) / prev_close * 100) if prev_close else 0
+                result.append({
+                    'name': name,
+                    'code': code,
+                    'price': price,
+                    'change': round(change, 2),
+                    'change_amount': round(price - prev_close, 2),
+                    'volume': 0,
+                    'amount': 0,
+                    'high': 0,
+                    'low': 0,
+                    'open': float(parts[3]) if len(parts) > 3 and parts[3] else 0,
+                    'prev_close': prev_close,
+                })
+        if result:
+            logger.info(f"大盘指数获取成功（新浪）: {len(result)}条")
     except Exception as e:
-        logger.warning(f"获取大盘指数失败: {e}")
+        logger.warning(f"大盘指数获取失败: {e}")
 
     _set_cached('market_overview', result)
     return result
@@ -200,43 +199,107 @@ def get_market_overview() -> List[Dict]:
 
 def get_money_flow() -> Dict:
     """
-    获取市场资金流向（北向资金、主力净流入等）
-    使用沪深港通资金流向数据
+    获取市场资金流向数据（北向资金 + 行业板块资金流）。
+    北向资金：东方财富沪深港通接口，2024-08后数据可能缺失，降级到估算。
+    板块资金流：优先使用同花顺行业板块数据（含净流入），东方财富作为备选。
     """
     cached = _get_cached('money_flow')
     if cached:
         return cached
 
-    result = {
-        'north_money': {},
+    result: Dict = {
+        'hgt_net_inflow': 0.0,
+        'sgt_net_inflow': 0.0,
+        'north_money': {
+            'north_net_inflow': 0.0,
+            'north_inflow': 0.0,
+            'north_outflow': 0.0,
+            'status': 'unavailable',
+            'note': '北向数据暂不可用',
+        },
         'sector_flow': [],
         'time': datetime.now().strftime('%H:%M'),
     }
 
+    # ── 北向资金（东方财富沪深港通资金流向）───────────────────
     try:
         with _ak_eastmoney_direct():
-            df = _get_ak().stock_hsgt_fund_flow_summary_em()
-        if df is not None and not df.empty:
-            hgt_net = 0.0
-            sgt_net = 0.0
-            north_total = 0.0
-            for _, row in df.iterrows():
-                net_inflow = _safe_float(row.get('成交净买额'))
-                if row.get('板块') == '沪股通':
-                    hgt_net += net_inflow
-                    north_total += net_inflow
-                elif row.get('板块') == '深股通':
-                    sgt_net += net_inflow
-                    north_total += net_inflow
-            result['hgt_net_inflow'] = round(hgt_net, 2)
-            result['sgt_net_inflow'] = round(sgt_net, 2)
+            north_df = _get_ak().stock_hsgt_fund_flow_summary_em()
+        if north_df is not None and not north_df.empty:
+            inflow_total = 0.0
+            outflow_total = 0.0
+            up_count = 0
+            down_count = 0
+            for _, row in north_df.iterrows():
+                net = _safe_float(row.get('成交净买额') or row.get('资金净流入') or 0)
+                inflow_total += max(0, net)
+                outflow_total += max(0, -net)
+                up_count += int(pd.to_numeric(row.get('上涨数'), errors='coerce') or 0)
+                down_count += int(pd.to_numeric(row.get('下跌数'), errors='coerce') or 0)
+            total_net = inflow_total - outflow_total
+            result['hgt_net_inflow'] = round(total_net, 2)
             result['north_money'] = {
-                'north_net_inflow': round(north_total, 2),
-                'north_net_buy': round(north_total, 2),
-                'date': str(df.iloc[-1].get('交易日', '')),
+                'north_net_inflow': round(total_net, 2),
+                'north_inflow': round(inflow_total, 2),
+                'north_outflow': round(outflow_total, 2),
+                'status': 'ok',
+                'note': '',
             }
+            if up_count or down_count:
+                result['breadth_from_north'] = {'up': up_count, 'down': down_count}
     except Exception as e:
-        logger.warning(f"北向资金获取失败: {e}")
+        logger.debug(f'北向资金获取失败，降级估算: {e}')
+
+    # ── 行业板块资金流（优先同花顺，备选东方财富）────────────────
+    # 方法1：使用同花顺行业板块数据（含净流入字段）
+    try:
+        from utils.ths_crawler import get_ths_industry_list
+        ths_df = get_ths_industry_list()
+        if ths_df is not None and not ths_df.empty:
+            # 同花顺数据已有净流入字段（单位：亿元）
+            net_col = '净流入' if '净流入' in ths_df.columns else None
+            chg_col = '涨跌幅' if '涨跌幅' in ths_df.columns else None
+            name_col = '板块' if '板块' in ths_df.columns else None
+
+            if net_col and name_col:
+                # 按净流入排序（降序）
+                ths_sorted = ths_df.sort_values(by=net_col, ascending=False).reset_index(drop=True)
+                for _, row in ths_sorted.head(20).iterrows():
+                    # 同花顺净流入单位已经是亿元
+                    net_yi = _safe_float(row.get(net_col))
+                    result['sector_flow'].append({
+                        'name': str(row.get(name_col, '') or ''),
+                        'net_yi': round(net_yi, 2),
+                        'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+                    })
+                logger.info(f'板块资金流获取成功（同花顺）: {len(result["sector_flow"])}条')
+    except Exception as e:
+        logger.debug(f'同花顺板块资金流获取失败: {e}')
+
+    # 方法2：备选东方财富行业资金流（可能因网络封锁失败）
+    if not result['sector_flow']:
+        try:
+            with _ak_eastmoney_direct():
+                fund_df = _get_ak().stock_sector_fund_flow_rank(
+                    indicator='今日', sector_type='行业资金流'
+                )
+            if fund_df is not None and not fund_df.empty:
+                net_col = next((c for c in ('今日主力净流入-净额', '5日主力净流入-净额',
+                    '10日主力净流入-净额') if c in fund_df.columns), None)
+                chg_col = next((c for c in ('今日涨跌幅', '5日涨跌幅', '10日涨跌幅') if c in fund_df.columns), None)
+                name_col = next((c for c in ('名称',) if c in fund_df.columns), None)
+                if net_col:
+                    fund_sorted = fund_df.sort_values(by=net_col, ascending=False).reset_index(drop=True)
+                    for _, row in fund_sorted.head(20).iterrows():
+                        net_yi = _safe_float(row.get(net_col)) / 1e8
+                        result['sector_flow'].append({
+                            'name': str(row.get(name_col, '') or '') if name_col else '',
+                            'net_yi': round(net_yi, 2),
+                            'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+                        })
+                    logger.info(f'板块资金流获取成功（东方财富）: {len(result["sector_flow"])}条')
+        except Exception as e:
+            logger.debug(f'东方财富板块资金流获取失败: {e}')
 
     _set_cached('money_flow', result)
     return result
@@ -901,50 +964,120 @@ def get_hot_sectors() -> List:
 
 def get_hot_concept_sectors() -> List[Dict]:
     """
-    东方财富概念板块排行（与行业板块结构对齐，便于前端同表展示）
+    概念板块排行。
+    优先使用新浪概念板块API（含涨跌幅），备选东方财富接口。
     """
     cached = _get_cached('hot_concept_sectors')
     if isinstance(cached, list):
         return cached
 
     result: List[Dict] = []
+
+    # 方法1：优先使用新浪概念板块API（curl_cffi绕过IP限制）
+    try:
+        from curl_cffi import requests as cr
+        SINA_HEADERS = {
+            'Referer': 'https://finance.sina.com.cn',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        # 新浪概念板块API（curl_cffi可以绕过IP封禁）
+        url = 'https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class'
+        resp = cr.get(url, headers=SINA_HEADERS, impersonate='chrome110', timeout=15)
+        if resp.status_code == 200 and resp.text and '<html>' not in resp.text[:50]:
+            import re
+            # 解析板块列表: <li><a href="...">板块名</a></li>
+            pattern = r'<li><a href="[^"]*">([^<]+)</a></li>'
+            names = re.findall(pattern, resp.text)
+            for name in names[:40]:
+                result.append({
+                    'name': name.strip(),
+                    'code': '',
+                    'change': 0.0,
+                    'leader': '',
+                    'leader_change': 0.0,
+                    'heat_display': '--',
+                })
+            logger.info(f'概念板块获取成功（新浪curl_cffi）: {len(result)}条')
+            if result:
+                _set_cached('hot_concept_sectors', result)
+                return result
+        else:
+            logger.debug(f'新浪概念板块返回非数据内容，状态码: {resp.status_code}')
+    except Exception as e:
+        logger.debug(f'新浪概念板块获取失败: {e}')
+
+    # 方法2：备选东方财富概念板块名称接口
     try:
         with _ak_eastmoney_direct():
             df = _get_ak().stock_board_concept_name_em()
-        if df is None or df.empty:
+        if df is not None and not df.empty:
+            name_c = '板块名称' if '板块名称' in df.columns else '名称'
+            code_c = '板块代码' if '板块代码' in df.columns else '代码'
+            if '涨跌幅' in df.columns:
+                df = df.sort_values(by='涨跌幅', ascending=False)
+
+            for _, row in df.head(40).iterrows():
+                heat_raw = 0.0
+                for hk in ('成交额', '总市值', '换手率', '成交量'):
+                    if hk in df.columns:
+                        heat_raw = _safe_float(row.get(hk))
+                        break
+                if heat_raw >= 1e8:
+                    heat_display = f"{heat_raw / 1e8:.2f}亿"
+                elif heat_raw >= 1e4:
+                    heat_display = f"{heat_raw / 1e4:.2f}万"
+                elif heat_raw > 0:
+                    heat_display = f"{heat_raw:.2f}"
+                else:
+                    heat_display = '--'
+
+                result.append({
+                    'name': str(row.get(name_c, '') or ''),
+                    'code': str(row.get(code_c, '') or ''),
+                    'change': _safe_float(row.get('涨跌幅')),
+                    'leader': str(row.get('领涨股票', '') or row.get('领涨股', '') or ''),
+                    'leader_change': _safe_float(row.get('领涨股票-涨跌幅', row.get('领涨股-涨跌幅', 0))),
+                    'heat_display': heat_display,
+                })
             _set_cached('hot_concept_sectors', result)
             return result
-
-        name_c = '板块名称' if '板块名称' in df.columns else '名称'
-        code_c = '板块代码' if '板块代码' in df.columns else '代码'
-        if '涨跌幅' in df.columns:
-            df = df.sort_values(by='涨跌幅', ascending=False)
-
-        for _, row in df.head(40).iterrows():
-            heat_raw = 0.0
-            for hk in ('成交额', '总市值', '换手率', '成交量'):
-                if hk in df.columns:
-                    heat_raw = _safe_float(row.get(hk))
-                    break
-            if heat_raw >= 1e8:
-                heat_display = f"{heat_raw / 1e8:.2f}亿"
-            elif heat_raw >= 1e4:
-                heat_display = f"{heat_raw / 1e4:.2f}万"
-            elif heat_raw > 0:
-                heat_display = f"{heat_raw:.2f}"
-            else:
-                heat_display = '--'
-
-            result.append({
-                'name': str(row.get(name_c, '') or ''),
-                'code': str(row.get(code_c, '') or ''),
-                'change': _safe_float(row.get('涨跌幅')),
-                'leader': str(row.get('领涨股票', '') or row.get('领涨股', '') or ''),
-                'leader_change': _safe_float(row.get('领涨股票-涨跌幅', row.get('领涨股-涨跌幅', 0))),
-                'heat_display': heat_display,
-            })
     except Exception as e:
-        logger.warning(f"概念板块获取失败: {e}")
+        logger.debug(f'东方财富概念板块获取失败: {e}')
+
+    # 方法3：备选同花顺概念板块爬虫
+    try:
+        from utils.ths_crawler import get_ths_concept_list
+        ths_df = get_ths_concept_list()
+        if ths_df is not None and not ths_df.empty:
+            name_col = '板块' if '板块' in ths_df.columns else '名称'
+            code_col = '代码' if '代码' in ths_df.columns else None
+            chg_col = '涨跌幅' if '涨跌幅' in ths_df.columns else None
+            leader_col = '领涨股' if '领涨股' in ths_df.columns else None
+            leader_chg_col = '领涨股-涨跌幅' if '领涨股-涨跌幅' in ths_df.columns else None
+            amount_col = '总成交额' if '总成交额' in ths_df.columns else '成交额' if '成交额' in ths_df.columns else None
+
+            for _, row in ths_df.head(40).iterrows():
+                heat_raw = _safe_float(row.get(amount_col)) if amount_col else 0.0
+                if heat_raw >= 1e8:
+                    heat_display = f"{heat_raw / 1e8:.2f}亿"
+                elif heat_raw >= 1e4:
+                    heat_display = f"{heat_raw / 1e4:.2f}万"
+                elif heat_raw > 0:
+                    heat_display = f"{heat_raw:.2f}"
+                else:
+                    heat_display = '--'
+
+                result.append({
+                    'name': str(row.get(name_col, '') or ''),
+                    'code': str(row.get(code_col, '') or '') if code_col else '',
+                    'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+                    'leader': str(row.get(leader_col, '') or '') if leader_col else '',
+                    'leader_change': _safe_float(row.get(leader_chg_col)) if leader_chg_col else 0.0,
+                    'heat_display': heat_display,
+                })
+            logger.info(f'概念板块获取成功（同花顺）: {len(result)}条')
+    except Exception as e:
+        logger.debug(f'同花顺概念板块获取失败: {e}')
 
     _set_cached('hot_concept_sectors', result)
     return result
@@ -952,89 +1085,118 @@ def get_hot_concept_sectors() -> List[Dict]:
 
 def get_sector_main_fund_flow(sector_kind: str) -> List[Dict]:
     """
-    板块主力净流入（单位：亿），东方财富 push2.eastmoney.com 直接请求。
-    sector_kind: industry | concept | region → 行业资金流 / 概念资金流 / 地域资金流
-    返回 6 条：净流入前三 + 净流出前三（柱状图用）。
+    板块主力净流入柱状图数据（亿）。
+    优先使用同花顺行业板块数据（含净流入字段），备选东方财富资金流向接口。
+    kind=industry 行业板块，concept 概念板块，region 地域板块。
     """
-    sector_type_map = {
-        'industry': '行业资金流',
-        'concept': '概念资金流',
-        'region': '地域资金流',
-    }
-    fs_map = {
-        'industry': 'm:90+t:2',
-        'concept': 'm:90+t:3+f:!50',
-        'region': 'm:90+t:1',
-    }
     sk = (sector_kind or 'industry').lower()
-    st = sector_type_map.get(sk, '行业资金流')
-    fs = fs_map.get(sk, 'm:90+t:2')
+    sector_type_map = {'industry': '行业资金流', 'concept': '概念资金流', 'region': '地域资金流'}
+    sector_type = sector_type_map.get(sk, '行业资金流')
+
     cache_key = f'sector_main_fund_{sk}'
     cached = _get_cached(cache_key)
-    if isinstance(cached, list):
+    if isinstance(cached, list) and len(cached) > 0:
         return cached
 
     result: List[Dict] = []
+
+    # 方法1：优先使用同花顺行业板块数据（含净流入）
+    if sk in ('industry', 'concept'):
+        try:
+            from utils.ths_crawler import get_ths_industry_list, get_ths_concept_list
+            if sk == 'industry':
+                ths_df = get_ths_industry_list()
+            else:
+                ths_df = get_ths_concept_list()
+
+            if ths_df is not None and not ths_df.empty:
+                net_col = '净流入' if '净流入' in ths_df.columns else None
+                chg_col = '涨跌幅' if '涨跌幅' in ths_df.columns else None
+                name_col = '板块' if '板块' in ths_df.columns else None
+
+                if net_col and name_col:
+                    # 同花顺数据按净流入排序（降序），取前3和后3
+                    ths_sorted = ths_df.sort_values(by=net_col, ascending=False).reset_index(drop=True)
+                    for _, row in ths_sorted.head(3).iterrows():
+                        net_yi = _safe_float(row.get(net_col))  # 同花顺单位已是亿元
+                        result.append({
+                            'name': str(row.get(name_col, '') or ''),
+                            'net_yi': round(net_yi, 2),
+                            'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+                        })
+                    for _, row in ths_sorted.tail(3).iterrows():
+                        net_yi = _safe_float(row.get(net_col))
+                        result.append({
+                            'name': str(row.get(name_col, '') or ''),
+                            'net_yi': round(net_yi, 2),
+                            'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+                        })
+                    logger.info(f'板块资金流向获取成功（同花顺-{sk}）: {len(result)}条')
+                    _set_cached(cache_key, result)
+                    return result
+        except Exception as e:
+            logger.debug(f'同花顺板块资金流获取失败({sk}): {e}')
+
+    # 方法2：备选东方财富行业资金流（可能因网络封锁失败）
     try:
-        import time as _time
-        rt = int(_time.time() * 1000)
-        url = (
-            'https://push2.eastmoney.com/api/qt/clist/get'
-            f'?pn=1&pz=100&po=1&np=1'
-            f'&ut=b2884a393a59ad64002292a3e90d46a5'
-            f'&fltt=2&invt=2&fid=f62'
-            f'&fs={fs}'
-            f'&fields=f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124'
-            f'&rt={rt}'
-        )
-        # 使用 trust_env=False 的 Session 绕过系统代理
-        session = requests.Session()
-        session.trust_env = False
-        resp = session.get(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Referer': 'https://data.eastmoney.com/bkzj/hy.html',
-            'Accept': '*/*',
-        }, timeout=15)
-        session.close()
-        resp.raise_for_status()
-        data = resp.json()
-        diff = (data.get('data') or {}).get('diff') or []
-        if not diff:
+        with _ak_eastmoney_direct():
+            fund_df = _get_ak().stock_sector_fund_flow_rank(
+                indicator='今日', sector_type=sector_type
+            )
+        if fund_df is None or fund_df.empty:
+            raise ValueError('资金流向返回空')
+
+        # 今日主力净流入-净额（单位元），名称，今日涨跌幅
+        net_col = next((c for c in (
+            '今日主力净流入-净额', '5日主力净流入-净额', '10日主力净流入-净额',
+            '主力净流入-净额',
+        ) if c in fund_df.columns), None)
+        chg_col = next((c for c in (
+            '今日涨跌幅', '5日涨跌幅', '10日涨跌幅', '涨跌幅',
+        ) if c in fund_df.columns), None)
+        name_col = next((c for c in ('名称',) if c in fund_df.columns), None)
+
+        if not net_col:
+            logger.warning('资金流向缺少主力净流入列，兜底用涨跌幅')
+            if chg_col:
+                fund_sorted = fund_df.sort_values(by=chg_col, ascending=False).reset_index(drop=True)
+                for _, row in fund_sorted.head(3).iterrows():
+                    result.append({
+                        'name': str(row.get(name_col, '') or '') if name_col else '',
+                        'net_yi': 0.0,
+                        'change': _safe_float(row.get(chg_col)),
+                    })
+                for _, row in fund_sorted.tail(3).iterrows():
+                    result.append({
+                        'name': str(row.get(name_col, '') or '') if name_col else '',
+                        'net_yi': 0.0,
+                        'change': _safe_float(row.get(chg_col)),
+                    })
             _set_cached(cache_key, result)
             return result
 
-        rows = []
-        for r in diff:
-            net_yuan = float(r.get('f62') or 0)
-            rows.append({
-                'name': str(r.get('f14') or ''),
-                'net_yi': round(net_yuan / 1e8, 2),
-                'change': _safe_float(r.get('f3', 0)),
-                '_net': net_yuan,
+        fund_df = fund_df.sort_values(by=net_col, ascending=False).reset_index(drop=True)
+
+        for _, row in fund_df.head(3).iterrows():
+            net_yi = _safe_float(row.get(net_col)) / 1e8
+            result.append({
+                'name': str(row.get(name_col, '') or '') if name_col else '',
+                'net_yi': round(net_yi, 2),
+                'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
             })
-        rows.sort(key=lambda x: x['_net'], reverse=True)
-        n = len(rows)
-        if n == 0:
-            _set_cached(cache_key, result)
-            return result
+        for _, row in fund_df.tail(3).iterrows():
+            net_yi = _safe_float(row.get(net_col)) / 1e8
+            result.append({
+                'name': str(row.get(name_col, '') or '') if name_col else '',
+                'net_yi': round(net_yi, 2),
+                'change': _safe_float(row.get(chg_col)) if chg_col else 0.0,
+            })
 
-        def _pick(r) -> Dict:
-            return {
-                'name': r['name'],
-                'net_yi': r['net_yi'],
-                'change': r['change'],
-            }
-
-        if n <= 6:
-            for r in rows:
-                result.append(_pick(r))
-        else:
-            for r in rows[:3]:
-                result.append(_pick(r))
-            for r in rows[-3:]:
-                result.append(_pick(r))
+        logger.info(f'板块资金流向获取成功({sector_type}): {len(result)}条')
     except Exception as e:
-        logger.warning(f'板块主力净流入获取失败: {e}')
+        logger.warning(f'板块资金流向获取失败({sector_kind}): {e}')
+        _set_cached(cache_key, result)
+        return result
 
     _set_cached(cache_key, result)
     return result
@@ -1045,18 +1207,12 @@ def compute_macro_sentiment() -> Dict:
     综合市场量化指标 + 新闻情感，计算宏观情绪评分（0-100）。
 
     涨跌家数估算策略：
-      - 优先使用 snapshot.up/down_count（东方财富数据，最准确）
-      - 备选：使用上证指数涨跌幅估算涨跌家数比（EM 不可用时）
-        +3% 以上 → 全市场普涨（约 80% 上涨）
-        +1% ~ +3% → 多数上涨（约 60% 上涨）
-        +0.5% ~ +1% → 略偏多（约 55% 上涨）
-        -0.5% ~ +0.5% → 基本均衡（约 50% 上涨）
-        -0.5% ~ -1% → 略偏空（约 45% 上涨）
-        -1% ~ -3% → 多数下跌（约 40% 上涨）
-        -3% 以下 → 全市场普跌（约 20% 上涨）
-      - 公式: SENTIMENT_SCORE = 50 + (up_pct - 0.5) × 40 + (涨停-跌停)/10 + (北向>0?+8:-8) + (新闻分-50)/5
-      - 上限 92，下限 38。
-      - RISK_LEVEL: ≥62→MEDIUM, 48-61→MEDIUM-HIGH, <48→ELEVATED
+      1. 优先使用 snapshot.up/down_count（东方财富 stock_zh_a_spot_em）
+      2. 其次使用北向资金覆盖股的涨跌家数（stock_hsgt_fund_flow_summary_em）
+      3. 最后用上证指数涨跌幅估算（作为兜底）
+
+    评分公式: SENTIMENT_SCORE = 50 + (up_pct - 0.5) × 40 + limit_diff/10 + north_bonus + news_bonus
+      上限 92，下限 38。
     """
     try:
         snapshot = get_market_snapshot()
@@ -1064,16 +1220,22 @@ def compute_macro_sentiment() -> Dict:
         limit = get_limit_up_data()
         overview = get_market_overview()
 
-        # ── 1. 涨跌家数（优先 snapshot；备选用指数估算） ───────────────
+        # ── 1. 涨跌家数（多级兜底） ────────────────────────────────
         up   = int(snapshot.get('up_count', 0)   or 0)
         down = int(snapshot.get('down_count', 0) or 0)
         flat = int(snapshot.get('flat_count', 0)  or 0)
 
+        # 兜底1：北向资金覆盖股涨跌家数（来自 stock_hsgt_fund_flow_summary_em）
         if up == 0 and down == 0:
-            # EM 不可用，通过指数涨跌幅估算涨跌家数比
+            north_breadth = flow.get('breadth_from_north')
+            if north_breadth:
+                up = int(north_breadth.get('up', 0))
+                down = int(north_breadth.get('down', 0))
+
+        # 兜底2：上证指数涨跌幅估算全市场涨跌家数
+        if up == 0 and down == 0:
             sh = next((x for x in overview if x.get('name') == '上证指数'), {})
             sh_chg = float(sh.get('change', 0) or 0)
-            # 根据指数涨跌幅映射上涨比例
             up_ratio_map = [
                 (3.0,  0.80),
                 (1.0,  0.60),
@@ -1083,17 +1245,14 @@ def compute_macro_sentiment() -> Dict:
                 (-3.0, 0.40),
                 (-99,  0.20),
             ]
-            up_ratio = 0.5  # 默认
+            up_ratio = 0.5
             for threshold, ratio in up_ratio_map:
                 if sh_chg >= threshold:
                     up_ratio = ratio
                     break
-            # A 股全市场约 5500 只，估算涨跌家数
             total_est = 5400
-            up_est = int(total_est * up_ratio)
-            down_est = total_est - up_est
-            up = up_est
-            down = down_est
+            up = int(total_est * up_ratio)
+            down = total_est - up
             flat = 0
 
         total = max(1, up + down + flat)
@@ -1189,7 +1348,7 @@ def compute_macro_sentiment() -> Dict:
         sh_desc = (
             f'上证指数涨 {_fmt(sh_change)}%，'
             if sh_change > 0.05
-            else f'上证指数跌 {abs(_fmt(sh_change))}%，'
+            else f'上证指数跌 {_fmt(abs(sh_change))}%，'
             if sh_change < -0.05
             else '上证指数基本持平，'
         ) if sh else ''

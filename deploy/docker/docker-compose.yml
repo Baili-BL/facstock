@@ -1,39 +1,21 @@
 # ============================================================
-# 布林带收缩策略扫描器 - Docker Compose 一键部署
-# 
+# 布林带收缩策略扫描器 - Docker Compose 部署（使用宿主机 MySQL）
+#
+# 前提：服务器已安装 MySQL 8，数据库 stock_scanner 已创建，密码 StockPass@2024
+#
 # 使用方法：
-#   docker-compose up -d
+#   docker compose up -d --build
 #
 # 停止服务：
-#   docker-compose down
+#   docker compose down
 #
 # 查看日志：
-#   docker-compose logs -f app
+#   docker compose logs -f app
 # ============================================================
 version: '3.8'
 
 services:
-  # MySQL 8.0 数据库
-  mysql:
-    image: mysql:8.0
-    container_name: stock_mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-StockPass2024}
-      MYSQL_DATABASE: stock_scanner
-      TZ: Asia/Shanghai
-    volumes:
-      - mysql_data:/var/lib/mysql
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - stock_network
-
-  # Flask 应用
+  # Flask 应用（包含前端构建）
   app:
     build:
       context: ../..
@@ -41,27 +23,22 @@ services:
     container_name: stock_scanner
     restart: always
     ports:
-      - "5001:5001"
+      - "5002:5002"
     environment:
-      - MYSQL_HOST=mysql
+      - MYSQL_HOST=host.docker.internal
       - MYSQL_PORT=3306
       - MYSQL_USER=root
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-StockPass2024}
+      - MYSQL_PASSWORD=StockPass@2024
       - MYSQL_DATABASE=stock_scanner
       - TZ=Asia/Shanghai
       # 数据代理（如果服务器IP被金融网站封禁，配置HTTP代理绕过）
       # 格式: http://ip:port 或 http://user:pass@ip:port
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
-    depends_on:
-      mysql:
-        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - stock_network
-
-volumes:
-  mysql_data:
-    driver: local
 
 networks:
   stock_network:

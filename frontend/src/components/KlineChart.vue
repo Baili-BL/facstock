@@ -7,45 +7,20 @@
       <span class="legend-item"><span class="legend-dot legend-dot--ma10"></span>MA10</span>
       <span class="legend-item"><span class="legend-dot legend-dot--ma20"></span>MA20</span>
     </div>
-    <div ref="indRootRef" class="kline-panel">
-      <div class="kline-toolbar-row">
-        <div class="kline-toolbar-shell">
-          <button
-            type="button"
-            class="kline-ind-trigger"
-            :class="{ open: indMenuOpen, busy: tabBusy }"
-            :aria-expanded="indMenuOpen"
-            aria-haspopup="listbox"
-            :disabled="tabBusy || status !== 'ready'"
-            @click.stop="onIndTriggerClick"
-          >
-            <svg class="kline-ind-trigger__ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-              <path fill="currentColor" d="M4 19h16v-2H4v2zm0-4h10v-2H4v2zm0-8v2h16V7H4zm0 4h10v-2H4v2z" opacity=".35" />
-              <path fill="currentColor" d="M4 3v2h4l3 6v8h2v-8l3-6h4V3H4z" />
-            </svg>
-            <span class="kline-ind-trigger__text">指标</span>
-            <span class="kline-ind-trigger__chev" aria-hidden="true" />
-          </button>
-          <ul
-            v-show="indMenuOpen && status === 'ready'"
-            class="kline-ind-menu"
-            role="listbox"
-            :aria-activedescendant="'ind-opt-' + activeTab"
-          >
-            <li
-              v-for="opt in INDICATOR_OPTIONS"
-              :id="'ind-opt-' + opt.key"
-              :key="opt.key"
-              role="option"
-              class="kline-ind-item"
-              :class="{ active: activeTab === opt.key }"
-              @click.stop="pickIndicator(opt.key)"
-            >{{ opt.label }}</li>
-          </ul>
-        </div>
-      </div>
-
+    <div class="kline-panel">
       <div class="kline-plot" @mouseleave="hideTooltip">
+        <!-- Indicator selector -->
+        <div class="kline-ind-row">
+          <button
+            v-for="opt in INDICATOR_OPTIONS"
+            :key="opt.key"
+            type="button"
+            class="kline-ind-btn"
+            :class="{ active: activeTab === opt.key }"
+            :disabled="tabBusy || status !== 'ready'"
+            @click="pickIndicator(opt.key)"
+          >{{ opt.label }}</button>
+        </div>
         <div v-if="status === 'loading'" class="kline-loading">
           <span class="kline-dot"></span>
           <span>{{ loading ? '加载K线...' : '渲染图表...' }}</span>
@@ -71,7 +46,7 @@
               <span class="kline-tooltip-label">收=</span><span :class="['kline-tooltip-num', tooltip.up ? 'is-up' : 'is-down']">{{ tooltip.close }}</span>
             </div>
             <div class="kline-tooltip-line">
-              <span class="kline-tooltip-label">幅=</span><span :class="['kline-tooltip-num', tooltip.up ? 'is-up' : 'is-down']">{{ tooltip.pct }}</span>
+              <span class="kline-tooltip-label">涨=</span><span :class="['kline-tooltip-num', tooltip.up ? 'is-up' : 'is-down']">{{ tooltip.pct }}</span>
             </div>
           </div>
           <div class="kline-tooltip-date">{{ tooltip.dateStr }}</div>
@@ -87,7 +62,8 @@ import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from 'lig
 import { stock } from '@/api/strategy.js'
 
 const props = defineProps({
-  code: { type: String, required: true },
+  code:     { type: String, required: true },
+  interval: { type: String, default: 'daily' },
 })
 
 const INDICATOR_OPTIONS = [
@@ -96,10 +72,9 @@ const INDICATOR_OPTIONS = [
   { key: 'ma', label: '均线' },
   { key: 'bandwidth', label: '布林带' },
 ]
-const activeTab = ref('volume')
+
+const activeTab     = ref('volume')
 const tabBusy = ref(false)
-const indMenuOpen = ref(false)
-const indRootRef = ref(null)
 
 const chartEl = ref(null)
 const status  = ref('loading')
@@ -544,19 +519,7 @@ function addSignalMarkers(chart, data, candleSeries) {
   })
 }
 
-function onIndTriggerClick() {
-  if (tabBusy.value || status.value !== 'ready') return
-  indMenuOpen.value = !indMenuOpen.value
-}
-
-function onDocClickInd(e) {
-  const el = indRootRef.value
-  if (!el || !indMenuOpen.value) return
-  if (!el.contains(e.target)) indMenuOpen.value = false
-}
-
 async function pickIndicator(tab) {
-  indMenuOpen.value = false
   await switchTab(tab)
 }
 
@@ -579,36 +542,35 @@ async function loadKline() {
   errorMsg.value = ''
   status.value   = 'loading'
   loading.value  = true
+  tabBusy.value  = true
   try {
-    const data = await stock.detail(props.code)
-    if (!data || !data.candles?.length) {
+    const raw = await stock.detail(props.code, 'daily')
+    if (!raw || !raw.candles?.length) {
       errorMsg.value = '暂无K线数据'
       status.value   = 'error'
       return
     }
-    rawData = data
+    rawData = raw
     await nextTick()
-    buildChart(data, activeTab.value)
+    buildChart(rawData, activeTab.value)
   } catch (e) {
     errorMsg.value = '加载失败: ' + (e?.message || '未知错误')
     status.value   = 'error'
   } finally {
     loading.value = false
+    tabBusy.value = false
   }
 }
 
 watch(() => props.code, () => {
   activeTab.value = 'volume'
-  indMenuOpen.value = false
   loadKline()
 })
 
 onMounted(() => {
-  document.addEventListener('click', onDocClickInd)
   loadKline()
 })
 onUnmounted(() => {
-  document.removeEventListener('click', onDocClickInd)
   clearAll()
 })
 </script>
@@ -655,114 +617,40 @@ onUnmounted(() => {
   background: #ffffff;
 }
 
-/* 指标下拉：贴在图表正上方 */
-.kline-toolbar-row {
-  flex-shrink: 0;
-  border-bottom: 1px solid #ececec;
-  background: #ffffff;
-}
-
-.kline-toolbar-shell {
-  position: relative;
-  padding: 8px 12px;
+/* Indicator selector row (inside kline-plot) */
+.kline-ind-row {
   display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  background: #ffffff;
+  flex-direction: row;
+  gap: 4px;
+  padding: 2px 10px 6px;
+  flex-shrink: 0;
 }
 
-.kline-ind-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid #e5e5ea;
-  border-radius: 10px;
-  background: #ffffff;
-  font-size: 13px;
+.kline-ind-btn {
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+  font-size: 12px;
   font-weight: 600;
-  color: #1c1c1e;
+  line-height: 1;
+  padding: 5px 12px;
+  border-radius: 8px;
+  color: rgba(19, 23, 34, 0.45);
+  background-color: transparent;
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
-
-.kline-ind-trigger:disabled {
-  opacity: 0.45;
+.kline-ind-btn:not(:disabled):hover {
+  background-color: rgba(240, 243, 250, 1);
+  color: rgba(19, 23, 34, 0.75);
+}
+.kline-ind-btn.active {
+  background-color: rgba(41, 98, 255, 0.1);
+  color: #2962ff;
+}
+.kline-ind-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
-}
-
-.kline-ind-trigger:not(:disabled):active {
-  background: #f5f5f7;
-}
-
-.kline-ind-trigger.open {
-  border-color: rgba(41, 98, 255, 0.45);
-  background: rgba(41, 98, 255, 0.06);
-}
-
-.kline-ind-trigger.busy {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-.kline-ind-trigger__ico {
-  flex-shrink: 0;
-  opacity: 0.88;
-}
-
-.kline-ind-trigger__text {
-  letter-spacing: -0.02em;
-}
-
-.kline-ind-trigger__chev {
-  width: 7px;
-  height: 7px;
-  margin-left: 2px;
-  border-right: 2px solid rgba(0, 0, 0, 0.45);
-  border-bottom: 2px solid rgba(0, 0, 0, 0.45);
-  transform: rotate(45deg);
-  transition: transform 0.2s ease;
-  flex-shrink: 0;
-}
-
-.kline-ind-trigger.open .kline-ind-trigger__chev {
-  transform: rotate(-135deg);
-  margin-top: 3px;
-}
-
-.kline-ind-menu {
-  position: absolute;
-  right: 12px;
-  top: calc(100% - 4px);
-  z-index: 40;
-  min-width: 148px;
-  margin: 0;
-  padding: 6px 0;
-  list-style: none;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
-}
-
-.kline-ind-item {
-  padding: 11px 16px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #1c1c1e;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.kline-ind-item:active {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.kline-ind-item.active {
-  background: rgba(41, 98, 255, 0.1);
-  color: var(--brand, #2962ff);
-  font-weight: 700;
 }
 
 .kline-plot {

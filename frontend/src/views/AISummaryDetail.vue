@@ -25,19 +25,103 @@
           <h2 class="asd-title">智能共识策略概览</h2>
         </div>
         <div class="asd-headline__actions">
+          <!-- 模式切换 -->
+          <div class="asd-mode-toggle">
+            <button
+              type="button"
+              class="asd-mode-btn"
+              :class="{ 'asd-mode-btn--active': analysisMode === 'parallel' }"
+              @click="setMode('parallel')"
+            >
+              并行模式
+            </button>
+            <button
+              type="button"
+              class="asd-mode-btn"
+              :class="{ 'asd-mode-btn--active': analysisMode === 'hierarchical' }"
+              @click="setMode('hierarchical')"
+            >
+              <span class="asd-mode-btn__icon">🎯</span>
+              层次化
+            </button>
+          </div>
           <div v-if="loading" class="asd-sync asd-sync--loading">
             <span class="asd-sync__dot asd-sync__dot--spin" aria-hidden="true" />
-            <span>AI 分析中…</span>
+            <span>{{ currentStepMessage }}</span>
           </div>
           <div v-else class="asd-sync">
             <span class="asd-sync__dot" aria-hidden="true" />
             <span>实时数据已同步</span>
           </div>
-          <button type="button" class="asd-btn-primary" @click="$router.push('/strategy/ai')">
+          <button type="button" class="asd-btn-primary" @click="$router.push('/strategy/macro')">
             更新研报
           </button>
         </div>
         <div v-if="errorMsg" class="asd-error">{{ errorMsg }}</div>
+      </div>
+
+      <!-- 主控分析卡片（仅层次化模式显示） -->
+      <div v-if="analysisMode === 'hierarchical' && masterData" class="asd-master-card">
+        <div class="asd-master-card__header">
+          <svg class="icon asd-master-card__icon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+          <h3 class="asd-master-card__title">市场首席策略官分析</h3>
+          <span class="asd-master-card__phase">{{ masterData.marketPhase || '分析中' }}</span>
+        </div>
+        <div class="asd-master-card__body">
+          <div class="asd-master-item">
+            <span class="asd-master-item__label">市场核心意图</span>
+            <span class="asd-master-item__value">{{ masterData.marketCoreIntent || '分析中...' }}</span>
+          </div>
+          <div class="asd-master-item">
+            <span class="asd-master-item__label">主线题材</span>
+            <span class="asd-master-item__value asd-master-item__value--highlight">{{ masterData.keyTheme || '暂无明显主线' }}</span>
+          </div>
+          <div class="asd-master-item">
+            <span class="asd-master-item__label">风险偏好</span>
+            <span class="asd-master-item__badge" :class="'badge--' + riskAppetiteClass">{{ masterData.riskAppetite || '中' }}</span>
+          </div>
+          <div v-if="masterData.agentPriority?.length" class="asd-master-item asd-master-item--priority">
+            <span class="asd-master-item__label">智能体优先级</span>
+            <div class="asd-master-priority">
+              <span
+                v-for="(agentId, idx) in masterData.agentPriority.slice(0, 5)"
+                :key="agentId"
+                class="asd-master-priority__tag"
+                :class="{ 'asd-master-priority__tag--high': idx === 0 }"
+              >
+                {{ getAgentName(agentId) }}
+              </span>
+            </div>
+          </div>
+          <div v-if="masterData.coordinationNotes" class="asd-master-item asd-master-item--notes">
+            <span class="asd-master-item__label">操作建议</span>
+            <span class="asd-master-item__value">{{ masterData.coordinationNotes }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 执行日志（仅层次化模式显示） -->
+      <div v-if="analysisMode === 'hierarchical' && executionLog.length" class="asd-log-card">
+        <div class="asd-log-card__header">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>
+          <h3 class="asd-log-card__title">执行日志</h3>
+          <span class="asd-log-card__count">{{ executionLog.length }} 条</span>
+        </div>
+        <div class="asd-log-card__body">
+          <div
+            v-for="(log, idx) in executionLog.slice(-8)"
+            :key="idx"
+            class="asd-log-entry"
+            :class="'asd-log-entry--' + log.status"
+          >
+            <span class="asd-log-entry__phase">[{{ formatPhase(log.phase) }}]</span>
+            <span class="asd-log-entry__agent">{{ log.agent_id }}</span>
+            <span class="asd-log-entry__status">{{ formatStatus(log.status) }}</span>
+            <span class="asd-log-entry__msg">{{ log.message }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="asd-grid">
@@ -77,7 +161,7 @@
               <div class="asd-gauge__foot">
                 <div class="asd-bull-pill">
                   <span class="asd-bull-pill__ico" aria-hidden="true">↗</span>
-                  乐观看多
+                  {{ sentimentLabel }}
                 </div>
                 <p class="asd-gauge__sub">综合 {{ agentCount }} 名核心智能体观点</p>
               </div>
@@ -85,7 +169,17 @@
             <div class="asd-gauge__glow" aria-hidden="true" />
           </section>
 
-          <section class="asd-card asd-insight">
+          <!-- 综合建议（仅层次化模式显示） -->
+          <section v-if="analysisMode === 'hierarchical' && synthesis" class="asd-card asd-insight">
+            <div class="asd-insight__head">
+              <svg class="icon asd-insight__ico" aria-hidden="true"><use href="#icon-ai" /></svg>
+              <h3 class="asd-insight__title">综合建议</h3>
+            </div>
+            <p class="asd-insight__body asd-synthesis">{{ synthesis }}</p>
+          </section>
+
+          <!-- 洞察（并行模式使用旧的） -->
+          <section v-else class="asd-card asd-insight">
             <div class="asd-insight__head">
               <svg class="icon asd-insight__ico" aria-hidden="true"><use href="#icon-ai" /></svg>
               <h3 class="asd-insight__title">核心深度洞察</h3>
@@ -171,7 +265,7 @@
         </div>
       </div>
 
-      <p class="asd-note">演示数据，非投资建议；正式版将对接扫描与多智能体信号聚合。</p>
+      <p class="asd-note">AI 分析结果仅供参考，不构成投资建议。</p>
 
       <!-- 骨架屏覆盖层（首次加载时） -->
       <div v-if="loading" class="asd-loading-overlay" aria-label="正在加载">
@@ -194,18 +288,65 @@ const gradId = 'asd-gauge-grad-' + Math.random().toString(36).slice(2, 9)
 const loading = ref(true)
 const errorMsg = ref('')
 const apiData = ref(null)
+const analysisMode = ref('hierarchical') // 'parallel' | 'hierarchical'
+const executionLog = ref([])
+
+// ─── Agent 名称映射 ─────────────────────────────────────────────────────
+const _nameMap = {
+  jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
+  speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
+  deepseek: '深度思考者', beijing: '北京炒家', master: '市场首席策略官',
+}
+
+function getAgentName(agentId) {
+  return _nameMap[agentId] || agentId
+}
 
 // ─── API 数据 ────────────────────────────────────────────────────────────
 onMounted(async () => {
+  await fetchData()
+})
+
+async function fetchData() {
+  loading.value = true
+  errorMsg.value = ''
+  executionLog.value = []
   try {
-    const data = await batchAnalyzeAgents()
+    const data = await batchAnalyzeAgents({ mode: analysisMode.value })
     apiData.value = data
+    // 保存执行日志
+    if (data.execution_log) {
+      executionLog.value = data.execution_log
+    }
   } catch (e) {
     errorMsg.value = e.message || '加载失败，请重试'
   } finally {
     loading.value = false
   }
+}
+
+async function setMode(mode) {
+  if (mode === analysisMode.value) return
+  analysisMode.value = mode
+  await fetchData()
+}
+
+// ─── 当前步骤消息 ───────────────────────────────────────────────────────
+const currentStepMessage = computed(() => {
+  const log = executionLog.value
+  if (!log.length) return 'AI 分析中…'
+  const last = log[log.length - 1]
+  if (last.status === 'RUNNING' || last.status === 'running') {
+    return `${getAgentName(last.agent_id)} ${last.message}`
+  }
+  return 'AI 分析中…'
 })
+
+// ─── 主控分析数据 ────────────────────────────────────────────────────────
+const masterData = computed(() => apiData.value?.master || null)
+
+// ─── 综合建议 ────────────────────────────────────────────────────────────
+const synthesis = computed(() => apiData.value?.synthesis || '')
 
 // ─── 共识 ────────────────────────────────────────────────────────────────
 const consensusPct = computed(() => apiData.value?.consensus?.consensusPct ?? 75)
@@ -215,6 +356,51 @@ const lastUpdated = computed(() => apiData.value?.lastUpdated ?? '')
 const gaugeR = 88
 const gaugeCirc = 2 * Math.PI * gaugeR
 const gaugeOffset = computed(() => gaugeCirc * (1 - consensusPct.value / 100))
+
+// ─── 风险偏好样式 ────────────────────────────────────────────────────────
+const riskAppetiteClass = computed(() => {
+  const appetite = masterData.value?.riskAppetite || '中'
+  const map = { '高': 'high', '中': 'medium', '低': 'low' }
+  return map[appetite] || 'medium'
+})
+
+// ─── 情感标签 ───────────────────────────────────────────────────────────
+const sentimentLabel = computed(() => {
+  const pct = consensusPct.value
+  if (pct >= 70) return '乐观看多'
+  if (pct >= 55) return '偏乐观'
+  if (pct >= 45) return '中性'
+  if (pct >= 30) return '偏谨慎'
+  return '谨慎防御'
+})
+
+// ─── 格式化工具 ──────────────────────────────────────────────────────────
+function formatPhase(phase) {
+  const map = {
+    'master': '主控',
+    'phase_1': '阶段一',
+    'phase_2': '阶段二',
+    'phase_3': '阶段三',
+    'aggregation': '聚合',
+    'init': '初始化',
+    'system': '系统',
+  }
+  return map[phase] || phase
+}
+
+function formatStatus(status) {
+  const map = {
+    'COMPLETED': '✅',
+    'completed': '✅',
+    'RUNNING': '⏳',
+    'running': '⏳',
+    'FAILED': '❌',
+    'failed': '❌',
+    'START': '🚀',
+    'SKIPPED': '⏭',
+  }
+  return map[status] || '•'
+}
 
 // ─── Agent 头像映射（与 HTML 一致）───────────────────────────────────────
 const AVATARS = {
@@ -228,12 +414,14 @@ const AVATARS = {
 
 // 角色副标题映射
 const ROLE_MAP = {
-  jun:    '龙头战法',
-  qiao:   '板块轮动',
-  jia:    '低位潜伏',
-  speed:  '打板专家',
-  trend:  '中线波段',
-  quant:  '算法回测',
+  jun:      '龙头战法',
+  qiao:     '板块轮动',
+  jia:      '低位潜伏',
+  speed:    '打板专家',
+  trend:    '中线波段',
+  quant:    '算法回测',
+  deepseek: '深度推理',
+  beijing:  '游资打板',
 }
 
 // ─── 主力智能体头寸 ──────────────────────────────────────────────────────
@@ -243,7 +431,7 @@ const stanceAgents = computed(() => {
     const s = r.structured || {}
     const id = r.agent_id || s.agentId || ''
     return {
-      name:     r.agent_name || s.agentName || id,
+      name:     r.agent_name || s.agentName || getAgentName(id),
       role:     ROLE_MAP[id] || s.agentName || '',
       stance:   s.stance || 'neutral',
       tagLabel: (stanceMeta(s.stance || 'neutral')).tagLabel,
@@ -977,5 +1165,258 @@ function goBack() {
   background: rgba(186, 26, 26, 0.08);
   color: var(--down);
   font-size: 12px;
+}
+
+/* ── 模式切换 ──────────────────────────────────────────────── */
+.asd-mode-toggle {
+  display: flex;
+  background: var(--low);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.asd-mode-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-var);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.asd-mode-btn--active {
+  background: var(--white);
+  color: var(--primary);
+  box-shadow: 0 2px 8px rgba(74, 71, 210, 0.15);
+}
+
+.asd-mode-btn__icon {
+  font-size: 14px;
+}
+
+/* ── 主控分析卡片 ──────────────────────────────────────────────── */
+.asd-master-card {
+  background: var(--white);
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
+  outline: 1px solid rgba(193, 198, 215, 0.12);
+  overflow: hidden;
+}
+
+.asd-master-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-mid) 100%);
+  color: #fff;
+}
+
+.asd-master-card__icon {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+.asd-master-card__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  flex: 1;
+}
+
+.asd-master-card__phase {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 999px;
+}
+
+.asd-master-card__body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.asd-master-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.asd-master-item__label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--on-var);
+  min-width: 72px;
+  flex-shrink: 0;
+}
+
+.asd-master-item__value {
+  font-size: 13px;
+  color: var(--on-surface);
+  line-height: 1.5;
+}
+
+.asd-master-item__value--highlight {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.asd-master-item__badge {
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.badge--high {
+  background: rgba(242, 54, 69, 0.1);
+  color: #f23645;
+}
+
+.badge--medium {
+  background: rgba(74, 71, 210, 0.1);
+  color: var(--primary);
+}
+
+.badge--low {
+  background: rgba(8, 153, 129, 0.1);
+  color: #089981;
+}
+
+.asd-master-item--priority {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asd-master-priority {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.asd-master-priority__tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  background: var(--low);
+  border-radius: 6px;
+  color: var(--on-var);
+}
+
+.asd-master-priority__tag--high {
+  background: rgba(74, 71, 210, 0.12);
+  color: var(--primary);
+}
+
+.asd-master-item--notes {
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--track);
+}
+
+/* ── 执行日志卡片 ──────────────────────────────────────────────── */
+.asd-log-card {
+  background: var(--white);
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(26, 28, 31, 0.04);
+  outline: 1px solid rgba(193, 198, 215, 0.12);
+  overflow: hidden;
+}
+
+.asd-log-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--track);
+}
+
+.asd-log-card__header .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--primary);
+  fill: currentColor;
+}
+
+.asd-log-card__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  flex: 1;
+}
+
+.asd-log-card__count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--on-var);
+  background: var(--low);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.asd-log-card__body {
+  padding: 12px 18px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asd-log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.asd-log-entry__phase {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  background: rgba(74, 71, 210, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.asd-log-entry__agent {
+  font-weight: 700;
+  color: var(--on-surface);
+  min-width: 60px;
+}
+
+.asd-log-entry__status {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.asd-log-entry__msg {
+  color: var(--on-var);
+  flex: 1;
+}
+
+.asd-log-entry--COMPLETED .asd-log-entry__status { color: #089981; }
+.asd-log-entry--RUNNING .asd-log-entry__status { color: var(--primary); }
+.asd-log-entry--FAILED .asd-log-entry__status { color: #f23645; }
+
+/* ── 综合建议 ──────────────────────────────────────────────── */
+.asd-synthesis {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.8;
 }
 </style>

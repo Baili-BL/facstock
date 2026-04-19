@@ -124,6 +124,17 @@ class BollingerSqueezeStrategy:
         
         # 带宽百分比 = (上轨 - 下轨) / 收盘价 * 100
         df['bb_width_pct'] = (df['bb_width'] / df['close']) * 100
+
+        # VRR: Volatility Return Rate (波动回归率)
+        df['_bbw_ma'] = df['bb_width_pct'].rolling(window=10).mean()
+        df['_bbw_std'] = df['bb_width_pct'].rolling(window=10).std()
+        df['_z'] = (df['bb_width_pct'] - df['_bbw_ma']) / df['_bbw_std'].replace(0, np.nan)
+        df['_z_lag3'] = df['_z'].shift(3)
+        df['vrr'] = df['_z_lag3'].abs() - df['_z'].abs()
+        df['svrr'] = df['vrr'].rolling(window=3).mean()
+        for _c in ['_bbw_ma', '_bbw_std', '_z', '_z_lag3']:
+            if _c in df.columns:
+                df.drop(columns=[_c], inplace=True)
         
         return df
     
@@ -574,7 +585,22 @@ class BollingerSqueezeStrategy:
             - C级: total_score < 45
         """
         df = df.copy()
-        
+
+        # VRR 波动回归率得分 (最多 10 分)
+        vrr_score = 0
+        vrr_score += (df['svrr'] > 0.3).astype(int) * 5
+        vrr_score += ((df['svrr'] > 0) & (df['svrr'] <= 0.3)).astype(int) * 3
+        vrr_score += (df['svrr'] > df['svrr'].shift(1)).astype(int) * 5
+        df['vrr_score'] = vrr_score.clip(0, 10)
+
+        # 布林低位 + SVRR 组合信号得分 (最多 10 分)
+        combo_score = 0
+        near_upper = df['close'] >= df['bb_upper'] * 0.98
+        near_lower = df['close'] <= df['bb_lower'] * 1.02
+        combo_score += (df['low_volatility'] & (df['svrr'] > df['svrr'].shift(1))).astype(int) * 5
+        combo_score += (df['low_volatility'] & (df['svrr'] < 0) & (near_upper | near_lower)).astype(int) * 5
+        df['combo_score'] = combo_score.clip(0, 10)
+
         # ===== 收窄得分 (25分) ⭐核心指标 =====
         squeeze_score = 0
         # 连续收缩天数得分 (每天+2.5分，最高12.5分)
@@ -656,15 +682,16 @@ class BollingerSqueezeStrategy:
         df['volume_score'] = volume_score.clip(0, 7)
         
         # ===== 综合得分 =====
-        # 确保总分在 0-100 范围内
         df['total_score'] = (
-            df['squeeze_score'] +     # 收窄25分
-            df['trend_score'] +       # 趋势18分
-            df['cmf_score'] +         # 资金流15分 💰
-            df['momentum_score'] +    # 动量15分
-            df['popularity_score'] +  # 人气12分
-            df['position_score'] +    # 位置8分
-            df['volume_score']        # 量能7分
+            df['squeeze_score'] +
+            df['trend_score'] +
+            df['cmf_score'] +
+            df['momentum_score'] +
+            df['popularity_score'] +
+            df['position_score'] +
+            df['volume_score'] +
+            df['vrr_score'] +
+            df['combo_score']
         ).clip(0, 100)
         
         # 评级映射: S (>=75), A (>=60), B (>=45), C (<45)
@@ -799,6 +826,11 @@ class BollingerSqueezeStrategy:
                     'rsv_overbought': bool(latest['rsv_overbought']) if pd.notna(latest['rsv_overbought']) else False,
                     'rsv_oversold': bool(latest['rsv_oversold']) if pd.notna(latest['rsv_oversold']) else False,
                     'rsv_recovering': bool(latest['rsv_recovering']) if pd.notna(latest['rsv_recovering']) else False,
+                    # VRR/SVRR 波动回归率
+                    'vrr': round(float(latest['vrr']), 4) if pd.notna(latest.get('vrr')) else 0,
+                    'svrr': round(float(latest['svrr']), 4) if pd.notna(latest.get('svrr')) else 0,
+                    'vrr_score': int(latest['vrr_score']) if pd.notna(latest.get('vrr_score')) else 0,
+                    'combo_score': int(latest['combo_score']) if pd.notna(latest.get('combo_score')) else 0,
                     # 综合评分
                     'squeeze_score': int(latest['squeeze_score']) if pd.notna(latest['squeeze_score']) else 0,
                     'trend_score': int(latest['trend_score']) if pd.notna(latest['trend_score']) else 0,

@@ -51,17 +51,12 @@
 
 		// ── 返回 ─────────────────────────────────────────────────────────
 		function goBack() {
-			var ret = getParameterByName('return');
-			if (ret && ret.charAt(0) === '/' && ret.indexOf('://') < 0) {
-				location.href = ret;
-				return;
-			}
 			if (window.history.length > 1) {
 				window.history.back();
 			} else if (document.referrer && document.referrer.indexOf(location.host) >= 0) {
 				location.href = document.referrer;
 			} else {
-				location.href = '/';
+				location.href = '/frontend/';
 			}
 		}
 

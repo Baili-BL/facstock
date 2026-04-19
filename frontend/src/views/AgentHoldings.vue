@@ -123,8 +123,17 @@
           <h3 class="ah-ai__title">{{ agent.analysisBrand }} AI 策略分析</h3>
           <p class="ah-ai__body">{{ h.analysisText }}</p>
         </div>
-        <button type="button" class="ah-ai__cta" @click="$router.push(`/strategy/agents/${agent.id}/analysis`)" aria-label="查看详细AI分析">
+        <button type="button" class="ah-ai__cta" @click="$router.push(`/strategy/agents/${agent.id}/summary`)" aria-label="查看详细AI分析">
           <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M10 17l5-5-5-5v10z"/></svg>
+        </button>
+        <button
+          v-if="latestAnalysis"
+          type="button"
+          class="ah-ai__process-btn"
+          aria-label="查看分析过程"
+          @click="showProcessModal = true"
+        >
+          分析过程
         </button>
       </section>
 
@@ -181,22 +190,97 @@
     </div>
 
     <div v-if="toast" class="ah-toast" role="status">{{ toast }}</div>
+
+    <!-- 分析过程弹窗 -->
+    <div v-if="showProcessModal" class="ah-modal-overlay" @click.self="showProcessModal = false">
+      <div class="ah-modal" role="dialog" aria-modal="true" aria-label="分析过程详情">
+        <div class="ah-modal__header">
+          <div class="ah-modal__title-row">
+            <svg class="icon ah-modal__brain" aria-hidden="true"><use href="#icon-ai" /></svg>
+            <h2 class="ah-modal__title">{{ agent?.analysisBrand }} 分析过程</h2>
+          </div>
+          <button type="button" class="ah-modal__close" aria-label="关闭" @click="showProcessModal = false">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+
+        <!-- Markdown 分析正文（核心展示区） -->
+        <div v-if="renderedMarkdown" class="ah-modal__markdown-body" v-html="renderedMarkdown" />
+        <div v-else-if="analysisSummary" class="ah-modal__summary">
+          <div class="ah-modal__summary-tag" :class="stanceClass">
+            {{ analysisSummary.stance }} · {{ analysisSummary.confidence }}%信心
+          </div>
+          <p class="ah-modal__summary-text">{{ analysisSummary.marketCommentary }}</p>
+          <div v-if="analysisSummary.positionAdvice" class="ah-modal__advice">
+            <span class="ah-modal__advice-label">仓位建议</span>
+            {{ analysisSummary.positionAdvice }}
+          </div>
+          <div v-if="analysisSummary.riskWarning" class="ah-modal__risk">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+            {{ analysisSummary.riskWarning }}
+          </div>
+        </div>
+
+        <!-- 推荐股票列表（Markdown 中若有则以列表展示，无则兜底卡片） -->
+        <div v-if="analysisRecommendedStocks.length && !analysisRawText.includes('推荐')" class="ah-modal__stocks">
+          <h3 class="ah-modal__stocks-title">推荐股票</h3>
+          <div class="ah-modal__stock-list">
+            <div v-for="(s, idx) in analysisRecommendedStocks" :key="s.code || idx" class="ah-modal__stock-item">
+              <div class="ah-modal__stock-rank">{{ idx + 1 }}</div>
+              <div class="ah-modal__stock-info">
+                <div class="ah-modal__stock-name">{{ s.name || '未知' }}
+                  <span class="ah-modal__stock-code">{{ s.code }}</span>
+                </div>
+                <div class="ah-modal__stock-meta">
+                  <span v-if="s.role" class="ah-modal__stock-role">{{ s.role }}</span>
+                  <span v-if="s.sector" class="ah-modal__stock-sector">{{ s.sector }}</span>
+                  <span v-if="s.grade" class="ah-modal__stock-grade">题材{{ s.grade }}级</span>
+                </div>
+                <div v-if="s.signal" class="ah-modal__stock-signal">{{ s.signal }}</div>
+                <div v-if="s.buyRange || s.stopLoss || s.targetPrice" class="ah-modal__stock-trade">
+                  <span v-if="s.buyRange"><span class="ah-modal__trade-label">低吸区间</span>{{ s.buyRange }}</span>
+                  <span v-if="s.targetPrice"><span class="ah-modal__trade-label">目标价</span>{{ s.targetPrice }}</span>
+                  <span v-if="s.stopLoss"><span class="ah-modal__trade-label">止损位</span>{{ s.stopLoss }}</span>
+                </div>
+              </div>
+              <div class="ah-modal__stock-chg" :class="(s.changePct ?? 0) >= 0 ? 'ah-up' : 'ah-down'">
+                <span>{{ (s.changePct ?? 0) >= 0 ? '+' : '' }}{{ s.changePct ?? 0 }}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 无数据提示 -->
+        <div v-if="!renderedMarkdown && !analysisSummary && !analysisRecommendedStocks.length && !analysisRawText" class="ah-modal__empty">
+          <p>暂无分析数据，请先运行策略分析。</p>
+        </div>
+
+        <div class="ah-modal__footer">
+          <button type="button" class="ah-modal__footer-btn" @click="$router.push(`/strategy/agents/${agent.id}/analysis`)">
+            重新分析
+          </button>
+          <button type="button" class="ah-modal__footer-btn ah-modal__footer-btn--primary" @click="showProcessModal = false">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getStrategyAgent } from '@/data/strategyAgents.js'
+import { marked } from 'marked'
 
 const route = useRoute()
 const router = useRouter()
 const toast = ref('')
 const dateKey = ref('latest')
+const showProcessModal = ref(false)
 
-// 真实数据
-const rawHoldings = ref(null)   // /api/holdings 响应
-const latestAnalysis = ref(null) // /api/agents/:id/analysis/latest 响应
+const rawHoldings = ref(null)
+const latestAnalysis = ref(null)
 const loading = ref(false)
 const error = ref(null)
 
@@ -204,8 +288,27 @@ watch(toast, (v) => {
   if (v) setTimeout(() => { toast.value = '' }, 2200)
 })
 
-const agent = computed(() => getStrategyAgent(route.params.id))
 const agentId = computed(() => route.params.id)
+
+const agent = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result || {}
+  const id = agentId.value
+  const nameMap = {
+    jun: { analysisBrand: '钧哥天下无双', name: '钧哥天下无双' },
+    qiao: { analysisBrand: '乔帮主', name: '乔帮主' },
+    jia: { analysisBrand: '炒股养家', name: '炒股养家' },
+    speed: { analysisBrand: '极速先锋', name: '极速先锋' },
+    trend: { analysisBrand: '趋势追随者', name: '趋势追随者' },
+    quant: { analysisBrand: '量化之翼', name: '量化之翼' },
+    deepseek: { analysisBrand: '深度思考者', name: '深度思考者' },
+    beijing: { analysisBrand: '北京炒家', name: '北京炒家' },
+  }
+  const mapped = nameMap[id] || { analysisBrand: ar.agent_name || id, name: ar.agent_name || id }
+  return {
+    id,
+    ...mapped,
+  }
+})
 
 // 持仓数据（来自 holdings API）
 const positions = computed(() => {
@@ -214,7 +317,7 @@ const positions = computed(() => {
     name:    h.stock_name,
     code:    h.stock_code,
     price:   h.current_price || 0,
-    changePct: h.profit_loss_pct || 0,
+    changePct: h.change_pct ?? h.changePct ?? 0,
     sector:  h.sector || '',
   }))
 })
@@ -223,6 +326,7 @@ const positions = computed(() => {
 const recommendedAsPositions = computed(() => {
   const ar = latestAnalysis.value?.analysis_result
   if (!ar || typeof ar !== 'object') return []
+  // analysis_result 结构: { structured: {..., recommendedStocks: []}, raw_text: '' }
   let rec = ar.recommendedStocks
   if ((!rec || !rec.length) && ar.structured && Array.isArray(ar.structured.recommendedStocks)) {
     rec = ar.structured.recommendedStocks
@@ -232,7 +336,7 @@ const recommendedAsPositions = computed(() => {
     name: s.name || '',
     code: s.code || '',
     price: s.price ?? 0,
-    changePct: Number(s.changePct) || 0,
+    changePct: Number(s.changePct ?? s.chg_pct) || 0,
     sector: s.sector || '',
   }))
 })
@@ -274,43 +378,36 @@ const sectors = computed(() => {
 // AI 分析文案（来自最新分析记录）
 const analysisText = computed(() => {
   const ar = latestAnalysis.value?.analysis_result
-  if (!ar) return agent.value?.holdings?.analysisText || ''
+  if (!ar) return ''
   const parts = []
   if (ar.marketCommentary) parts.push(ar.marketCommentary)
   if (ar.positionAdvice)   parts.push(ar.positionAdvice)
   if (ar.riskWarning)      parts.push('⚠ ' + ar.riskWarning)
-  return parts.join(' | ') || agent.value?.holdings?.analysisText || ''
+  return parts.join(' | ') || ''
 })
 
-// 总资产（mock + 真实持仓数据补充）
+// 总资产（完全依赖 API 返回）
 const assets = computed(() => {
   const posVal = rawHoldings.value?.totalPositionValue || 0
   const pnl    = rawHoldings.value?.totalProfitLoss      || 0
-  const mock   = agent.value?.holdings?.assets           || {}
-  // 今日盈亏≈持仓盈亏，累计用 mock 的 cumPnl
   return {
-    totalCny:  mock.totalCny  || String(posVal.toFixed(2)),
-    todayPnl:  String(pnl.toFixed(2)),
-    todayPct:  mock.todayPct  || '0',
-    cumPnl:    mock.cumPnl    || String(pnl.toFixed(2)),
-    cumPct:    mock.cumPct    || '0',
+    totalCny: String(posVal.toFixed(2)),
+    todayPnl: String(pnl.toFixed(2)),
+    todayPct: '0',
+    cumPnl:   String(pnl.toFixed(2)),
+    cumPct:   '0',
   }
 })
 
-// 7日图表：今天用真实持仓盈亏，昨天用最新的历史记录，其余留空
+// 7日图表：完全依赖真实数据
 const chartBars = computed(() => {
-  const snap = latestAnalysis.value
-  if (!snap) {
-    return [...agent.value?.holdings?.chartBars || Array(7).fill(30)]
-  }
   const pnl = parseFloat(rawHoldings.value?.totalProfitLoss || 0)
-  // 今天按盈亏等比映射到基准值，后几天暂无数据填 0
   const base = 50
   const todayBar = Math.min(100, Math.max(5, base + pnl / 200))
   return [40, 55, 45, 75, 60, 90, Math.round(todayBar)]
 })
 
-const chartLabels = computed(() => [...agent.value?.holdings?.chartLabels || ['-','-','-','-','-','昨天','今天']])
+const chartLabels = computed(() => ['-', '-', '-', '-', '-', '昨天', '今天'])
 
 // 总持仓数（含快照/推荐兜底行数）
 const totalPositionCount = computed(() => {
@@ -318,6 +415,52 @@ const totalPositionCount = computed(() => {
   if (n != null && n > 0) return n
   const rows = analysisPositions.value
   return rows.length
+})
+
+// ─── 分析过程弹窗数据 ───────────────────────────────────────────────
+const analysisSummary = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result
+  if (!ar || typeof ar !== 'object') return null
+  return {
+    stance: ar.stance || ar.structured?.stance || '中性',
+    confidence: ar.confidence ?? ar.structured?.confidence ?? 0,
+    marketCommentary: ar.marketCommentary || ar.structured?.marketCommentary || '',
+    positionAdvice: ar.positionAdvice || ar.structured?.positionAdvice || '',
+    riskWarning: ar.riskWarning || ar.structured?.riskWarning || '',
+  }
+})
+
+const analysisRecommendedStocks = computed(() => {
+  const ar = latestAnalysis.value?.analysis_result
+  if (!ar || typeof ar !== 'object') return []
+  let rec = ar.recommendedStocks
+  if ((!rec || !rec.length) && ar.structured && Array.isArray(ar.structured.recommendedStocks)) {
+    rec = ar.structured.recommendedStocks
+  }
+  if (!Array.isArray(rec) || !rec.length) return []
+  return rec
+})
+
+const analysisRawText = computed(() => {
+  const rec = latestAnalysis.value
+  if (!rec) return ''
+  const ar = rec.analysis_result
+  if (ar?.raw_text) return ar.raw_text
+  return rec.raw_response_text || ''
+})
+
+// 用 marked 将 markdown 原文渲染为 HTML（v18 兼容写法）
+const renderedMarkdown = computed(() => {
+  const text = analysisRawText.value
+  if (!text) return ''
+  return marked.parse(text, { breaks: true, gfm: true })
+})
+
+const stanceClass = computed(() => {
+  const s = analysisSummary.value?.stance || ''
+  if (s.includes('多') || s.includes('bull') || s.includes('看涨')) return 'ah-modal__summary-tag--bull'
+  if (s.includes('空') || s.includes('bear') || s.includes('看跌')) return 'ah-modal__summary-tag--bear'
+  return 'ah-modal__summary-tag--neutral'
 })
 
 // 统一暴露给模板（必须 .value 解包，否则 h.loading 是 Ref 对象，v-if 永远为真）
@@ -360,11 +503,26 @@ async function fetchData() {
   error.value   = null
   try {
     const [holdingsRes, analysisRes] = await Promise.all([
-      fetch('/api/holdings').then(r => r.json()).catch(() => null),
+      // 优先用新的独立持仓接口（含实时行情）
+      fetch(`/api/agents/${agentId.value}/holdings`).then(r => r.json()).catch(() => null),
+      // analysis/latest 继续保留（分析过程弹窗用）
       fetch(`/api/agents/${agentId.value}/analysis/latest`).then(r => r.json()).catch(() => null),
     ])
-    if (holdingsRes?.success)  rawHoldings.value   = holdingsRes.data
-    if (analysisRes?.success)   latestAnalysis.value = analysisRes.data
+    if (holdingsRes?.success) {
+      rawHoldings.value = {
+        holdings: holdingsRes.data.holdings,
+        totalPositionCount: holdingsRes.data.totalPositionCount,
+        totalPositionValue: holdingsRes.data.totalPositionValue,
+        totalProfitLoss: holdingsRes.data.totalProfitLoss,
+      }
+    }
+    if (analysisRes?.success) {
+      latestAnalysis.value = analysisRes.data
+      // 有 markdown 分析结果时自动打开弹窗展示
+      if (analysisRes.data?.raw_response_text || analysisRes.data?.analysis_result?.raw_text) {
+        showProcessModal.value = true
+      }
+    }
   } catch (e) {
     error.value = e.message
   } finally {
@@ -773,6 +931,20 @@ function barOpacity(i) {
 .ah-ai__cta:active { opacity: 0.8; transform: scale(0.95); }
 .ah-ai__cta .icon { width: 16px; height: 16px; }
 
+.ah-ai__process-btn {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  background: rgba(74, 71, 210, 0.1);
+  color: var(--primary);
+  white-space: nowrap;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.ah-ai__process-btn:active { opacity: 0.7; }
+
 .ah-ai__title {
   margin: 0 0 8px;
   font-size: 14px;
@@ -928,5 +1100,376 @@ function barOpacity(i) {
 
 @keyframes ah-spin {
   to { transform: rotate(360deg); }
+}
+
+/* ─── 分析过程弹窗 ─────────────────────────────────────────────────── */
+.ah-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(26, 28, 31, 0.55);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 0 calc(16px + env(safe-area-inset-bottom, 0));
+}
+
+@media (min-width: 520px) {
+  .ah-modal-overlay {
+    align-items: center;
+  }
+}
+
+.ah-modal {
+  width: 100%;
+  max-width: 560px;
+  max-height: 88vh;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 -8px 48px rgba(26, 28, 31, 0.18);
+}
+
+@media (min-width: 520px) {
+  .ah-modal {
+    border-radius: 20px;
+    max-height: 85vh;
+  }
+}
+
+.ah-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(193, 198, 215, 0.2);
+  flex-shrink: 0;
+}
+
+.ah-modal__title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ah-modal__brain {
+  color: var(--primary);
+  fill: currentColor;
+  width: 22px;
+  height: 22px;
+}
+
+.ah-modal__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.ah-modal__close {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--low);
+  color: var(--on-var);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+}
+.ah-modal__close:active { opacity: 0.75; }
+.ah-modal__close .icon { width: 16px; height: 16px; }
+
+.ah-modal__summary {
+  margin: 16px 18px 0;
+  padding: 16px;
+  background: var(--low);
+  border-radius: 14px;
+}
+
+.ah-modal__summary-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 999px;
+  margin-bottom: 10px;
+}
+.ah-modal__summary-tag--bull { background: rgba(242, 54, 69, 0.15); color: #b91c1c; }
+.ah-modal__summary-tag--bear { background: rgba(8, 153, 129, 0.15); color: #047857; }
+.ah-modal__summary-tag--neutral { background: rgba(193, 198, 215, 0.3); color: var(--on-var); }
+
+.ah-modal__summary-text {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--on-surface);
+}
+
+.ah-modal__advice {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--on-var);
+  line-height: 1.5;
+}
+.ah-modal__advice-label {
+  font-weight: 800;
+  color: var(--primary);
+  margin-right: 4px;
+}
+
+.ah-modal__risk {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b91c1c;
+  font-weight: 600;
+}
+.ah-modal__risk .icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+.ah-modal__stocks {
+  margin: 16px 18px 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.ah-modal__stocks-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--on-surface);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ah-modal__stock-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ah-modal__stock-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: var(--low);
+  border-radius: 12px;
+}
+
+.ah-modal__stock-rank {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.ah-modal__stock-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ah-modal__stock-name {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+.ah-modal__stock-code {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--on-var);
+}
+
+.ah-modal__stock-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.ah-modal__stock-role,
+.ah-modal__stock-sector,
+.ah-modal__stock-grade {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.ah-modal__stock-role { background: rgba(242, 54, 69, 0.12); color: #b91c1c; }
+.ah-modal__stock-sector { background: rgba(74, 71, 210, 0.1); color: var(--primary); }
+.ah-modal__stock-grade { background: rgba(193, 198, 215, 0.25); color: var(--on-var); }
+
+.ah-modal__stock-signal {
+  font-size: 12px;
+  color: var(--on-var);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.ah-modal__stock-trade {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--on-surface);
+}
+.ah-modal__stock-trade span {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.ah-modal__trade-label {
+  font-weight: 700;
+  color: var(--on-var);
+}
+
+.ah-modal__stock-chg {
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 800;
+  padding-top: 2px;
+}
+
+/* Markdown 分析正文（用 marked 渲染） */
+.ah-modal__markdown-body {
+  padding: 0 18px 16px;
+  flex: 1;
+  overflow-y: auto;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--on-surface);
+  word-break: break-word;
+}
+.ah-modal__markdown-body h1,
+.ah-modal__markdown-body h2,
+.ah-modal__markdown-body h3,
+.ah-modal__markdown-body h4 {
+  font-weight: 700;
+  margin: 16px 0 6px;
+  line-height: 1.4;
+}
+.ah-modal__markdown-body h1 { font-size: 16px; color: var(--primary); }
+.ah-modal__markdown-body h2 { font-size: 14px; color: var(--on-surface); border-bottom: 1px solid var(--track); padding-bottom: 4px; }
+.ah-modal__markdown-body h3 { font-size: 13px; color: var(--on-surface); }
+.ah-modal__markdown-body p  { margin: 0 0 10px; }
+.ah-modal__markdown-body ul,
+.ah-modal__markdown-body ol { padding-left: 20px; margin: 6px 0 10px; }
+.ah-modal__markdown-body li { margin-bottom: 4px; }
+.ah-modal__markdown-body strong { font-weight: 700; color: var(--on-surface); }
+.ah-modal__markdown-body em   { color: var(--on-var); font-style: italic; }
+.ah-modal__markdown-body code {
+  background: var(--low);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  color: var(--primary);
+}
+.ah-modal__markdown-body pre {
+  background: #1a1c1f;
+  color: #e2e8f0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  line-height: 1.65;
+  margin: 8px 0;
+}
+.ah-modal__markdown-body pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.ah-modal__markdown-body blockquote {
+  border-left: 3px solid var(--primary);
+  margin: 8px 0;
+  padding: 6px 12px;
+  background: var(--low);
+  border-radius: 0 6px 6px 0;
+  color: var(--on-var);
+}
+.ah-modal__markdown-body blockquote p { margin: 0; }
+.ah-modal__markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ah-modal__markdown-body th {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  padding: 7px 10px;
+  text-align: left;
+}
+.ah-modal__markdown-body td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--track);
+}
+.ah-modal__markdown-body tr:last-child td { border-bottom: none; }
+.ah-modal__markdown-body tr:nth-child(even) td { background: var(--low); }
+.ah-modal__markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--track);
+  margin: 14px 0;
+}
+.ah-modal__markdown-body a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.ah-modal__empty {
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--on-var);
+  font-size: 14px;
+}
+
+.ah-modal__footer {
+  display: flex;
+  gap: 10px;
+  padding: 14px 18px calc(14px + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid rgba(193, 198, 215, 0.15);
+  flex-shrink: 0;
+}
+
+.ah-modal__footer-btn {
+  flex: 1;
+  padding: 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--low);
+  color: var(--on-surface);
+}
+.ah-modal__footer-btn:active { opacity: 0.8; }
+.ah-modal__footer-btn--primary {
+  background: linear-gradient(135deg, var(--primary), var(--primary-mid));
+  color: #fff;
 }
 </style>
