@@ -35,6 +35,9 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+# 任务拆解数据源（单一数据源，来自 agents.py）
+from .agents import get_all_task_decomposition
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 枚举定义
@@ -135,6 +138,8 @@ class HierarchicalResult:
     execution_log: List[Dict] = field(default_factory=list)  # 执行日志
     success_rate: float = 0.0  # 成功率
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # 任务拆解：供前端展示各 Agent 的子任务步骤
+    task_decomposition: List[Dict] = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -144,12 +149,6 @@ class HierarchicalResult:
 AGENT_CORE_OBJECTIVES = {
     "jun": {
         "core_objective": "找到有后续催化剂+资金认可+容量足够的标的，在拉升前低吸买入",
-        "subtasks": [
-            "分析题材级别（S/A/B/C/D级）",
-            "三板斧验证（政策豁免+后续催化+资金放量）",
-            "选容量标的（中军优先）",
-            "制定离场预案（时间/空间/力度止损）"
-        ],
         "focus_fields": ["themeLevel", "threeAxesPassed", "role"],
         "phase": ExecutionPhase.PHASE_1,
         "dependencies": [],
@@ -157,12 +156,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "qiao": {
         "core_objective": "在主线高潮前潜伏，在退潮前切换",
-        "subtasks": [
-            "识别当前主线",
-            "判断主线阶段（启动/发酵/高潮/退潮）",
-            "预判切换方向",
-            "制定切换策略"
-        ],
         "focus_fields": ["mainTheme", "stage", "type"],
         "phase": ExecutionPhase.PHASE_1,
         "dependencies": [],
@@ -170,12 +163,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "jia": {
         "core_objective": "找到被市场错误定价的优质资产，等待价值回归",
-        "subtasks": [
-            "寻找超跌标的",
-            "评估安全边际",
-            "判断催化剂",
-            "制定潜伏计划"
-        ],
         "focus_fields": ["safetyMargin", "valuation", "catalyst"],
         "phase": ExecutionPhase.PHASE_1,
         "dependencies": [],
@@ -183,12 +170,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "speed": {
         "core_objective": "在情绪高潮时捕捉涨停溢价，快进快出",
-        "subtasks": [
-            "判断市场情绪阶段",
-            "筛选板质",
-            "制定进场策略（排单/扫单）",
-            "制定离场策略"
-        ],
         "focus_fields": ["emotionStage", "boardType", "boardQuality"],
         "phase": ExecutionPhase.PHASE_2,
         "dependencies": ["jun"],
@@ -196,12 +177,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "trend": {
         "core_objective": "在上升趋势中顺势而为，让利润奔跑",
-        "subtasks": [
-            "判断中期趋势方向",
-            "寻找趋势中的回调买点",
-            "制定持仓策略",
-            "制定止损策略"
-        ],
         "focus_fields": ["trendStage", "direction", "keyLevel"],
         "phase": ExecutionPhase.PHASE_2,
         "dependencies": ["qiao"],
@@ -209,12 +184,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "quant": {
         "core_objective": "找到历史胜率高的形态，在最佳位置买入",
-        "subtasks": [
-            "多因子评分",
-            "风险收益比计算",
-            "量化选股",
-            "仓位优化"
-        ],
         "focus_fields": ["score", "riskRewardRatio", "factorBreakdown"],
         "phase": ExecutionPhase.PHASE_2,
         "dependencies": [],
@@ -222,12 +191,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "deepseek": {
         "core_objective": "预判未来，找到预期差最大的方向",
-        "subtasks": [
-            "宏观研判（政策/流动性/情绪）",
-            "行业验证",
-            "个股筛选（三角验证）",
-            "风险评估"
-        ],
         "focus_fields": ["triangularVerification", "macroFit", "共振逻辑"],
         "phase": ExecutionPhase.PHASE_3,
         "dependencies": ["jun", "qiao", "jia"],
@@ -235,12 +198,6 @@ AGENT_CORE_OBJECTIVES = {
     },
     "beijing": {
         "core_objective": "三有量化选板，机械执行1/8仓铁律",
-        "subtasks": [
-            "联网搜索获取实时涨停数据",
-            "三有筛选（市值/流动性/量价时间）",
-            "板型分类",
-            "仓位分配与离场预案"
-        ],
         "focus_fields": ["boardType", "positionRatio", "buyMethod"],
         "phase": ExecutionPhase.PHASE_3,
         "dependencies": ["speed"],
@@ -363,6 +320,9 @@ class AgentOrchestrator:
             top_opportunities = self._extract_top_opportunities(ctx.agent_results, consensus)
             synthesis = self._generate_synthesis(ctx, consensus)
 
+            # 构建任务拆解数据（供前端展示）
+            task_decomposition = self._build_task_decomposition()
+
             # 计算成功率
             total_agents = len(ctx.agent_results)
             successful_agents = len(ctx.get_successful_results())
@@ -380,6 +340,7 @@ class AgentOrchestrator:
                 execution_log=ctx.execution_log,
                 success_rate=success_rate,
                 metadata=ctx.metadata,
+                task_decomposition=task_decomposition,
             )
 
         except Exception as e:
@@ -394,6 +355,7 @@ class AgentOrchestrator:
                 execution_log=ctx.execution_log,
                 success_rate=0.0,
                 metadata={"error": str(e)},
+                task_decomposition=self._build_task_decomposition(),
             )
 
     def _execute_master_phase(self, ctx: ExecutionContext, options) -> ExecutionContext:
@@ -849,6 +811,15 @@ class AgentOrchestrator:
             return "关注"
         else:
             return "观察"
+
+    def _build_task_decomposition(self) -> List[Dict]:
+        """
+        获取完整任务拆解数据，供前端展示各 Agent 的子任务步骤。
+
+        直接使用 agents.py 中的统一数据源 get_all_task_decomposition()，
+        确保前端展示与 System Prompt 中的任务拆解保持一致。
+        """
+        return get_all_task_decomposition()
 
     def _default_options(self):
         """获取默认调用选项"""

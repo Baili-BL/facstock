@@ -2601,13 +2601,12 @@ def analyze_single_agent_stream(agent_id):
                     yield f"data: {json.dumps({'type': 'error', 'error': resp.error})}\n\n"
                     return
 
-                # 收集思考过程
+                # 收集思考过程（整块发送，前端按【章节分批展示）
                 if resp.reasoning_content:
                     all_thinking += resp.reasoning_content
-                    thinking_lines = resp.reasoning_content.strip().split('\n')
-                    for line in thinking_lines:
-                        if line.strip():
-                            yield f"data: {json.dumps({'type': 'thinking', 'content': line.strip()})}\n\n"
+                    thinking_content = resp.reasoning_content.strip()
+                    if thinking_content:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': thinking_content})}\n\n"
 
                 # 收集最终内容
                 final_content = resp.content

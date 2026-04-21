@@ -32,10 +32,12 @@ app = Flask(__name__)
 from ticai.routes import ticai_bp
 from market_routes import market_bp
 from strategy_routes import strategy_bp
+from task_routes import task_bp
 from tv_udf_routes import tv_udf_bp
 app.register_blueprint(ticai_bp)
 app.register_blueprint(market_bp)
 app.register_blueprint(strategy_bp)
+app.register_blueprint(task_bp)
 app.register_blueprint(tv_udf_bp, url_prefix='/tv_udf')
 
 # ==================== AI 分析接口（保留在 app.py，与蓝图不冲突） ====================
@@ -586,6 +588,10 @@ def analyze_with_agent_stream(agent_id):
                 holdings_text = "【暂无历史持仓数据】"
 
             current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+
+            # 步骤1：数据准备完成
+            yield f"data: {_json.dumps({'type': 'task_step', 'step': 1, 'total': 4, 'title': '数据准备', 'desc': '扫描数据、新闻资讯、历史持仓加载完成'})}\n\n"
+
             user_prompt = registry.build_user_prompt(
                 agent_id=agent_id,
                 scan_data=scan_data_text,
@@ -651,22 +657,18 @@ def analyze_with_agent_stream(agent_id):
                 tool_calls_buffer = []
 
                 for chunk in response:
-                    # 发送推理内容（thinking）
-                    if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
-                        rc = chunk.choices[0].delta.reasoning_content
-                        chunk_reasoning += rc
-                        yield f"data: {_json.dumps({'type': 'thinking', 'content': rc})}\n\n"
-
-                    # 发送正文内容
+                    # 累积正文内容（不立即发送，改为整块发送）
                     if chunk.choices[0].delta.content:
                         cc = chunk.choices[0].delta.content
                         chunk_content += cc
-                        yield f"data: {_json.dumps({'type': 'content', 'content': cc})}\n\n"
+
+                    # 累积 reasoning_content（整块发送，不逐字符）
+                    if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                        chunk_reasoning += chunk.choices[0].delta.reasoning_content
 
                     # 处理工具调用
                     if chunk.choices[0].delta.tool_calls:
                         for tc in chunk.choices[0].delta.tool_calls:
-                            # 累积工具调用信息
                             if tc.function and tc.function.arguments:
                                 tool_calls_buffer.append({
                                     'id': tc.id,
@@ -678,8 +680,17 @@ def analyze_with_agent_stream(agent_id):
                 content += chunk_content
                 reasoning_content += chunk_reasoning
 
+                # LLM 响应结束后，一次性发送本轮完整 thinking 内容
+                if chunk_reasoning:
+                    yield f"data: {_json.dumps({'type': 'thinking', 'content': chunk_reasoning})}\n\n"
+
                 # 判断是否需要工具调用
                 if tool_calls_buffer:
+                    # 步骤2：工具调用（联网搜索/获取数据）
+                    if _ == 0:
+                        yield f"data: {_json.dumps({'type': 'task_step', 'step': 2, 'total': 4, 'title': '联网搜索', 'desc': '搜索今日涨停板、市场情绪、主线题材...'})}\n\n"
+                    else:
+                        yield f"data: {_json.dumps({'type': 'task_step', 'step': 3, 'total': 4, 'title': '数据分析', 'desc': '分析涨停板数据、资金流向、板块联动...'})}\n\n"
                     # 执行工具调用
                     for tc in tool_calls_buffer:
                         func_name = tc['name']
@@ -714,6 +725,10 @@ def analyze_with_agent_stream(agent_id):
                     break
 
             thinking_text = reasoning_content
+
+            # 步骤3或4：AI分析生成
+            if content.strip():
+                yield f"data: {_json.dumps({'type': 'task_step', 'step': 4, 'total': 4, 'title': 'AI分析生成', 'desc': 'AI正在生成分析报告和推荐股票...'})}\n\n"
 
             yield f"data: {_json.dumps({'type': 'status', 'message': '正在解析结果...'})}\n\n"
 
@@ -773,7 +788,11 @@ def analyze_with_agent_stream(agent_id):
                 logger.warning(f"[AgentAnalyzeStream] agent_id={agent_id} 保存分析历史失败: {hist_err}")
 
             # 发送最终结果
-            yield f"data: {_json.dumps({'type': 'done', 'success': True, 'agent_id': agent_id, 'agent_name': agent_config.get('name', agent_id), 'structured': structured, 'analysis': content, 'thinking': thinking_text, 'tokens_used': usage.total_tokens if usage else 0})}\n\n"
+            # 构建任务拆解数据（供前端展示）
+            from utils.llm.agents import get_agent_task_decomposition
+            task_decomp = get_agent_task_decomposition(agent_id)
+
+            yield f"data: {_json.dumps({'type': 'done', 'success': True, 'agent_id': agent_id, 'agent_name': agent_config.get('name', agent_id), 'structured': structured, 'analysis': content, 'thinking': thinking_text, 'tokens_used': usage.total_tokens if usage else 0, 'task_decomposition': task_decomp})}\n\n"
 
         except Exception as e:
             import traceback
@@ -1017,6 +1036,7 @@ def _hierarchical_batch_analyze(data: dict):
         "consensusOpportunities": result.top_opportunities,
         "synthesis": result.synthesis,
         "lastUpdated": current_time,
+        "task_decomposition": result.task_decomposition,
     })
 
 

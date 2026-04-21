@@ -264,16 +264,16 @@ def _fetch_concept_history_em(theme_name: str) -> dict:
         days = []
         for kline in klines:
             parts = kline.split(',')
-            if len(parts) < 14:
+            if len(parts) < 15:
                 continue
             date_str = parts[0]
             main_net = _safe_float(parts[1])      # 主力净流入(元)
             main_ratio = _safe_float(parts[6])     # 主力净流入-净占比(%)
             # sector_change: 取 field 12（index 12），这是板块涨跌幅(%)
             # index 11 是板块收盘点位（数值很大，如 27634），不是涨跌幅
-            sector_change = _safe_float(parts[12])
-            main_in = _safe_float(parts[12])       # 主力流入(元)
-            main_out = _safe_float(parts[13])       # 主力流出(元)
+            sector_change = _safe_float(parts[12])  # 板块涨跌幅(%)
+            main_in = _safe_float(parts[13])       # 主力流入(元)
+            main_out = _safe_float(parts[14])      # 主力流出(元)
 
             days.append({
                 'date': date_str,

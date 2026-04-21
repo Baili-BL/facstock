@@ -278,7 +278,31 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
                 FOREIGN KEY (scan_id) REFERENCES scan_records(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
-        
+
+        # 任务管理表（类 Cursor/Claude Code 任务系统）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                subject VARCHAR(255) NOT NULL COMMENT '任务标题',
+                description TEXT COMMENT '任务详细描述',
+                status ENUM('pending', 'in_progress', 'completed', 'deleted') NOT NULL DEFAULT 'pending',
+                owner VARCHAR(100) COMMENT '任务负责人',
+                active_form VARCHAR(255) COMMENT '进行中显示的动画文字',
+                priority INT DEFAULT 0 COMMENT '优先级，数字越大优先级越高',
+                metadata JSON COMMENT '扩展数据（JSON）',
+                blocked_by TEXT COMMENT '依赖任务ID，逗号分隔',
+                blocks TEXT COMMENT '被阻塞的任务ID，逗号分隔',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                started_at DATETIME COMMENT '开始时间',
+                completed_at DATETIME COMMENT '完成时间',
+                INDEX idx_status (status),
+                INDEX idx_owner (owner),
+                INDEX idx_priority (priority),
+                INDEX idx_created_at (created_at DESC)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
         conn.commit()
 
 
@@ -1960,6 +1984,255 @@ def get_today_agent_analysis(agent_id: str) -> Optional[Dict]:
             d['report_time'] = rt.strftime('%Y-%m-%d %H:%M:%S')
         return d
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 任务管理函数（类 Cursor/Claude Code 任务系统）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_datetime(v):
+    """将 datetime/date/str 统一转为 ISO 字符串，None 返回 None"""
+    if v is None:
+        return None
+    if hasattr(v, 'isoformat'):
+        return v.isoformat()
+    return str(v)
+
+
+def list_tasks(status: str = None, owner: str = None, limit: int = 100) -> List[Dict]:
+    """
+    列出任务，支持按 status / owner 过滤。
+    默认返回所有状态的任务，按 priority DESC, created_at DESC 排序。
+    """
+    import json as _json
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        sql = "SELECT * FROM tasks WHERE status != 'deleted'"
+        args = []
+        if status:
+            sql += " AND status = %s"
+            args.append(status)
+        if owner:
+            sql += " AND owner = %s"
+            args.append(owner)
+        sql += " ORDER BY priority DESC, created_at DESC LIMIT %s"
+        args.append(limit)
+        cursor.execute(sql, args)
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row) if not isinstance(row, dict) else row
+            # JSON 字段
+            if d.get('metadata'):
+                if isinstance(d['metadata'], str):
+                    try:
+                        d['metadata'] = _json.loads(d['metadata'])
+                    except Exception:
+                        d['metadata'] = {}
+            # blocked_by / blocks 逗号分隔 → list
+            d['blocked_by'] = [x for x in (d.get('blocked_by') or '').split(',') if x]
+            d['blocks']     = [x for x in (d.get('blocks')     or '').split(',') if x]
+            # 时间字段
+            for field in ('created_at', 'updated_at', 'started_at', 'completed_at'):
+                d[field] = _parse_datetime(d.get(field))
+            result.append(d)
+        return result
+
+
+def get_task(task_id: int) -> Optional[Dict]:
+    """根据 ID 获取单个任务"""
+    import json as _json
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM tasks WHERE id = %s AND status != 'deleted'",
+            (task_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row) if not isinstance(row, dict) else row
+        if d.get('metadata'):
+            if isinstance(d['metadata'], str):
+                try:
+                    d['metadata'] = _json.loads(d['metadata'])
+                except Exception:
+                    d['metadata'] = {}
+        d['blocked_by'] = [x for x in (d.get('blocked_by') or '').split(',') if x]
+        d['blocks']     = [x for x in (d.get('blocks')     or '').split(',') if x]
+        for field in ('created_at', 'updated_at', 'started_at', 'completed_at'):
+            d[field] = _parse_datetime(d.get(field))
+        return d
+
+
+def create_task(
+    subject: str,
+    description: str = '',
+    owner: str = None,
+    active_form: str = None,
+    priority: int = 0,
+    metadata: Dict = None,
+    blocked_by: List[str] = None,
+) -> int:
+    """
+    创建新任务，返回 task_id。
+    blocked_by: 依赖的任务 ID 列表（字符串或整数）
+    """
+    import json as _json
+
+    metadata_json = _json.dumps(metadata or {}, ensure_ascii=False) if metadata else None
+    blocked_by_str = ','.join(str(x) for x in (blocked_by or []))
+    # 维护 blocks 字段（被本任务阻塞的任务）
+    blocks_str = ''
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO tasks (subject, description, owner, active_form, priority, metadata, blocked_by, blocks)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (subject, description, owner, active_form, priority, metadata_json, blocked_by_str, blocks_str)
+        )
+        task_id = cursor.lastrowid
+
+        # 更新 blocks 字段（让被依赖的任务记录本任务）
+        if blocked_by:
+            for dep_id in blocked_by:
+                cursor.execute(
+                    "UPDATE tasks SET blocks = CONCAT(IFNULL(blocks, ''), %s) WHERE id = %s AND status != 'deleted'",
+                    (f',{dep_id}', int(dep_id))
+                )
+        return task_id
+
+
+def update_task(
+    task_id: int,
+    subject: str = None,
+    description: str = None,
+    status: str = None,
+    owner: str = None,
+    active_form: str = None,
+    priority: int = None,
+    metadata: Dict = None,
+    blocked_by: List[str] = None,
+) -> bool:
+    """
+    更新任务字段，返回是否成功。
+    status 变更时会自动设置 started_at / completed_at。
+    """
+    import json as _json
+
+    fields = []
+    args = []
+
+    if subject is not None:
+        fields.append("subject = %s")
+        args.append(subject)
+    if description is not None:
+        fields.append("description = %s")
+        args.append(description)
+    if status is not None:
+        fields.append("status = %s")
+        args.append(status)
+        # 自动时间戳
+        if status == 'in_progress':
+            fields.append("started_at = COALESCE(started_at, NOW())")
+        elif status == 'completed':
+            fields.append("completed_at = NOW()")
+    if owner is not None:
+        fields.append("owner = %s")
+        args.append(owner)
+    if active_form is not None:
+        fields.append("active_form = %s")
+        args.append(active_form)
+    if priority is not None:
+        fields.append("priority = %s")
+        args.append(priority)
+    if metadata is not None:
+        fields.append("metadata = %s")
+        args.append(_json.dumps(metadata, ensure_ascii=False))
+
+    if not fields:
+        return False
+
+    # 处理 blocked_by 更新
+    if blocked_by is not None:
+        # 清除旧的 blocks 引用
+        old_task = get_task(task_id)
+        if old_task and old_task.get('blocked_by'):
+            for dep_id in old_task['blocked_by']:
+                cursor_select = None
+                with get_connection() as conn:
+                    c = conn.cursor()
+                    c.execute(
+                        "UPDATE tasks SET blocks = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', blocks, ','), %s, ',')) WHERE id = %s",
+                        (f',{dep_id},', int(dep_id))
+                    )
+        # 设置新的 blocked_by
+        fields.append("blocked_by = %s")
+        args.append(','.join(str(x) for x in blocked_by))
+        # 更新被依赖任务的 blocks 字段
+        with get_connection() as conn:
+            c = conn.cursor()
+            for dep_id in blocked_by:
+                c.execute(
+                    "UPDATE tasks SET blocks = CONCAT(IFNULL(blocks, ''), %s) WHERE id = %s AND status != 'deleted'",
+                    (f',{dep_id}', int(dep_id))
+                )
+
+    args.append(task_id)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"UPDATE tasks SET {', '.join(fields)} WHERE id = %s AND status != 'deleted'",
+            args
+        )
+        return cursor.rowcount > 0
+
+
+def delete_task(task_id: int) -> bool:
+    """软删除任务（仅标记为 deleted）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tasks SET status = 'deleted' WHERE id = %s",
+            (task_id,)
+        )
+        return cursor.rowcount > 0
+
+
+def get_task_summary() -> Dict:
+    """
+    获取任务统计摘要，用于 Dashboard 展示。
+    返回 { total, pending, in_progress, completed }
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) as count
+            FROM tasks
+            WHERE status != 'deleted'
+            GROUP BY status
+            """
+        )
+        rows = cursor.fetchall()
+        result = {'total': 0, 'pending': 0, 'in_progress': 0, 'completed': 0}
+        for row in rows:
+            d = dict(row) if not isinstance(row, dict) else row
+            s = d.get('status', '')
+            c = d.get('count', 0)
+            if s in result:
+                result[s] = c
+            result['total'] += c
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 新闻缓存表初始化
+# ─────────────────────────────────────────────────────────────────────────────
 
 # 初始化新闻缓存表
 try:

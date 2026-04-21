@@ -2717,7 +2717,10 @@ def analyze_single_agent_stream(agent_id):
 
         try:
             # ══ 数据获取阶段：分步骤推送每个数据源的获取状态 ═══════════════════
-            yield f"data: {json.dumps({'type': 'cot', 'step': 1, 'total': 5, 'title': '获取市场快照', 'message': '正在拉取大盘指数数据（上证、深证、创业板、科创50）...'})}\n\n"
+            step_data = {'type': 'cot', 'step': 1, 'total': 5, 'title': '获取市场快照', 'message': '正在拉取大盘指数数据（上证、深证、创业板、科创50）...'}
+            task_step_data = {'type': 'task_step', 'step': 1, 'total': 5, 'title': '市场数据获取', 'desc': '拉取大盘指数、涨跌统计...'}
+            yield f"data: {json.dumps(step_data)}\n\n"
+            yield f"data: {json.dumps(task_step_data)}\n\n"
             import akshare as ak
             try:
                 df = ak.stock_zh_index_spot_em()
@@ -2736,6 +2739,7 @@ def analyze_single_agent_stream(agent_id):
                 yield f"data: {json.dumps({'type': 'cot_data', 'step': 1, 'lines': [f'  [警告] 大盘快照获取失败: {snap_err}']})}\n\n"
 
             yield f"data: {json.dumps({'type': 'cot', 'step': 2, 'total': 5, 'title': '联网搜索市场数据', 'message': '正在联网搜索今日涨停板、连板股、市场情绪、主线题材...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'task_step', 'step': 2, 'total': 5, 'title': '联网搜索', 'desc': '搜索今日涨停板、市场情绪、主线题材...'})}\n\n"
 
             search_result = _call_deepseek_search(
                 prompt=(
@@ -2756,6 +2760,7 @@ def analyze_single_agent_stream(agent_id):
 
             search_data = search_result.content
             yield f"data: {json.dumps({'type': 'cot', 'step': 3, 'total': 5, 'title': '联网搜索完成', 'message': '数据获取成功，开始构建分析策略...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'task_step', 'step': 3, 'total': 5, 'title': '数据整合', 'desc': '整理搜索结果，构建市场分析...'})}\n\n"
             # 把联网数据分段落打印
             for para in search_data.split('\n'):
                 if para.strip():
@@ -2763,6 +2768,7 @@ def analyze_single_agent_stream(agent_id):
 
             # ══ 任务拆解阶段（COT风格）═════════════════════════════════════
             yield f"data: {json.dumps({'type': 'cot', 'step': 4, 'total': 5, 'title': '任务拆解（COT推理）', 'message': 'AI 正在拆解分析任务链...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'task_step', 'step': 4, 'total': 5, 'title': '任务拆解', 'desc': 'COT推理：市场理解→题材识别→龙头定位...'})}\n\n"
 
             # 发送 COT 思考链步骤
             cot_steps = [
@@ -2774,10 +2780,12 @@ def analyze_single_agent_stream(agent_id):
             ]
             for idx, (title, desc) in enumerate(cot_steps, 1):
                 yield f"data: {json.dumps({'type': 'cot_step', 'step': idx, 'title': title, 'desc': desc})}\n\n"
+                yield f"data: {json.dumps({'type': 'task_step', 'step': idx, 'total': 5, 'title': title, 'desc': desc})}\n\n"
                 import time as _time
                 _time.sleep(0.15)
 
             yield f"data: {json.dumps({'type': 'cot', 'step': 5, 'total': 5, 'title': '执行策略分析', 'message': '各分析 Agent 正在执行子任务...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'task_step', 'step': 5, 'total': 5, 'title': '策略输出', 'desc': '整合分析结论，给出推荐股票和操作策略...'})}\n\n"
 
             # ── 第二步：构建 prompt 并分析 ──────────────────────────────────
             # 在 market 数据中加入联网搜索结果
@@ -2826,13 +2834,12 @@ def analyze_single_agent_stream(agent_id):
                     yield f"data: {json.dumps({'type': 'error', 'error': resp.error})}\n\n"
                     return
 
-                # 收集思考过程
+                # 收集思考过程（整块发送，前端按【章节分批展示）
                 if resp.reasoning_content:
                     all_thinking += resp.reasoning_content
-                    thinking_lines = resp.reasoning_content.strip().split('\n')
-                    for line in thinking_lines:
-                        if line.strip():
-                            yield f"data: {json.dumps({'type': 'thinking', 'content': line.strip()})}\n\n"
+                    thinking_content = resp.reasoning_content.strip()
+                    if thinking_content:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': thinking_content})}\n\n"
 
                 # 收集最终内容
                 final_content = resp.content
@@ -3007,6 +3014,7 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
             headers=headers,
             json=payload,
             timeout=120,
+            proxies={"http": None, "https": None},
         )
         
         if resp.status_code != 200:

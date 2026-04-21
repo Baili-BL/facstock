@@ -161,6 +161,195 @@ class AgentOutput:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 任务拆解配置（单一数据源，供前端展示 + 注入 System Prompt）
+#
+# 结构：
+#   agent_id -> {
+#       "phase": ExecutionPhase,
+#       "core_objective": 核心目标（一句话）
+#       "steps": [
+#           {"title": "步骤标题", "description": "步骤详细描述"},
+#           ...
+#       ]
+#   }
+#
+# 用途：
+# 1. 生成前端任务拆解卡片
+# 2. 注入到 System Prompt 中指导 Agent 思考过程
+# ══════════════════════════════════════════════════════════════════════════════
+
+TASK_DECOMPOSITIONS = {
+    "master": {
+        "phase": "master",
+        "core_objective": "理解市场核心意图，协调各子 Agent 输出",
+        "steps": [
+            {"title": "理解市场核心意图", "description": "分析今日市场在演绎什么逻辑，核心驱动力是什么"},
+            {"title": "判断市场阶段", "description": "判断市场所处阶段：题材期/趋势期/反弹期/震荡期/高潮期"},
+            {"title": "评估风险偏好", "description": "评估当前市场风险偏好：进攻/防守/观望"},
+            {"title": "分配 Agent 优先级", "description": "根据市场状态决定哪些 Agent 应该重点发挥"},
+            {"title": "整合各 Agent 输出", "description": "寻找共识、识别分歧、生成综合建议"},
+        ],
+    },
+    "jun": {
+        "phase": "phase_1",
+        "core_objective": "找到有后续催化剂+资金认可+容量足够的标的，在拉升前低吸买入",
+        "steps": [
+            {"title": "分析题材级别", "description": "分析消息/题材的级别（S/A/B/C/D级），判断是否值得参与"},
+            {"title": "三板斧验证", "description": "验证：国家大趋势+后续催化+资金认可"},
+            {"title": "选容量标的", "description": "选择能容纳大资金的标的（中军优先），逻辑硬+容量大=市场合力"},
+            {"title": "制定离场预案", "description": "制定三维止损：时间止损+空间止损+力度止损"},
+        ],
+    },
+    "qiao": {
+        "phase": "phase_1",
+        "core_objective": "在主线高潮前潜伏，在退潮前切换",
+        "steps": [
+            {"title": "识别当前主线", "description": "通过扫描数据识别当日涨幅最大的板块"},
+            {"title": "判断主线阶段", "description": "判断主线所处阶段：启动/发酵/高潮/退潮"},
+            {"title": "预判切换方向", "description": "观察是否有低位板块开始异动，预判下一个接力方向"},
+            {"title": "制定切换策略", "description": "制定切换时机和仓位比例，切换失败时的止损位"},
+        ],
+    },
+    "jia": {
+        "phase": "phase_1",
+        "core_objective": "找到被市场错误定价的优质资产，等待价值回归",
+        "steps": [
+            {"title": "寻找超跌标的", "description": "通过扫描数据寻找 RSV<20、布林下轨附近的超跌股票"},
+            {"title": "评估安全边际", "description": "评估估值是否足够低：深度低估/低估/合理偏低"},
+            {"title": "判断催化剂", "description": "判断什么会让市场纠正这个错误定价"},
+            {"title": "制定潜伏计划", "description": "制定买入时机、仓位分配、止损位"},
+        ],
+    },
+    "speed": {
+        "phase": "phase_2",
+        "core_objective": "在情绪高潮时捕捉涨停溢价，快进快出",
+        "steps": [
+            {"title": "判断市场情绪阶段", "description": "判断当前情绪阶段：启动/发酵/高潮/退潮"},
+            {"title": "筛选板质", "description": "评估封单坚定度、换手充分性、板块共振、时间早晚"},
+            {"title": "制定进场策略", "description": "判断进场方式：排单/扫单"},
+            {"title": "制定离场策略", "description": "T+1 机械化卖出准则"},
+        ],
+    },
+    "trend": {
+        "phase": "phase_2",
+        "core_objective": "在上升趋势中顺势而为，让利润奔跑",
+        "steps": [
+            {"title": "判断中期趋势方向", "description": "判断价格与均线关系：上升/下降/震荡趋势"},
+            {"title": "寻找回调买点", "description": "寻找趋势中的回调买点：5日/10日/20日均线附近"},
+            {"title": "制定持仓策略", "description": "趋势完好时持有，趋势松动时减仓"},
+            {"title": "制定止损策略", "description": "趋势破位时无条件止损"},
+        ],
+    },
+    "quant": {
+        "phase": "phase_2",
+        "core_objective": "找到历史胜率高的形态，在最佳位置买入",
+        "steps": [
+            {"title": "多因子评分", "description": "从技术因子、资金因子、动量因子多维度评估"},
+            {"title": "计算风险收益比", "description": "计算盈亏比，判断风险等级"},
+            {"title": "量化选股", "description": "筛选综合评分≥70分的标的"},
+            {"title": "仓位优化", "description": "按凯利公式简化版优化仓位分配"},
+        ],
+    },
+    "deepseek": {
+        "phase": "phase_3",
+        "core_objective": "预判未来，找到预期差最大的方向",
+        "steps": [
+            {"title": "宏观研判", "description": "政策方向、流动性、情绪周期三维研判"},
+            {"title": "行业验证", "description": "验证当前主线是否持续，哪些行业有机会"},
+            {"title": "个股筛选", "description": "技术面+资金面+催化剂三角验证"},
+            {"title": "风险评估", "description": "评估政策/流动性/个股主要风险点"},
+        ],
+    },
+    "beijing": {
+        "phase": "phase_3",
+        "core_objective": "三有量化选板，机械执行1/8仓铁律",
+        "steps": [
+            {"title": "联网搜索", "description": "获取昨日和今日涨停板实时数据"},
+            {"title": "三有筛选", "description": "筛选：有板块共振+有市值/流动性+有量价/时间"},
+            {"title": "板型分类", "description": "按板型分类：秒拉板/换手板/回封板/连板/一字板/尾盘板"},
+            {"title": "仓位分配", "description": "按1/8或1/16上限分配，单票上限1/8，不超过4只同时持仓"},
+            {"title": "离场预案", "description": "T+1机械化卖出准则，弱转强高阶信号"},
+        ],
+    },
+}
+
+
+def build_agent_task_prompt(agent_id: str) -> str:
+    """
+    根据 TASK_DECOMPOSITIONS 构建任务拆解 Prompt 片段，
+    注入到 System Prompt 中指导 Agent 思考过程。
+    """
+    decomp = TASK_DECOMPOSITIONS.get(agent_id)
+    if not decomp:
+        return ""
+
+    lines = ["## 你的任务拆解思考链（必须按顺序执行）\n"]
+    lines.append(f"**核心目标**：{decomp['core_objective']}\n")
+    lines.append("### 执行步骤：")
+
+    for i, step in enumerate(decomp['steps'], 1):
+        lines.append(f"{i}. **{step['title']}**：{step['description']}")
+
+    return "\n".join(lines)
+
+
+def get_agent_task_decomposition(agent_id: str) -> List[Dict]:
+    """获取指定 Agent 的任务拆解步骤（供前端展示）"""
+    decomp = TASK_DECOMPOSITIONS.get(agent_id)
+    if not decomp:
+        return []
+    return decomp['steps']
+
+
+def get_all_task_decomposition() -> List[Dict]:
+    """
+    获取完整任务拆解（所有 Agent + 聚合阶段），供前端展示。
+    返回格式：[{"title": ..., "description": ...}, ...]
+    """
+    result = []
+
+    # 主控阶段
+    master_decomp = TASK_DECOMPOSITIONS.get("master", {})
+    for step in master_decomp.get("steps", []):
+        result.append({
+            "title": f"主控分析 - {step['title']}",
+            "description": step['description']
+        })
+
+    # 按阶段分组
+    phase_agents = {
+        "phase_1": ["jun", "qiao", "jia"],
+        "phase_2": ["speed", "trend", "quant"],
+        "phase_3": ["deepseek", "beijing"],
+    }
+
+    phase_names = {
+        "phase_1": "题材分析",
+        "phase_2": "技术分析",
+        "phase_3": "综合分析",
+    }
+
+    for phase, agents in phase_agents.items():
+        for agent_id in agents:
+            decomp = TASK_DECOMPOSITIONS.get(agent_id, {})
+            agent_config = AGENTS.get(agent_id, {})
+            agent_name = agent_config.get("name", agent_id)
+            for step in decomp.get("steps", []):
+                result.append({
+                    "title": f"{agent_name} - {step['title']}",
+                    "description": step['description']
+                })
+
+    # 聚合阶段
+    result.append({
+        "title": "加权共识与综合建议",
+        "description": "汇总各 Agent 分析结果，计算共识指数，生成综合投资建议"
+    })
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # System Prompts
 # ══════════════════════════════════════════════════════════════════════════════
 

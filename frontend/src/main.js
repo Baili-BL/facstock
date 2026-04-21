@@ -29,6 +29,7 @@ import TicaiPerformance from './views/TicaiPerformance.vue'
 import StockDetail from './views/StockDetail.vue'
 import Backtest from './views/Backtest.vue'
 import FactorPrompt from './views/FactorPrompt.vue'
+import TaskDashboard from './views/TaskDashboard.vue'
 
 const routes = [
   { path: '/', component: Home },
@@ -58,6 +59,7 @@ const routes = [
   { path: '/ticai', component: Ticai },
   { path: '/ticai/history', component: TicaiHistory },
   { path: '/ticai/performance', component: TicaiPerformance },
+  { path: '/tasks', component: TaskDashboard },
   // 兜底：未匹配路由重定向到首页
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

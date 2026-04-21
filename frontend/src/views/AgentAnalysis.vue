@@ -45,6 +45,21 @@
         <pre class="fac-prompt-card__code">{{ agentInfo.tagline || '加载中...' }}</pre>
       </section>
 
+      <!-- ── 任务执行过程（横向步骤条）────────────────────────── -->
+      <TaskProcessCard
+        v-if="isRunning || isDone"
+        :steps="cotSteps"
+        :current-step="currentCotStep"
+        :total-steps="totalCotSteps"
+        :current-step-title="currentCotTitle"
+        :current-step-detail="currentStepDetail"
+        :is-running="isRunning"
+        :is-done="isDone"
+        :confidence="result?.cot_steps_confidence ?? confidence"
+        :stance="result?.cot_steps_stance ?? structured?.stance"
+        :market-commentary="result?.cot_steps_marketCommentary ?? structured?.marketCommentary"
+      />
+
       <!-- ── AI 思考过程 ─────────────────────────────────── -->
       <section class="fac-thinking-card">
         <!-- 折叠头 -->
@@ -373,6 +388,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { analyzeWithAgent, fetchTodayAnalysis, fetchAgentInfo } from '@/api/agents.js'
 import { watchlist } from '@/api/strategy.js'
+import TaskProcessCard from './components/TaskProcessCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -516,6 +532,7 @@ const cotSteps = ref([])        // [{step, title, desc, done}]
 const currentCotStep = ref(0)
 const totalCotSteps = ref(5)
 const currentCotTitle = ref('')
+const currentStepDetail = ref('')   // 当前步骤详细描述（用于 TaskProcessCard）
 const cotDataLines = ref([])    // 数据获取过程的输出
 
 // ── 加载真实 prompt（弹窗打开时）─────────────────────────────────────
@@ -798,23 +815,22 @@ async function runAnalysisStream(agentId, signal) {
     }
 
     buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n\n')
+    const lines = buffer.split('\n')
     buffer = lines.pop() || ''
 
     console.log('[AgentAnalysisStream] 收到数据块, 行数:', lines.length, 'buffer长度:', buffer.length)
 
     for (const line of lines) {
-      console.log('[AgentAnalysisStream] 处理行:', line.slice(0, 100))
-      if (!line.startsWith('data: ')) continue
-      const payload = line.slice(6).trim()
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      if (!trimmed.startsWith('data: ')) continue
+      const payload = trimmed.slice(6).trim()
       if (payload === '[DONE]') {
-        console.log('[AgentAnalysisStream] 收到 DONE 标记')
         continue
       }
 
       try {
         const data = JSON.parse(payload)
-        console.log('[AgentAnalysisStream] 解析事件:', data.type, data)
         handleStreamEvent(data)
       } catch (e) {
         console.warn('[Stream] 解析失败:', payload, e)
@@ -825,6 +841,30 @@ async function runAnalysisStream(agentId, signal) {
 
 function handleStreamEvent(data) {
   switch (data.type) {
+    case 'task_step': {
+      // 任务执行过程：前端展示步骤进度
+      const step = data.step || 1
+      const total = data.total || 5
+      const title = data.title || ''
+      const desc = data.desc || ''
+
+      currentCotStep.value = step
+      totalCotSteps.value = total
+      currentCotTitle.value = title
+      currentStepDetail.value = desc
+
+      // 更新或追加步骤
+      const existing = cotSteps.value.find(s => s.step === step)
+      if (existing) {
+        existing.title = title
+        existing.desc = desc
+      } else {
+        cotSteps.value.push({ step, title, desc, done: false })
+        cotSteps.value.sort((a, b) => a.step - b.step)
+      }
+      break
+    }
+
     case 'cot': {
       currentCotStep.value = data.step || 0
       totalCotSteps.value = data.total || 5
@@ -851,40 +891,55 @@ function handleStreamEvent(data) {
       for (const line of lines) {
         cotDataLines.value.push({ step: data.step, text: line })
         thinkingLines.value.push(`[数据] ${line}`)
+        // 检测错误标记，停止等待状态
+        if (line.includes('[警告]') || line.includes('[错误]') || line.includes('[失败]')) {
+          isRunning.value = false
+        }
       }
       break
     }
 
     case 'thinking': {
-      // 合并连续内容：每遇到【标题或特殊标记时，flush 之前的普通内容
+      // 整块接收 thinking 内容，按章节分隔符（【）分批推送
       const raw = data.content || ''
-      for (const ch of raw) {
-        thinkingBuffer += ch
-        if (ch === '\n') {
-          let text = thinkingBuffer.trim()
-          // 去掉重复前缀
-          while (text.startsWith('思考中:') || text.startsWith('思考中 ')) {
-            text = text.replace(/^思考中[:：]\s*/, '')
-          }
-          if (!text) { thinkingBuffer = ''; continue }
+      let i = 0
 
-          if (text.startsWith('【')) {
-            // 标题行：先 flush 之前的普通内容
-            flushNormalBuffer()
-            thinkingLines.value.push(text)
-            liveReportLines.value.push({ text, type: 'section' })
-          } else if (text.startsWith('[阶段]') || text.startsWith('[调用]') || text.startsWith('[结果]')) {
-            // 特殊标记：独立一行
-            flushNormalBuffer()
-            thinkingLines.value.push(text)
-            liveReportLines.value.push({ text, type: 'normal' })
-          } else {
-            // 积累到普通缓冲区
-            normalBuffer.push(text)
+      while (i < raw.length) {
+        // 找到下一个【标题的位置
+        const nextSection = raw.indexOf('【', i)
+        if (nextSection === -1) {
+          // 没有更多【，积累剩余内容
+          thinkingBuffer += raw.slice(i)
+          break
+        }
+
+        // 先把【之前的内容（如果有）作为普通段落 flush
+        if (thinkingBuffer) {
+          const beforeText = thinkingBuffer.trim()
+          if (beforeText) {
+            thinkingLines.value.push(beforeText)
+            liveReportLines.value.push({ text: beforeText, type: 'normal' })
           }
           thinkingBuffer = ''
-          scrollLive()
         }
+
+        // 收集完整的【章节块（到下一个【之前或字符串末尾）
+        const sectionStart = nextSection
+        const sectionEnd = raw.indexOf('【', nextSection + 1)
+        const sectionText = sectionEnd === -1
+          ? raw.slice(sectionStart)
+          : raw.slice(sectionStart, sectionEnd)
+
+        // 去掉"思考中: "前缀
+        let cleanSection = sectionText.replace(/^思考中[:：]\s*/, '')
+        cleanSection = cleanSection.trim()
+        if (cleanSection) {
+          thinkingLines.value.push(cleanSection)
+          liveReportLines.value.push({ text: cleanSection, type: 'section' })
+        }
+
+        i = sectionEnd === -1 ? raw.length : sectionEnd
+        scrollLive()
       }
       break
     }
@@ -949,13 +1004,20 @@ function handleStreamEvent(data) {
           liveReportLines.value.push({ text, type })
         }
       }
+      const st = data.structured || {}
       result.value = {
         agent_id: data.agent_id,
         agent_name: data.agent_name,
-        structured: data.structured || {},
+        structured: st,
         analysis: data.analysis,
         thinking: data.thinking,
         tokens_used: data.tokens_used,
+        // 同步 stance / confidence 到 cotSteps 用于 TaskProcessCard 的共识仪表
+        cot_steps_confidence: st.confidence || 0,
+        cot_steps_stance: st.stance || 'neutral',
+        cot_steps_marketCommentary: st.marketCommentary || '',
+        // 任务拆解数据
+        task_decomposition: data.task_decomposition || [],
       }
       isDone.value = true
       // 分析完成：将所有 COT 步骤标记为已完成，flush 剩余缓冲区
@@ -983,6 +1045,8 @@ function resetAnalysis() {
   currentCotStep.value = 0
   totalCotSteps.value = 5
   currentCotTitle.value = ''
+  currentStepDetail.value = ''
+  currentStepDetail.value = ''
   cotDataLines.value = []
   thinkingExpanded.value = true
 }

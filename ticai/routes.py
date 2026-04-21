@@ -153,7 +153,7 @@ def _build_api_payload_from_db(db_report: dict) -> dict:
                 "volume_level": s.get('volume_level', '-'),
                 "strength": s.get('strength', '-'),
                 "is_weak_to_strong": bool(s.get('is_weak_to_strong')),
-                "weak_to_strong_type": s.get('role_reason', ''),
+                "weak_to_strong_type": s.get('weak_to_strong_type', ''),
                 "is_front_runner": bool(s.get('is_front_runner')),
                 "front_runner_tags": front_runner_tags,
                 "is_buyable": bool(s.get('is_buyable', 1)),
