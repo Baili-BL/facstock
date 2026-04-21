@@ -85,7 +85,7 @@ const baseCards = computed(() => {
       to: '/strategy/agents',
       cat: 'AI 智能体',
       pill: '游资专家库',
-      title: '金融智能 · 策略智能体',
+      title: '游资智能体 · 策略智能体',
       desc: '市场监测下的多角色策略库：胜率、收益与状态一览；全场策略总结跳转大模型解读。',
       headline: '6',
       headlineLbl: '策略角色（位）',

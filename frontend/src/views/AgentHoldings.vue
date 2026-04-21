@@ -269,7 +269,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 
@@ -311,14 +311,15 @@ const agent = computed(() => {
 })
 
 // 持仓数据（来自 holdings API）
+// 后端返回字段: name, code, price, changePct, sector
 const positions = computed(() => {
   if (!rawHoldings.value?.holdings) return []
   return rawHoldings.value.holdings.map(h => ({
-    name:    h.stock_name,
-    code:    h.stock_code,
-    price:   h.current_price || 0,
-    changePct: h.change_pct ?? h.changePct ?? 0,
-    sector:  h.sector || '',
+    name:      h.name      || h.stock_name    || '',
+    code:      h.code      || h.stock_code    || '',
+    price:     h.price     ?? h.current_price ?? h.price ?? 0,
+    changePct: h.changePct ?? h.change_pct    ?? h.changePct ?? 0,
+    sector:    h.sector    || '',
   }))
 })
 
@@ -346,11 +347,11 @@ const analysisPositions = computed(() => {
   const snap = latestAnalysis.value?.holdings_snapshot
   if (snap && Array.isArray(snap) && snap.length) {
     return snap.map((h) => ({
-      name: h.stock_name || h.name || '',
-      code: h.stock_code || h.code || '',
-      price: h.current_price ?? h.price ?? 0,
+      name:      h.stock_name || h.name      || '',
+      code:      h.stock_code || h.code      || '',
+      price:     h.current_price ?? h.price  ?? 0,
       changePct: Number(h.profit_loss_pct ?? h.changePct) || 0,
-      sector: h.sector || '',
+      sector:    h.sector || '',
     }))
   }
   if (positions.value.length) return positions.value

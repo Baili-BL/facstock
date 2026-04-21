@@ -42,7 +42,7 @@
           >{{ tf.label }}</button>
         </div>
         <!-- 市场广度摘要 -->
-        <div v-if="!loading && breadth.up > 0 || breadth.down > 0" class="kq-breadth-mini">
+        <div v-if="!loading && (breadth.up > 0 || breadth.down > 0)" class="kq-breadth-mini">
           <span class="kq-breadth-mini__up">{{ breadth.up }} 涨</span>
           <div class="kq-breadth-mini__bar">
             <div class="kq-breadth-mini__seg kq-breadth-mini__seg--up" :style="{ width: breadth.upPct + '%' }" />
@@ -53,97 +53,70 @@
         </div>
       </div>
 
-      <!-- 热力图：Treemap -->
+      <!-- 热力图：纯 SVG Treemap -->
       <div v-if="loading" class="kq-loading">
         <div class="kq-spinner" />
         <p>加载板块数据…</p>
       </div>
-      <div v-else-if="!treemapNodes.length" class="kq-empty">暂无板块数据</div>
-      <div v-else class="kq-treemap-wrap">
+      <div v-else-if="!layout.length" class="kq-empty">暂无板块数据</div>
+      <div v-else class="kq-treemap-wrap" ref="wrapEl">
+        <!-- SVG rect 层 -->
         <svg
-          class="kq-treemap"
-          :viewBox="`0 0 ${VW} ${VH}`"
-          preserveAspectRatio="xMidYMid meet"
+          class="st-map__svg"
+          :width="containerW"
+          :height="CHART_H"
+          :viewBox="`0 0 ${containerW} ${CHART_H}`"
         >
-          <g v-for="(node, idx) in treemapNodes" :key="node.id">
-            <!-- 区块背景 -->
-            <rect
-              class="kq-cell"
-              :x="node.x + 1"
-              :y="node.y + 1"
-              :width="Math.max(0, node.w - 2)"
-              :height="Math.max(0, node.h - 2)"
-              :fill="node.bg"
-              rx="3"
-              @mouseenter="showTooltip($event, node)"
-              @mousemove="moveTooltip($event)"
-              @mouseleave="hideTooltip"
-              @click="onCellClick(node)"
-            />
-            <!-- 区块标签 -->
-            <text
-              v-if="node.showName"
-              class="kq-cell-name"
-              :x="node.x + node.w / 2"
-              :y="node.y + node.h / 2 - (node.showPct ? node.fn * 0.45 : 0)"
-              text-anchor="middle"
-              dominant-baseline="middle"
-              :fill="node.tc"
-              :font-size="node.fn"
-              font-weight="900"
-            >{{ node.label }}</text>
-            <!-- 涨跌幅 -->
-            <text
-              v-if="node.showPct"
-              class="kq-cell-pct"
-              :x="node.x + node.w / 2"
-              :y="node.y + node.h / 2 + (node.showName ? node.fn * 0.55 : 0)"
-              text-anchor="middle"
-              dominant-baseline="middle"
-              :fill="node.tc"
-              :font-size="node.fp"
-              font-weight="900"
-            >{{ node.pctStr }}</text>
-          </g>
+          <rect
+            v-for="(cell, i) in layout"
+            :key="i"
+            class="st-map__cell"
+            :x="cell.x0 + 1"
+            :y="cell.y0 + 1"
+            :width="Math.max(cell.x1 - cell.x0 - 2, 0)"
+            :height="Math.max(cell.y1 - cell.y0 - 2, 0)"
+            :fill="fillForChange(cell.change)"
+            :rx="2"
+            @click="onCellClick(cell)"
+          />
         </svg>
-      </div>
-
-      <!-- Tooltip -->
-      <div
-        v-if="tooltip.visible"
-        class="kq-tooltip"
-        :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
-      >
-        <div class="kq-tooltip__name">{{ tooltip.name }}</div>
-        <div class="kq-tooltip__pct" :style="{ color: tooltip.pctColor }">
-          {{ tooltip.pctStr }}
-        </div>
-        <div class="kq-tooltip__rank">
-          <span class="kq-tooltip__rank-lbl">排名</span>
-          <span class="kq-tooltip__rank-val">{{ tooltip.rank }} / {{ tooltip.total }}</span>
+        <!-- HTML label 覆盖层 -->
+        <div class="st-map__labels" :style="{ width: containerW + 'px', height: CHART_H + 'px' }">
+          <div
+            v-for="(cell, i) in layout"
+            :key="'lbl' + i"
+            class="st-map__label"
+            :style="labelStyle(cell)"
+            @click="onCellClick(cell)"
+          >
+            <span class="st-map__label-name">{{ cell.name }}</span>
+            <span class="st-map__label-chg" :class="cell.change >= 0 ? 'up' : 'dn'">
+              {{ cell.change >= 0 ? '+' : '' }}{{ cell.change.toFixed(2) }}%
+            </span>
+          </div>
         </div>
       </div>
 
       <!-- 颜色图例 -->
       <div class="kq-legend">
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch kq-legend__swatch--deep-loss" />
+          <div class="kq-legend__swatch" style="background: #f23645" />
           <span>-3%</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch kq-legend__swatch--loss" />
-          <span>0%</span>
+          <div class="kq-legend__swatch" style="background: #fde8e8" />
+          <span>-1%</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch kq-legend__swatch--flat" />
+          <div class="kq-legend__swatch" style="background: #f2f3f4" />
           <span>平盘</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch kq-legend__swatch--gain" />
-          <span>0%</span>
+          <div class="kq-legend__swatch" style="background: #d5f5e3" />
+          <span>+1%</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch kq-legend__swatch--deep-gain" />
+          <div class="kq-legend__swatch" style="background: #089981" />
           <span>+3%</span>
         </div>
       </div>
@@ -152,14 +125,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import { hierarchy, treemap } from 'd3-hierarchy'
 import { market } from '@/api/market.js'
 
 const router = useRouter()
 const loading = ref(true)
 const filterKind = ref('industry')
 const activeTf = ref('1D')
+const wrapEl = ref(null)
+const containerW = ref(380)
+const layout = ref([])
+let resizeObserver = null
+
+const CHART_H = 520
 
 const filterDefs = [
   { id: 'industry', label: '行业' },
@@ -177,240 +157,76 @@ const tfDefs = [
 const industryRaw = ref([])
 const conceptRaw  = ref([])
 
-const VW = 380
-const VH = 520
+// A股标准配色：绿涨红跌
+const UP_DARK   = [8,   153, 129]
+const UP_LIGHT = [213, 245, 227]
+const DN_LIGHT = [253, 232, 232]
+const DN_DARK  = [242,  54,  69]
 
-// 红涨绿跌配色
-function sectorBg(change) {
+function mixRgb(light, dark, t) {
+  const a = Math.round(light[0] + (dark[0] - light[0]) * t)
+  const b = Math.round(light[1] + (dark[1] - light[1]) * t)
+  const c = Math.round(light[2] + (dark[2] - light[2]) * t)
+  return `rgb(${a}, ${b}, ${c})`
+}
+
+function fillForChange(change) {
+  const t = Math.min(Math.abs(Number(change) || 0) / 4, 1)
+  if (change >= 0) return mixRgb(UP_LIGHT, UP_DARK, t * 0.8 + 0.05)
+  return mixRgb(DN_LIGHT, DN_DARK, t * 0.8 + 0.05)
+}
+
+function textColor(change) {
   const c = Number(change) || 0
-  const abs = Math.abs(c)
-  if (c > 0) {
-    if (abs >= 3.0) return '#c0392b'
-    if (abs >= 2.0) return '#e74c3c'
-    if (abs >= 1.0) return '#ec7063'
-    if (abs >= 0.5) return '#f5b7b1'
-    return '#fadbd8'
-  }
-  if (c < 0) {
-    if (abs >= 3.0) return '#1e8449'
-    if (abs >= 2.0) return '#27ae60'
-    if (abs >= 1.0) return '#52be80'
-    if (abs >= 0.5) return '#82e0aa'
-    return '#d5f5e3'
-  }
-  return '#f2f3f4'
+  if (Math.abs(c) >= 2) return c >= 0 ? '#047857' : '#b71c2c'
+  return c >= 0 ? '#1a6b4a' : '#8b1a1a'
 }
 
-function sectorTextColor(change) {
-  const c = Number(change) || 0
-  const abs = Math.abs(c)
-  if (abs >= 0.5) return '#ffffff'
-  return '#5d6d7e'
-}
-
-function pctColor(change) {
-  return sectorTextColor(change)
-}
-
-function pctStr(change) {
-  const c = Number(change) || 0
-  return `${c > 0 ? '+' : ''}${c.toFixed(2)}%`
-}
-
-function ellipsis(name, max) {
-  if (!name) return ''
-  return name.length > max ? name.slice(0, max - 1) + '…' : name
-}
-
-// Squarified Treemap
-function squarify(nodes, x, y, w, h) {
-  if (!nodes.length) return []
-  const total = nodes.reduce((s, n) => s + n.weight, 0) || 1
-  const result = []
-  const isVertical = h >= w
-  const short = Math.min(w, h)
-
-  function layout(row, remaining, cx, cy, cw, ch) {
-    if (!remaining.length) {
-      placeRow(row, cx, cy, cw, ch, result, isVertical)
-      return
-    }
-    const row2 = [...row, remaining[0]]
-    const worst1 = worstRatio(row, short, total)
-    const worst2 = worstRatio(row2, short, total)
-    if (!row.length || worst2 <= worst1) {
-      layout(row2, remaining.slice(1), cx, cy, cw, ch)
-    } else {
-      placeRow(row, cx, cy, cw, ch, result, isVertical)
-      const s = row.reduce((a, n) => a + n.weight, 0)
-      const area = cw * ch
-      const rowLen = (s / total) * area / short
-      if (isVertical) {
-        layout([], remaining, cx + rowLen, cy, cw - rowLen, ch)
-      } else {
-        layout([], remaining, cx, cy + rowLen, cw, ch - rowLen)
-      }
-    }
-  }
-
-  layout([], [...nodes], x, y, w, h)
-  return result
-}
-
-function worstRatio(row, short, total) {
-  if (!row.length) return Infinity
-  const s = row.reduce((a, n) => a + n.weight, 0)
-  const area = short * short * 100
-  let worst = 0
-  for (const n of row) {
-    const nArea = (n.weight / s) * area * short
-    const r = Math.max(area / nArea, nArea / area)
-    if (r > worst) worst = r
-  }
-  return worst
-}
-
-function placeRow(row, x, y, w, h, result, isVertical) {
-  if (!row.length) return
-  const s = row.reduce((a, n) => a + n.weight, 0)
-  const totalW = isVertical ? w : h
-  let pos = isVertical ? x : y
-  for (const n of row) {
-    const frac = n.weight / s
-    const cellSize = frac * totalW
-    result.push({
-      ...n,
-      x: isVertical ? pos : x,
-      y: isVertical ? y : pos,
-      w: isVertical ? cellSize : w,
-      h: isVertical ? h : cellSize,
-    })
-    pos += cellSize
+function labelStyle(cell) {
+  const w = cell.x1 - cell.x0
+  const h = cell.y1 - cell.y0
+  const fontSize = Math.min(13, Math.max(9, Math.floor(Math.min(w, h) / 4.5)))
+  return {
+    left:     cell.x0 + 'px',
+    top:      cell.y0 + 'px',
+    width:    w + 'px',
+    height:   h + 'px',
+    fontSize: fontSize + 'px',
+    color:    textColor(cell.change),
   }
 }
 
-// 构建 Treemap 数据（最多100个）
-const treemapNodes = computed(() => {
-  const src = filterKind.value === 'industry' ? industryRaw.value : conceptRaw.value
-  if (!src.length) return []
-
-  // 取前100，按涨跌幅绝对值排序
-  const sorted = [...src]
+function computeLayout(sectors) {
+  if (!sectors || !sectors.length) {
+    layout.value = []
+    return
+  }
+  const sorted = [...sectors]
     .sort((a, b) => Math.abs(Number(b.change) || 0) - Math.abs(Number(a.change) || 0))
-    .slice(0, 100)
+    .slice(0, 80)
 
-  const total = sorted.length
+  const root = hierarchy({ name: 'root', children: sorted })
+    .sum(d => d.change !== undefined ? Math.abs(Number(d.change) || 0.01) : 0)
+    .sort((a, b) => (b.value || 0) - (a.value || 0))
 
-  // 前10名特殊布局（双列大区块）
-  const megaItems = sorted.slice(0, Math.min(4, total))
-  // 11-30名中等区块
-  const largeItems = sorted.slice(4, Math.min(16, total))
-  // 其余小区块用 Treemap
-  const smallItems = sorted.slice(Math.min(16, total))
+  treemap()
+    .size([containerW.value, CHART_H])
+    .paddingInner(2)
+    .paddingOuter(2)
+    .round(true)
+    (root)
 
-  const nodes = []
-  const GAP = 2
-
-  // MEGA 层：前4个，双列
-  const megaW = Math.floor((VW - GAP * 3) / 2)
-  const megaH = Math.floor(VH * 0.30)
-  megaItems.forEach((s, i) => {
-    const col = i % 2
-    const row = Math.floor(i / 2)
-    const ch = Number(s.change) || 0
-    nodes.push({
-      id: s.name,
-      name: s.name,
-      change: ch,
-      weight: Math.max(Math.abs(ch), 0.5),
-      x: col * (megaW + GAP),
-      y: row * (megaH + GAP),
-      w: megaW,
-      h: megaH,
-      bg: sectorBg(ch),
-      tc: sectorTextColor(ch),
-      pctStr: pctStr(ch),
-      pctColor: pctColor(ch),
-      label: s.name,
-      showName: true,
-      showPct: true,
-      fn: 13,
-      fp: 12,
-      rank: sorted.indexOf(s) + 1,
-      total,
-    })
-  })
-
-  // LARGE 层：11-30名，4列
-  const largeTop = megaH * 2 + GAP * 2
-  const largeBotH = Math.floor(VH * 0.22)
-  const largeColW = Math.floor((VW - GAP * 5) / 4)
-  largeItems.forEach((s, i) => {
-    const col = i % 4
-    const row = Math.floor(i / 4)
-    const ch = Number(s.change) || 0
-    nodes.push({
-      id: s.name + '_l',
-      name: s.name,
-      change: ch,
-      weight: Math.max(Math.abs(ch), 0.3),
-      x: col * (largeColW + GAP),
-      y: largeTop + row * (largeBotH + GAP),
-      w: largeColW,
-      h: largeBotH,
-      bg: sectorBg(ch),
-      tc: sectorTextColor(ch),
-      pctStr: pctStr(ch),
-      pctColor: pctColor(ch),
-      label: s.name,
-      showName: true,
-      showPct: true,
-      fn: 10,
-      fp: 10,
-      rank: sorted.indexOf(s) + 1,
-      total,
-    })
-  })
-
-  // SMALL 层：其余，用 Treemap 填充
-  const smallTop = largeTop + Math.ceil(largeItems.length / 4) * (largeBotH + GAP)
-  const smallH = VH - smallTop - GAP
-  if (smallItems.length > 0) {
-    const otherData = smallItems.map(s => ({
-      weight: Math.max(Math.abs(Number(s.change) || 0), 0.05),
-      data: s,
-    }))
-    const otherRects = squarify(otherData, 0, smallTop, VW, smallH)
-    otherRects.forEach(r => {
-      const ch = Number(r.data.change) || 0
-      const area = r.w * r.h
-      const showPct = area >= 500 && r.w >= 26 && r.h >= 16
-      const showName = area >= 700 && r.w >= 36
-      nodes.push({
-        id: r.data.name + '_s',
-        name: r.data.name,
-        change: ch,
-        x: r.x,
-        y: r.y,
-        w: r.w,
-        h: r.h,
-        bg: sectorBg(ch),
-        tc: sectorTextColor(ch),
-        pctStr: pctStr(ch),
-        pctColor: pctColor(ch),
-        label: showName ? ellipsis(r.data.name, Math.floor(r.w / 8)) : '',
-        showPct,
-        showName,
-        fn: area < 800 ? 8 : 9,
-        fp: area < 800 ? 8 : 9,
-        rank: sorted.indexOf(r.data) + 1,
-        total,
-      })
-    })
-  }
-
-  return nodes
-})
+  layout.value = root.leaves().map((d, i) => ({
+    x0: Math.round(d.x0),
+    y0: Math.round(d.y0),
+    x1: Math.round(d.x1),
+    y1: Math.round(d.y1),
+    name: d.data.name || '',
+    change: Number(d.data.change) || 0,
+    rank: i + 1,
+    total: root.leaves().length,
+  }))
+}
 
 const breadth = computed(() => {
   const src = filterKind.value === 'industry' ? industryRaw.value : conceptRaw.value
@@ -436,38 +252,27 @@ const breadthStatus = computed(() => {
   return { text: '中性', cls: 'neu' }
 })
 
-// Tooltip
-const tooltip = ref({
-  visible: false, x: 0, y: 0,
-  name: '', pctStr: '', pctColor: '#c0392b',
-  rank: 0, total: 0,
-})
+function onCellClick(cell) {
+  router.push(`/sectors/${encodeURIComponent(cell.name)}`)
+}
 
-function showTooltip(e, node) {
-  tooltip.value = {
-    visible: true,
-    x: e.clientX + 14,
-    y: e.clientY - 40,
-    name: node.name,
-    pctStr: node.pctStr,
-    pctColor: node.pctColor,
-    rank: node.rank,
-    total: node.total,
+function updateWidth() {
+  if (wrapEl.value) {
+    containerW.value = wrapEl.value.clientWidth || 380
+    const src = filterKind.value === 'industry' ? industryRaw.value : conceptRaw.value
+    computeLayout(src)
   }
 }
 
-function moveTooltip(e) {
-  tooltip.value.x = e.clientX + 14
-  tooltip.value.y = e.clientY - 40
-}
+watch(filterKind, async () => {
+  await nextTick()
+  const src = filterKind.value === 'industry' ? industryRaw.value : conceptRaw.value
+  computeLayout(src)
+})
 
-function hideTooltip() {
-  tooltip.value.visible = false
-}
-
-function onCellClick(node) {
-  router.push(`/sectors/${encodeURIComponent(node.name)}`)
-}
+onUnmounted(() => {
+  if (resizeObserver) resizeObserver.disconnect()
+})
 
 async function loadData() {
   loading.value = true
@@ -482,6 +287,10 @@ async function loadData() {
     console.error('load heatmap data error', e)
   } finally {
     loading.value = false
+    await nextTick()
+    updateWidth()
+    resizeObserver = new ResizeObserver(() => updateWidth())
+    if (wrapEl.value) resizeObserver.observe(wrapEl.value)
   }
 }
 
@@ -496,9 +305,9 @@ onMounted(() => {
   --surface:  #ffffff;
   --surface2: #f8f9fa;
   --surface3: #eceff1;
-  --gain:    #1e8449;
+  --gain:    #089981;
   --gain-mid:#27ae60;
-  --loss:    #c0392b;
+  --loss:    #f23645;
   --loss-mid:#e74c3c;
   --primary: #2980b9;
   --text:    #2c3e50;
@@ -510,7 +319,6 @@ onMounted(() => {
   background: var(--bg);
   color: var(--text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding-bottom: calc(env(safe-area-inset-bottom) + 32px);
 }
 
 /* 顶部栏 */
@@ -637,8 +445,8 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 700;
 }
-.kq-breadth-mini__up  { color: var(--loss-mid); }
-.kq-breadth-mini__dn  { color: var(--gain-mid); }
+.kq-breadth-mini__up  { color: var(--gain-mid); }
+.kq-breadth-mini__dn  { color: var(--loss-mid); }
 .kq-breadth-mini__bar {
   display: flex;
   width: 80px;
@@ -648,8 +456,8 @@ onMounted(() => {
   background: var(--surface3);
 }
 .kq-breadth-mini__seg { height: 100%; transition: width 0.3s; }
-.kq-breadth-mini__seg--up { background: var(--loss-mid); }
-.kq-breadth-mini__seg--dn { background: var(--gain-mid); }
+.kq-breadth-mini__seg--up { background: var(--gain-mid); }
+.kq-breadth-mini__seg--dn { background: var(--loss-mid); }
 .kq-breadth-mini__status {
   font-size: 10px;
   padding: 2px 6px;
@@ -684,6 +492,7 @@ onMounted(() => {
 
 /* Treemap */
 .kq-treemap-wrap {
+  position: relative;
   border-radius: 12px;
   overflow: hidden;
   background: #fff;
@@ -691,67 +500,58 @@ onMounted(() => {
   margin-bottom: 12px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.08);
 }
-.kq-treemap {
-  width: 100%;
-  height: auto;
+
+.st-map__svg {
   display: block;
 }
-.kq-cell {
+
+.st-map__cell {
   cursor: pointer;
-  transition: filter 0.15s;
+  transition: filter 0.1s;
+  stroke: rgba(255, 255, 255, 0.7);
+  stroke-width: 1;
 }
-.kq-cell:hover {
-  filter: brightness(0.92);
-}
-.kq-cell-name {
-  font-weight: 900;
-  letter-spacing: -0.02em;
+.st-map__cell:hover { filter: brightness(0.92); }
+
+.st-map__labels {
+  position: absolute;
+  top: 2px;
+  left: 2px;
   pointer-events: none;
-  user-select: none;
-}
-.kq-cell-pct {
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  pointer-events: none;
-  user-select: none;
-  font-variant-numeric: tabular-nums;
 }
 
-/* Tooltip */
-.kq-tooltip {
-  position: fixed;
-  z-index: 1000;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 14px;
-  min-width: 130px;
-  pointer-events: none;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+.st-map__label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 4px 4px 2px;
+  pointer-events: all;
+  cursor: pointer;
+  text-align: center;
+  overflow: hidden;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
-.kq-tooltip__name {
-  font-size: 12px;
+
+.st-map__label-name {
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.st-map__label-chg {
   font-weight: 800;
-  color: var(--text);
-  margin-bottom: 4px;
-}
-.kq-tooltip__pct {
-  font-size: 17px;
-  font-weight: 900;
-  letter-spacing: -0.03em;
-  margin-bottom: 6px;
+  line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
-.kq-tooltip__rank {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--muted);
-}
-.kq-tooltip__rank-val {
-  font-weight: 800;
-  color: var(--text);
-}
+.st-map__label-chg.up { color: #089981; }
+.st-map__label-chg.dn { color: #f23645; }
 
 /* 图例 */
 .kq-legend {
@@ -774,9 +574,4 @@ onMounted(() => {
   height: 12px;
   border-radius: 2px;
 }
-.kq-legend__swatch--deep-gain { background: #c0392b; }
-.kq-legend__swatch--gain      { background: #ec7063; }
-.kq-legend__swatch--flat      { background: var(--surface3); }
-.kq-legend__swatch--loss      { background: #82e0aa; }
-.kq-legend__swatch--deep-loss { background: #1e8449; }
 </style>

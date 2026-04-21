@@ -27,6 +27,7 @@ const hideBottomNav = computed(
     route.path.startsWith('/strategy/factor-prompt') ||
     route.path.startsWith('/strategy/agents') ||
     route.path.startsWith('/strategy/backtest') ||
+    route.path.startsWith('/sectors/heatmap') ||
     route.path === '/watchlist/settings'
 )
 
@@ -46,11 +47,11 @@ watch(hideBottomNav, (v) => {
   --brand:       #2962ff;   /* TV brand blue — primary CTA only */
   --brand-alpha:  rgba(41, 98, 255, 0.12);
 
-  /* Functional — A 股语义：红涨绿跌（TradingView 色值） */
-  --up:          #f23645;   /* 涨 · TV red */
-  --down:        #089981;   /* 跌 · TV teal */
-  --up-alpha:    rgba(242, 54, 69, 0.12);
-  --down-alpha:  rgba(8, 153, 129, 0.12);
+  /* Functional — A 股语义：绿涨红跌（A股标准配色） */
+  --up:          #089981;   /* 涨 · 绿色 */
+  --down:        #f23645;   /* 跌 · 红色 */
+  --up-alpha:    rgba(8, 153, 129, 0.12);
+  --down-alpha:  rgba(242, 54, 69, 0.12);
 
   /* Surface — background layers */
   --bg:          #f2f2f2;    /* page background */

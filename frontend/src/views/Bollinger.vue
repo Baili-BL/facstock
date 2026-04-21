@@ -1950,9 +1950,9 @@ onUnmounted(stopPolling)
 /* ─── Hero Header Card ─── */
 .bb-header-card {
   display: flex; align-items: center; justify-content: space-between;
-  background: linear-gradient(135deg, #0a1a4a 0%, #0d3c8c 50%, #1a6be8 100%);
+  background: linear-gradient(135deg, #0033a0 0%, #0052cc 50%, #1a6be8 100%);
   border-radius: 20px; padding: 28px 32px; margin-bottom: 20px;
-  box-shadow: 0 4px 24px rgba(10, 26, 74, 0.35);
+  box-shadow: 0 4px 24px rgba(0, 51, 160, 0.35);
 }
 .bb-header-card__left { flex: 1; }
 .bb-header-card__title { font-size: 26px; font-weight: 700; color: #fff; margin: 0 0 6px; }

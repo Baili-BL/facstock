@@ -416,7 +416,17 @@ function signPct(v) {
 // ── 图表渲染 ───────────────────────────────────────────────────────────────
 async function renderCharts() {
   if (!result.value) return
+
   await nextTick()
+
+  // 分阶段等待 paint：setTimeout(0) 让出主线程确保浏览器完成 layout
+  await new Promise(r => setTimeout(r, 0))
+  // 再等一个 RAF 确保两次 paint cycle
+  await new Promise(r => requestAnimationFrame(r))
+
+  console.log('[debug] clientWidth:', equityChartRef.value?.clientWidth, 'offsetWidth:', equityChartRef.value?.offsetWidth)
+  console.log('[debug] equity len:', result.value.equity?.length, 'sample:', result.value.equity?.slice(0,3))
+  console.log('[debug] times len:', result.value.candles?.times?.length, 'sample:', result.value.candles?.times?.slice(0,3))
 
   if (equityChartRef.value) renderEquityChart()
   if (drawdownChartRef.value) renderDrawdownChart()
@@ -432,10 +442,16 @@ function destroyCharts() {
   klineChart = null
 }
 
+function _getChartWidth(el) {
+  // 优先 clientWidth，若仍为 0 则尝试 offsetWidth 或父容器宽度兜底
+  return el.clientWidth || el.offsetWidth || (el.parentElement?.clientWidth - 24) || 344
+}
+
 function renderEquityChart() {
   const el = equityChartRef.value
   el.innerHTML = ''
-  equityChart = createChart(el, { width: el.clientWidth, height: 180, layout: { textColor: '#666' } })
+  const w = _getChartWidth(el)
+  equityChart = createChart(el, { width: w, height: 180, layout: { textColor: '#666' } })
   const s = equityChart.addLineSeries({
     color: '#2196f3',
     lineWidth: 2,
@@ -445,12 +461,17 @@ function renderEquityChart() {
   const equity = result.value.equity || []
   s.setData(times.map((t, i) => ({ time: tsToLw(t), value: equity[i] ?? 0 })))
   equityChart.timeScale().fitContent()
+  const ro = new ResizeObserver(() => {
+    if (equityChart) equityChart.applyOptions({ width: _getChartWidth(el) })
+  })
+  ro.observe(el)
 }
 
 function renderDrawdownChart() {
   const el = drawdownChartRef.value
   el.innerHTML = ''
-  drawdownChart = createChart(el, { width: el.clientWidth, height: 180, layout: { textColor: '#666' } })
+  const w = _getChartWidth(el)
+  drawdownChart = createChart(el, { width: w, height: 180, layout: { textColor: '#666' } })
   const s = drawdownChart.addLineSeries({
     color: '#ef5350',
     lineWidth: 1,
@@ -460,13 +481,18 @@ function renderDrawdownChart() {
   const dd = result.value.drawdownPct || []
   s.setData(times.map((t, i) => ({ time: tsToLw(t), value: -(dd[i] ?? 0) })))
   drawdownChart.timeScale().fitContent()
+  const ro = new ResizeObserver(() => {
+    if (drawdownChart) drawdownChart.applyOptions({ width: _getChartWidth(el) })
+  })
+  ro.observe(el)
 }
 
 function renderKlineChart() {
   const el = klineChartRef.value
   el.innerHTML = ''
-  klineChart = createChart(el, { width: el.clientWidth, height: 400, layout: { textColor: '#666' } })
-  klineChart.applyOptions({ width: el.clientWidth })
+  const w = _getChartWidth(el)
+  klineChart = createChart(el, { width: w, height: 400, layout: { textColor: '#666' } })
+  klineChart.applyOptions({ width: w })
 
   klineSeries = klineChart.addCandlestickSeries({
     upColor: '#ef5350',
@@ -524,7 +550,7 @@ function renderKlineChart() {
 
   // resize 监听
   const ro = new ResizeObserver(() => {
-    if (klineChart) klineChart.applyOptions({ width: el.clientWidth })
+    if (klineChart) klineChart.applyOptions({ width: _getChartWidth(el) })
   })
   ro.observe(el)
 }
@@ -638,7 +664,7 @@ watch(result, async (val) => {
 }
 .bt-chart-card--wide { grid-column: 1 / -1; }
 .bt-chart-card__title { font-size: 13px; font-weight: 600; color: #1c1c1e; }
-.bt-chart-canvas { border-radius: 8px; overflow: hidden; min-height: 180px; }
+.bt-chart-canvas { border-radius: 8px; overflow: hidden; min-height: 180px; width: 100%; }
 .bt-chart-canvas--tall { min-height: 400px; }
 .bt-chart-legend { float: right; font-size: 11px; color: #8e8e93; }
 .bt-legend-buy { color: #f59f00; margin-right: 8px; }

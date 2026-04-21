@@ -9,6 +9,7 @@ requests>=2.31.0
 # Web框架
 flask>=3.0.0
 flask-cors>=4.0.0
+python-dotenv>=1.0.0
 
 # AI 模型（阿里云百炼 / OpenAI 兼容）
 openai>=1.0.0

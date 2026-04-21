@@ -324,7 +324,7 @@ def api_index_mini():
 # 宏观同步快讯 — Editorial Intelligence 数据聚合
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_macro_flash_report() -> dict:
+def _fetch_macro_flash_report(timeout_seconds=15) -> dict:
     """
     聚合所有宏观数据，构造宏观同步快讯所需的完整数据结构。
     该函数会在 API 层统一调度，各子模块尽量复用已有缓存数据。
@@ -731,10 +731,46 @@ def api_macro_flash_report():
     if hit is not None:
         return jsonify({'success': True, 'data': hit})
 
+    # Thread-based timeout: if data fetch takes > 15s, return fallback immediately
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+    fallback_data = {
+        'title': '宏观同步快讯',
+        'subtitle': '实时追踪全球资本市场与宏观经济的微小扰动',
+        'syncStatus': '数据获取超时，已返回缓存',
+        'international': [
+            {'label': '10Y 美债收益率', 'value': '--', 'change': '暂无数据'},
+            {'label': '美元指数 (DXY)', 'value': '--', 'change': '暂无数据'},
+            {'label': '布伦特原油', 'value': '--', 'change': '暂无数据'},
+            {'label': '现货黄金 (XAU)', 'value': '--', 'change': '暂无数据'},
+        ],
+        'domestic': [{'label': '上证指数', 'value': '--', 'pct': 50}],
+        'domesticQuote': '数据获取超时，请稍后刷新',
+        'events': [{'title': '暂无数据', 'time': '—', 'desc': '数据获取超时', 'tags': []}],
+        'agentModelCount': 4,
+        'agents': [
+            {'name': '宏观经济学派', 'sub': 'Alpha-V9 智能体', 'avatarText': 'M', 'avatarIcon': None, 'colorKey': 'primary', 'stance': '加载中...', 'stanceKey': 'neutral', 'comment': '数据获取中，请稍后查看。'},
+            {'name': '地缘政治专家', 'sub': 'Geo-Strategic 智能体', 'avatarText': '', 'avatarIcon': 'language', 'colorKey': 'secondary', 'stance': '加载中...', 'stanceKey': 'neutral', 'comment': '数据获取中，请稍后查看。'},
+            {'name': '流动性策略师', 'sub': 'Flow-Master 智能体', 'avatarText': 'L', 'avatarIcon': None, 'colorKey': 'error', 'stance': '加载中...', 'stanceKey': 'neutral', 'comment': '数据获取中，请稍后查看。'},
+            {'name': '量化技术派', 'sub': 'Quant-Tech 智能体', 'avatarText': 'Q', 'avatarIcon': None, 'colorKey': 'tertiary', 'stance': '加载中...', 'stanceKey': 'neutral', 'comment': '数据获取中，请稍后查看。'},
+        ],
+        'sectors': [],
+        'synthesis': {'core': '数据获取超时，请稍后刷新页面', 'actions': ['等待数据加载']},
+    }
+
     try:
-        data = _fetch_macro_flash_report()
-        set('macro/flash-report', data, ttl=60)
-        return jsonify({'success': True, 'data': data})
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_fetch_macro_flash_report)
+            try:
+                data = future.result(timeout=15)
+            except FuturesTimeoutError:
+                logger.warning('macro flash report timed out after 15s, returning fallback')
+                data = fallback_data
     except Exception as e:
         logger.exception('macro flash report')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        data = fallback_data
+
+    try:
+        set('macro/flash-report', data, ttl=60)
+    except Exception:
+        pass
+    return jsonify({'success': True, 'data': data})

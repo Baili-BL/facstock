@@ -15,7 +15,7 @@ import threading
 import time
 import random
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import pandas as _pd
 from cache import get, set as _cache_set, invalidate
 import logging
@@ -457,7 +457,9 @@ def _fetch_kline_worker(code: str, fetch_days: int, period: int):
     """
     进程级 K 线抓取 worker（必须在模块顶层，以支持 ProcessPoolExecutor）。
     每只股票独立进程，天然隔离 mini_racer，避免多线程崩溃。
+    10秒超时保护，防止网络卡死。
     """
+    import sys
     try:
         from utils.ths_crawler import get_stock_kline_sina
         kline_df = get_stock_kline_sina(code, days=min(fetch_days, 800))
@@ -588,17 +590,29 @@ def run_scan(scan_id: int, top_sectors: int, min_days: int, period: int, bb_widt
                     for code in stock_codes
                 }
 
-                for future in as_completed(futures):
+                pending = set(futures.keys())
+                while pending:
                     if scan_status.get('cancelled'):
+                        for f in pending:
+                            f.cancel()
+                        scan_status['current_sector'] = '已取消'
+                        return
+                    done, still_pending = wait(pending, timeout=15, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        try:
+                            code, df = future.result(timeout=5)
+                            if df is not None:
+                                kline_data[code] = df
+                                fetched_count += 1
+                                if fetched_count % 50 == 0:
+                                    progress = 25 + int(fetched_count / len(stock_codes) * 30)
+                                    scan_status['progress'] = min(55, progress)
+                                    print(f"  📊 K线进度: {fetched_count}/{len(stock_codes)}")
+                        except Exception:
+                            pass
+                    pending = still_pending
+                    if not done and not still_pending:
                         break
-                    code, df = future.result()
-                    if df is not None:
-                        kline_data[code] = df
-                        fetched_count += 1
-                        if fetched_count % 50 == 0:
-                            progress = 25 + int(fetched_count / len(stock_codes) * 30)
-                            scan_status['progress'] = min(55, progress)
-                            print(f"  📊 K线进度: {fetched_count}/{len(stock_codes)}")
 
             print(f"  ✅ K线获取完成: {fetched_count}/{len(stock_codes)}")
         
@@ -2897,15 +2911,16 @@ def analyze_single_agent_stream(agent_id):
                 if para.strip():
                     yield f"data: {json.dumps({'type': 'content', 'content': para.strip()})}\n\n"
 
-            yield f"data: {json.dumps({
-                'type': 'done', 
-                'agent_id': _agent_id, 
-                'agent_name': profile.get('name', ''), 
-                'structured': structured, 
+            done_payload = {
+                'type': 'done',
+                'agent_id': _agent_id,
+                'agent_name': profile.get('name', ''),
+                'structured': structured,
                 'analysis': markdown_content,
-                'thinking': all_thinking, 
+                'thinking': all_thinking,
                 'tokens_used': total_tokens
-            })}\n\n"
+            }
+            yield f"data: {json.dumps(done_payload)}\n\n"
 
         except Exception as e:
             import traceback

@@ -108,6 +108,30 @@
         <div v-else class="hm-turnover hm-turnover--skel"><div class="skeleton-line" /></div>
       </section>
 
+      <!-- 宏观同步快讯入口 -->
+      <section class="hm-card hm-flash" @click="$router.push('/strategy/macro')">
+        <div v-if="loadingFlash" class="hm-flash__skel" aria-busy="true">
+          <div class="hm-flash__skel-left">
+            <div class="skeleton-line" style="width:70%;height:16px;border-radius:4px;margin-bottom:6px" />
+            <div class="skeleton-line" style="width:50%;height:12px;border-radius:4px" />
+          </div>
+          <div class="skeleton-line" style="width:24px;height:24px;border-radius:50%;flex-shrink:0" />
+        </div>
+        <template v-else>
+          <div class="hm-flash__left">
+            <div class="hm-flash__badge">
+              <span class="hm-flash__dot" />
+              FLASH
+            </div>
+            <h3 class="hm-flash__title">{{ flashData?.title || 'Editorial Intelligence' }}</h3>
+            <p class="hm-flash__sub">{{ flashData?.subtitle || '实时追踪全球资本市场动态与智能体研判' }}</p>
+          </div>
+          <svg class="hm-flash__arrow" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+          </svg>
+        </template>
+      </section>
+
       <!-- 股票排行：与板块页一致的胶囊 Tab，涨跌幅仅文字着色 -->
       <section class="hm-card hm-rank">
         <div class="hm-rank__hd">
@@ -215,51 +239,14 @@
             <div v-for="i in 2" :key="'b' + i" class="hm-hot-treemap-sk__blk" />
           </div>
         </div>
-        <div v-else-if="!sectors.length" class="hm-hot-empty">暂无板块数据</div>
-        <div v-else class="hm-hot-treemap-wrap">
-          <svg
-            class="hm-hot-treemap"
-            :viewBox="`0 0 ${hotSectorTreemap.vw} ${hotSectorTreemap.vh}`"
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            :aria-label="hotSectorTreemapAria"
-          >
-            <g v-for="(r, idx) in hotSectorTreemap.rects" :key="r.data.name + idx">
-              <rect
-                class="hm-hot-treemap__cell"
-                :x="r.x + 0.5"
-                :y="r.y + 0.5"
-                :width="Math.max(0, r.w - 1)"
-                :height="Math.max(0, r.h - 1)"
-                :fill="r.fill"
-                rx="4"
-                stroke="rgba(255,255,255,0.65)"
-                stroke-width="1"
-                @click="$router.push('/sectors/heatmap')"
-              />
-              <text
-                v-if="r.showName"
-                class="hm-hot-treemap__lbl hm-hot-treemap__lbl--name"
-                :x="r.x + r.w / 2"
-                :y="r.y + r.h / 2 - (r.showPct ? 5 : 0)"
-                text-anchor="middle"
-                dominant-baseline="middle"
-                :fill="r.tc"
-                :font-size="r.fontName"
-              >{{ ellipsisSectorName(r.name, r.w) }}</text>
-              <text
-                v-if="r.showPct"
-                class="hm-hot-treemap__lbl hm-hot-treemap__lbl--pct"
-                :x="r.x + r.w / 2"
-                :y="r.y + r.h / 2 + (r.showName ? 9 : 0)"
-                text-anchor="middle"
-                dominant-baseline="middle"
-                :fill="r.tc"
-                :font-size="r.fontPct"
-              >{{ r.pctStr }}</text>
-            </g>
-          </svg>
-        </div>
+        <G2SectorTreemap
+          v-else-if="sectors.length"
+          :data="hotSectorData"
+          :loading="false"
+          :height="150"
+          @cell-click="onHotSectorClick"
+        />
+        <div v-else class="hm-hot-empty">暂无板块数据</div>
       </section>
     </main>
   </div>
@@ -268,8 +255,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { market, macroSummary } from '@/api/market.js'
-import { layoutBinaryTreemap, fillForSectorChange, textColorForChange } from '@/utils/sectorTreemap.js'
+import { market, macroSummary, macroFlashReport } from '@/api/market.js'
+import G2SectorTreemap from '@/components/G2SectorTreemap.vue'
 
 const router = useRouter()
 
@@ -282,6 +269,10 @@ const loadingOverview = ref(true)
 const loadingRank     = ref(true)
 const loadingSectors  = ref(true)
 const loadingMacro    = ref(true)
+const loadingFlash    = ref(true)
+
+// 宏观快讯数据
+const flashData = ref(null)
 
 // 宏观摘要数据
 const macroRaw = ref(null)
@@ -289,7 +280,7 @@ const macroRaw = ref(null)
 // 全部骨架展示后隐藏全页 loading
 const allSkeletonsShown = computed(() =>
   loadingIndex.value || loadingTurnover.value || loadingLimit.value ||
-  loadingOverview.value || loadingRank.value || loadingSectors.value
+  loadingOverview.value || loadingRank.value || loadingSectors.value || loadingFlash.value
 )
 
 const overview = ref([])
@@ -494,51 +485,14 @@ const macroScoreColor = computed(() => {
   return 'is-down'                  // 绿跌 → 空头
 })
 
-const hotSectorTreemap = computed(() => {
-  const list = sectors.value.slice(0, 6)
-  const vw = 320
-  const vh = 150
-  if (!list.length) return { rects: [], vw, vh, maxAbs: 1 }
-  // 按涨跌幅绝对值降序排列，确保最大涨幅的板块占据最大面积
-  const sorted = [...list].sort((a, b) =>
-    Math.abs(Number(b.change) || 0) - Math.abs(Number(a.change) || 0)
-  )
-  const weights = sorted.map((s) => Math.abs(Number(s.change) || 0) + 0.35)
-  const items = sorted.map((s, i) => ({ weight: weights[i], data: s }))
-  const rects = layoutBinaryTreemap(items, 0, 0, vw, vh)
-  const changes = sorted.map((s) => Number(s.change) || 0)
-  const maxAbs = Math.max(...changes.map((c) => Math.abs(c)), 0.01)
-  const enriched = rects.map((r) => {
-    const ch = Number(r.data.change) || 0
-    const area = r.w * r.h
-    const tiny = area < 2000 || r.w < 36 || r.h < 24
-    const compact = area < 4200 || r.w < 52 || r.h < 34
-    const showPct = r.w >= 30 && r.h >= 20
-    const showName = showPct && !tiny && r.w >= 44
-    return {
-      ...r,
-      fill: fillForSectorChange(ch, maxAbs),
-      tc: textColorForChange(ch),
-      name: r.data.name,
-      pctStr: `${formatPct(ch)}%`,
-      showName,
-      showPct,
-      fontName: compact ? 10 : 11,
-      fontPct: compact ? 10.5 : 12.5,
-    }
-  })
-  return { rects: enriched, vw, vh, maxAbs }
+const hotSectorData = computed(() => {
+  return [...sectors.value]
+    .sort((a, b) => Math.abs(Number(b.change) || 0) - Math.abs(Number(a.change) || 0))
+    .slice(0, 6)
 })
 
-const hotSectorTreemapAria = computed(() => {
-  const parts = hotSectorTreemap.value.rects.map((r) => `${r.data.name} ${r.pctStr}`)
-  return `热门板块热力图 ${parts.join('，')}`
-})
-
-function ellipsisSectorName(name, w) {
-  if (!name) return ''
-  const maxChars = w < 48 ? 5 : w < 70 ? 7 : w < 100 ? 10 : 12
-  return name.length > maxChars ? `${name.slice(0, maxChars - 1)}…` : name
+function onHotSectorClick() {
+  router.push('/sectors/heatmap')
 }
 
 const rankPctLabel = computed(() =>
@@ -665,6 +619,19 @@ async function loadMacro() {
   }
 }
 
+async function loadFlash() {
+  try {
+    const data = await macroFlashReport()
+    if (data && typeof data === 'object') {
+      flashData.value = data
+    }
+  } catch (e) {
+    console.error('flash report error', e)
+  } finally {
+    loadingFlash.value = false
+  }
+}
+
 // 指数迷你K线数据
 async function loadIndexMini() {
   try {
@@ -700,6 +667,7 @@ onMounted(() => {
   loadTurnover()
   loadMacro()
   loadSession()
+  loadFlash()
 
   sessionPollTimer = setInterval(() => {
     clockTick.value += 1
@@ -715,6 +683,7 @@ onMounted(() => {
     loadTurnover()
     loadMacro()
     loadSession()
+    loadFlash()
   }, 120_000)
 })
 onUnmounted(() => {
@@ -1386,6 +1355,90 @@ onUnmounted(() => {
   display: block;
 }
 
+/* 宏观同步快讯入口 */
+.hm-flash {
+  padding: 16px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+  background: linear-gradient(135deg, rgba(70, 72, 212, 0.06), rgba(70, 72, 212, 0.02));
+}
+.hm-flash:active {
+  background: rgba(70, 72, 212, 0.09);
+}
+
+.hm-flash__left {
+  flex: 1;
+  min-width: 0;
+}
+
+.hm-flash__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--hm-primary);
+  margin-bottom: 6px;
+}
+
+.hm-flash__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--hm-primary);
+  animation: mfr-pulse 1.8s ease-in-out infinite;
+}
+@keyframes mfr-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.75); }
+}
+
+.hm-flash__title {
+  margin: 0 0 4px;
+  font-family: 'Manrope', var(--font);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--hm-text);
+}
+
+.hm-flash__sub {
+  margin: 0;
+  font-size: 11px;
+  color: var(--hm-outline);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hm-flash__arrow {
+  width: 20px;
+  height: 20px;
+  color: var(--hm-primary);
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+.hm-flash__skel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.hm-flash__skel-left {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 热门板块 */
 .hm-hot {
   padding: 12px 14px 14px;
@@ -1409,74 +1462,11 @@ onUnmounted(() => {
   cursor: pointer;
   font-family: inherit;
 }
-.hm-hot-treemap-wrap {
-  width: 100%;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: inset 0 0 0 1px var(--hm-ghost);
-  background: rgba(255, 255, 255, 0.35);
-}
-.hm-hot-treemap {
-  width: 100%;
-  height: auto;
-  display: block;
-  vertical-align: top;
-  min-height: 132px;
-}
-.hm-hot-treemap__cell {
-  cursor: pointer;
-  transition: filter 0.12s ease;
-}
-.hm-hot-treemap__cell:hover {
-  filter: brightness(1.05);
-}
-.hm-hot-treemap__cell:active {
-  filter: brightness(0.96);
-}
-.hm-hot-treemap__lbl {
-  pointer-events: none;
-  font-family: 'Manrope', var(--font);
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  user-select: none;
-}
-.hm-hot-treemap__lbl--name {
-  font-weight: 700;
-  opacity: 0.96;
-}
-.hm-hot-treemap__lbl--pct {
-  font-weight: 800;
-}
 .hm-hot-empty {
   font-size: 12px;
   color: var(--hm-outline);
   padding: 20px 8px;
   text-align: center;
-}
-.hm-hot-treemap-sk {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 132px;
-}
-.hm-hot-treemap-sk__row {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  min-height: 0;
-}
-.hm-hot-treemap-sk__row--4 .hm-hot-treemap-sk__blk {
-  flex: 1;
-}
-.hm-hot-treemap-sk__row--2 .hm-hot-treemap-sk__blk {
-  flex: 1;
-}
-.hm-hot-treemap-sk__blk {
-  border-radius: 8px;
-  min-height: 56px;
-  background: linear-gradient(90deg, var(--surface-2) 0%, var(--divider) 50%, var(--surface-2) 100%);
-  background-size: 200% 100%;
-  animation: sk-shine 1.1s ease-in-out infinite;
 }
 
 .page-loading {

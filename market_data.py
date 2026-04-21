@@ -928,38 +928,153 @@ def _sector_row_amount(row) -> float:
 
 def get_hot_sectors() -> List:
     """
-    获取热点板块（同花顺数据源，已内置降级到东方财富）
+    获取热点板块。优先级:
+    1. 同花顺 HTML 解析 (curl_cffi, 绕过IP封禁)
+    2. 新浪概念板块 JS 数据 (curl_cffi, 含涨跌幅/净流入)
+    3. 东方财富 akshare
     """
     cached = _get_cached('hot_sectors')
     if cached:
         return cached
 
-    from utils.ths_crawler import get_ths_industry_list
+    result = []
 
+    # 方法1: 同花顺 HTML 解析 (curl_cffi 绕过 requests 的 IP 封禁)
     try:
-        df = get_ths_industry_list()
-        if df is None or df.empty:
-            return []
-
-        result = []
-        for _, row in df.head(20).iterrows():
-            amt = _sector_row_amount(row)
-            result.append({
-                'name': row['板块'],
-                'code': row.get('代码', ''),
-                'change': _safe_float(row['涨跌幅']),
-                'leader': row.get('领涨股', ''),
-                'leader_change': _safe_float(row.get('领涨股-涨跌幅', 0)),
-                'heat_display': '--',
-                **({'amount': amt} if amt > 0 else {}),
-            })
-
-        _set_cached('hot_sectors', result)
-        return result
-
+        from curl_cffi import requests as cr
+        THS_HEADERS = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://q.10jqka.com.cn/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+        }
+        resp = cr.get('https://q.10jqka.com.cn/thshy/', headers=THS_HEADERS, impersonate='chrome110', timeout=15)
+        if resp.status_code == 200:
+            resp.encoding = 'gbk'
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            table = soup.find('table', class_='m-table')
+            if table:
+                rows = table.find_all('tr')[1:]
+                industries = []
+                for row in rows:
+                    cells = row.find_all('td')
+                    if len(cells) < 12:
+                        continue
+                    try:
+                        link = cells[1].find('a')
+                        href = link.get('href', '') if link else ''
+                        code = ''
+                        if '/code/' in href:
+                            code = href.split('/code/')[-1].rstrip('/')
+                        def _pf(t):
+                            try:
+                                return float(t.get_text(strip=True))
+                            except:
+                                return 0.0
+                        def _pi(t):
+                            try:
+                                return int(t.get_text(strip=True))
+                            except:
+                                return 0
+                        industries.append({
+                            '板块': cells[1].get_text(strip=True),
+                            '代码': code,
+                            '涨跌幅': _pf(cells[2]),
+                            '总成交额': _pf(cells[4]),
+                            '上涨家数': _pi(cells[6]),
+                            '下跌家数': _pi(cells[7]),
+                            '领涨股': cells[9].get_text(strip=True),
+                            '领涨股-涨跌幅': _pf(cells[11]),
+                        })
+                    except Exception:
+                        continue
+                if industries:
+                    industries.sort(key=lambda x: x['涨跌幅'], reverse=True)
+                    for _, row in enumerate(industries[:20]):
+                        amt = row.get('总成交额', 0)
+                        result.append({
+                            'name': row['板块'],
+                            'code': row.get('代码', ''),
+                            'change': row['涨跌幅'],
+                            'leader': row.get('领涨股', ''),
+                            'leader_change': row.get('领涨股-涨跌幅', 0),
+                            'heat_display': '--',
+                            **({'amount': amt} if amt > 0 else {}),
+                        })
+                    logger.info(f'热点行业获取成功（同花顺 curl_cffi）: {len(result)}条')
+                    _set_cached('hot_sectors', result)
+                    return result
     except Exception as e:
-        logger.error(f"获取热点板块失败: {e}")
-        return []
+        logger.debug(f'同花顺 curl_cffi 行业板块失败: {e}')
+
+    # 方法2: 新浪板块 JS 数据（curl_cffi, 含净流入/涨跌幅）
+    try:
+        from curl_cffi import requests as cr
+        url = 'https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class'
+        resp = cr.get(url, impersonate='chrome110', timeout=15)
+        if resp.status_code == 200 and resp.text and '<html>' not in resp.text[:50]:
+            import re, json as _json
+            js_match = re.search(r'=\s*(\{".*"\})', resp.text, re.DOTALL)
+            if js_match:
+                try:
+                    raw_data = _json.loads(js_match.group(1))
+                    items = []
+                    for key, val in raw_data.items():
+                        parts = val.split(',')
+                        name = parts[1].strip() if len(parts) > 1 else key
+                        change = float(parts[-1]) if len(parts) > 1 else 0.0
+                        amount = float(parts[7]) if len(parts) > 7 else 0.0
+                        leader_code = parts[8] if len(parts) > 8 else ''
+                        leader_chg = float(parts[9]) if len(parts) > 9 else 0.0
+                        items.append({
+                            'name': name, 'code': key, 'change': change,
+                            'amount': amount, 'leader_code': leader_code,
+                            'leader_chg': leader_chg,
+                        })
+                    items.sort(key=lambda x: x['change'], reverse=True)
+                    for row in items[:20]:
+                        amt = row.get('amount', 0)
+                        result.append({
+                            'name': row['name'],
+                            'code': row['code'],
+                            'change': row['change'],
+                            'leader': row.get('leader_code', ''),
+                            'leader_change': row.get('leader_chg', 0),
+                            'heat_display': '--',
+                            **({'amount': amt} if amt > 0 else {}),
+                        })
+                    logger.info(f'热点行业获取成功（新浪 curl_cffi）: {len(result)}条')
+                    _set_cached('hot_sectors', result)
+                    return result
+                except Exception as e2:
+                    logger.debug(f'新浪 JS 解析失败: {e2}')
+    except Exception as e:
+        logger.debug(f'新浪 curl_cffi 行业板块失败: {e}')
+
+    # 方法3: 东方财富 akshare
+    try:
+        from utils.ths_crawler import get_ths_industry_list
+        df = get_ths_industry_list()
+        if df is not None and not df.empty:
+            for _, row in df.head(20).iterrows():
+                amt = _sector_row_amount(row)
+                result.append({
+                    'name': row['板块'],
+                    'code': row.get('代码', ''),
+                    'change': _safe_float(row['涨跌幅']),
+                    'leader': row.get('领涨股', ''),
+                    'leader_change': _safe_float(row.get('领涨股-涨跌幅', 0)),
+                    'heat_display': '--',
+                    **({'amount': amt} if amt > 0 else {}),
+                })
+            logger.info(f'热点行业获取成功（东方财富备用）: {len(result)}条')
+            _set_cached('hot_sectors', result)
+            return result
+    except Exception as e:
+        logger.error(f'获取热点板块失败: {e}')
+
+    return result
 
 
 def get_hot_concept_sectors() -> List[Dict]:
@@ -974,18 +1089,61 @@ def get_hot_concept_sectors() -> List[Dict]:
     result: List[Dict] = []
 
     # 方法1：优先使用新浪概念板块API（curl_cffi绕过IP限制）
+    # 新浪返回 JS 变量格式: var S_Finance_bankuai_class = {"gn_hwqc":"gn_hwqc,华为汽车,97,31.171...,0.6864731,...",...}
     try:
         from curl_cffi import requests as cr
         SINA_HEADERS = {
             'Referer': 'https://finance.sina.com.cn',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
-        # 新浪概念板块API（curl_cffi可以绕过IP封禁）
         url = 'https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class'
         resp = cr.get(url, headers=SINA_HEADERS, impersonate='chrome110', timeout=15)
         if resp.status_code == 200 and resp.text and '<html>' not in resp.text[:50]:
-            import re
-            # 解析板块列表: <li><a href="...">板块名</a></li>
+            import re, json as _json
+            # 尝试解析 JS 变量格式: var S_Finance_bankuai_class = {...}
+            # 数据格式: key,"code,name,count,...,turnover,change,amount,leader_code,leader_price,leader_chg,leader_chg_amt,leader_name"
+            js_var_match = re.search(r'=\s*(\{.+})', resp.text, re.DOTALL)
+            if js_var_match:
+                try:
+                    raw_data = _json.loads(js_var_match.group(1))
+                    items = []
+                    for key, val in list(raw_data.items())[:40]:
+                        parts = val.split(',')
+                        name = parts[1].strip() if len(parts) > 1 else key.strip()
+                        # parts[4] = 板块涨跌幅, parts[10] = 领涨股涨跌幅, parts[12] = 领涨股名称
+                        change = float(parts[4]) if len(parts) > 4 else 0.0
+                        leader = parts[12].strip() if len(parts) > 12 else ''
+                        leader_chg = float(parts[10]) if len(parts) > 10 else 0.0
+                        # parts[7] = 成交额
+                        amount = float(parts[7]) if len(parts) > 7 else 0.0
+                        items.append({
+                            'name': name, 'code': key.strip(),
+                            'change': change, 'leader': leader,
+                            'leader_change': leader_chg, 'amount': amount,
+                        })
+                    # 按涨跌幅排序
+                    items.sort(key=lambda x: x['change'], reverse=True)
+                    for row in items:
+                        amt = row.get('amount', 0)
+                        if amt >= 1e8:
+                            heat_display = f"{amt / 1e8:.2f}亿"
+                        elif amt >= 1e4:
+                            heat_display = f"{amt / 1e4:.2f}万"
+                        else:
+                            heat_display = '--'
+                        result.append({
+                            'name': row['name'], 'code': row['code'],
+                            'change': row['change'], 'leader': row['leader'],
+                            'leader_change': row['leader_change'],
+                            'heat_display': heat_display,
+                        })
+                    logger.info(f'概念板块获取成功（新浪curl_cffi JS解析）: {len(result)}条')
+                    if result:
+                        _set_cached('hot_concept_sectors', result)
+                        return result
+                except Exception:
+                    pass
+            # 备用: <li><a href="...">板块名</a></li>
             pattern = r'<li><a href="[^"]*">([^<]+)</a></li>'
             names = re.findall(pattern, resp.text)
             for name in names[:40]:
@@ -997,7 +1155,7 @@ def get_hot_concept_sectors() -> List[Dict]:
                     'leader_change': 0.0,
                     'heat_display': '--',
                 })
-            logger.info(f'概念板块获取成功（新浪curl_cffi）: {len(result)}条')
+            logger.info(f'概念板块获取成功（新浪curl_cffi li解析）: {len(result)}条')
             if result:
                 _set_cached('hot_concept_sectors', result)
                 return result

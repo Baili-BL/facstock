@@ -58,10 +58,6 @@ export default defineConfig({
         target: 'http://localhost:5002',
         changeOrigin: true,
       },
-      '/sectors': {
-        target: 'http://localhost:5002',
-        changeOrigin: true,
-      },
       '/ticai': {
         target: 'http://localhost:5002',
         changeOrigin: true,
