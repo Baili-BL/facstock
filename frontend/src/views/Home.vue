@@ -658,6 +658,7 @@ async function loadSession() {
 
 let timer = null
 let sessionPollTimer = null
+let limitPollTimer = null
 onMounted(() => {
   loadIndexMini()
   loadOverview()
@@ -674,10 +675,15 @@ onMounted(() => {
     loadSession()
   }, 30_000)
 
+  // 涨跌停对比盘中需要更灵敏，单独提速刷新
+  limitPollTimer = setInterval(() => {
+    market.invalidate('market/limit')
+    loadLimit()
+  }, 30_000)
+
   timer = setInterval(() => {
     // 不清缓存，让前端 TTL 缓存自动管理，静静静后台刷新
     loadOverview()
-    loadLimit()
     loadSnapshot()
     loadSectors()
     loadTurnover()
@@ -689,6 +695,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (sessionPollTimer) clearInterval(sessionPollTimer)
+  if (limitPollTimer) clearInterval(limitPollTimer)
 })
 </script>
 

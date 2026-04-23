@@ -433,9 +433,10 @@ class AgentOrchestrator:
         for agent_id in agents_to_run:
             start_time = time.time()
             config = AGENT_CORE_OBJECTIVES[agent_id]
+            task_titles = "、".join(config.get("focus_fields", [])[:3]) or "标准策略子任务"
 
             ctx.add_log(phase.value, agent_id, "RUNNING",
-                       f"开始执行，子任务: {config['subtasks']}")
+                       f"开始执行，关注字段: {task_titles}")
 
             result = self._execute_single_agent(
                 agent_id=agent_id,

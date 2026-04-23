@@ -54,15 +54,11 @@ export default defineConfig({
         target: 'http://localhost:5002',
         changeOrigin: true,
       },
-      '/strategy': {
-        target: 'http://localhost:5002',
-        changeOrigin: true,
-      },
-      '/ticai': {
-        target: 'http://localhost:5002',
-        changeOrigin: true,
-      },
       '/tv_udf': {
+        target: 'http://localhost:5002',
+        changeOrigin: true,
+      },
+      '^/s(?:/|$)': {
         target: 'http://localhost:5002',
         changeOrigin: true,
       },

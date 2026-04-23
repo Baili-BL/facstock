@@ -245,7 +245,7 @@ class DataProvider:
 
 请基于真实数据给出。"""
 
-        result = self.qwen.call(instructions, prompt, max_tokens=1000)
+        result = self.qwen.call(prompt, max_tokens=1000, enable_search=True)
         return {
             'success': result.get('success', False),
             'data': result.get('content', ''),

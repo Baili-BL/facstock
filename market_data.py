@@ -103,13 +103,17 @@ def _ak_sina_direct():
 # 缓存相关
 _cache = {}
 _cache_timeout = 30  # 30秒，与 Redis TTL 保持一致
+_cache_timeout_overrides = {
+    'limit_up': 10,  # 涨跌停对比盘中需要更灵敏
+}
 
 
 def _get_cached(key: str) -> Optional[any]:
     """获取缓存数据"""
     if key in _cache:
         data, timestamp = _cache[key]
-        if datetime.now().timestamp() - timestamp < _cache_timeout:
+        ttl = _cache_timeout_overrides.get(key, _cache_timeout)
+        if datetime.now().timestamp() - timestamp < ttl:
             return data
     return None
 
@@ -131,30 +135,203 @@ def _safe_float(val, default: float = 0.0) -> float:
         return default
 
 
+def _get_qwen_api_key() -> str:
+    """获取 Qwen / DashScope API Key。"""
+    return os.environ.get('DASHSCOPE_API_KEY', '') or os.environ.get('QWEN_API_KEY', '')
+
+
+def _fetch_limit_counts_from_qwen() -> Optional[Tuple[int, int]]:
+    """
+    通过 Qwen 联网搜索获取同花顺口径的涨跌停家数。
+
+    用户明确要求优先参考 Qwen（其背后已接同花顺数据），因此这里将其作为
+    首页涨跌停家数的第一优先级。若返回不可解析或异常，则继续走后续兜底。
+    """
+    api_key = _get_qwen_api_key()
+    if not api_key:
+        return None
+
+    try:
+        import json
+        import re
+        import dashscope
+
+        now = datetime.now()
+        today = now.strftime('%Y年%m月%d日')
+        hm = now.hour * 60 + now.minute
+        is_weekday = now.weekday() < 5
+        # 盘前看昨收；盘中/盘后看当前收盘或实时。
+        use_live_prompt = is_weekday and hm >= (9 * 60 + 30)
+
+        if use_live_prompt:
+            user_prompt = (
+                f'今天是{today}。当前A股涨跌停对比是多少？'
+                '按同花顺实时口径，只回答类似 65:19 这种格式，不要解释。'
+            )
+        else:
+            user_prompt = (
+                f'今天是{today}。上一交易日A股涨跌停对比是多少？'
+                '按同花顺 q.10jqka.com.cn 首页口径，只回答类似 63:15 这种格式，不要解释。'
+            )
+
+        messages = [
+            {
+                'role': 'system',
+                'content': 'You are a helpful assistant.',
+            },
+            {
+                'role': 'user',
+                'content': user_prompt,
+            },
+        ]
+
+        with _no_http_proxy_env():
+            response = dashscope.Generation.call(
+                api_key=api_key,
+                model='qwen-plus',
+                messages=messages,
+                enable_search=True,
+                result_format='message',
+                temperature=0.0,
+            )
+
+        if getattr(response, 'status_code', None) != 200:
+            logger.debug(f'Qwen 涨跌停家数获取失败: status={getattr(response, "status_code", None)}')
+            return None
+
+        content = ''
+        try:
+            content = response.output.choices[0].message.content or ''
+        except Exception:
+            content = str(response)
+
+        # 优先解析 63:15 / 63：15 这类紧凑格式
+        pair_match = re.search(r'(\d+)\s*[:：]\s*(\d+)', content)
+        if pair_match:
+            up_i = int(pair_match.group(1))
+            down_i = int(pair_match.group(2))
+            if 0 <= up_i <= 500 and 0 <= down_i <= 500:
+                return up_i, down_i
+
+        # 再兜底解析 JSON
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            try:
+                payload = json.loads(json_match.group(0))
+                up = payload.get('limit_up_count')
+                down = payload.get('limit_down_count')
+                if up is not None and down is not None:
+                    up_i = int(float(up))
+                    down_i = int(float(down))
+                    if 0 <= up_i <= 500 and 0 <= down_i <= 500:
+                        return up_i, down_i
+            except Exception:
+                pass
+
+        # 最后解析“XX只涨停、YY只跌停”
+        text_match = re.search(r'(\d+)\s*只涨停[股票]*[、,， ]+(\d+)\s*只跌停', content)
+        if text_match:
+            up_i = int(text_match.group(1))
+            down_i = int(text_match.group(2))
+            if 0 <= up_i <= 500 and 0 <= down_i <= 500:
+                return up_i, down_i
+
+        logger.debug(f'Qwen 涨跌停家数解析失败: {content[:200]}')
+        return None
+    except Exception as e:
+        logger.debug(f'Qwen 涨跌停家数获取异常: {e}')
+        return None
+
+
 def get_market_overview() -> List[Dict]:
     """
     获取大盘指数概览（上证、深证、创业板、科创板等）
-    使用新浪API作为主数据源
+    优先使用东方财富指数现货；新浪仅作兜底。
     """
     cached = _get_cached('market_overview')
     if isinstance(cached, list) and len(cached) > 0:
         return cached
 
     result = []
-    needed = {
-        'sh000001': '上证指数',
-        'sz399001': '深证成指',
-        'sz399006': '创业板指',
-        'sh000688': '科创50',
-        'sh000300': '沪深300',
-        'sh000016': '上证50',
-        'sh000905': '中证500',
-        'sh000852': '中证1000',
-    }
+    ordered_needed = [
+        ('000001', '上证指数'),
+        ('399001', '深证成指'),
+        ('399006', '创业板指'),
+        ('000688', '科创50'),
+        ('000300', '沪深300'),
+        ('000016', '上证50'),
+        ('000905', '中证500'),
+        ('000852', '中证1000'),
+    ]
 
-    # 使用新浪API
+    # ── 主数据源：东方财富指数现货（与其他模块口径保持一致）──────────────
     try:
-        # 直接构造URL参数，不用params，让逗号保持原样
+        with _ak_eastmoney_direct():
+            df = _get_ak().stock_zh_index_spot_em(symbol='沪深重要指数')
+
+        if df is not None and not df.empty:
+            lookup: Dict[str, Dict] = {}
+            for _, row in df.iterrows():
+                code = str(row.get('代码') or '').strip()
+                if not code:
+                    continue
+                lookup[code.zfill(6)] = row.to_dict()
+
+            for code, name in ordered_needed:
+                row = lookup.get(code)
+                if not row:
+                    continue
+
+                price = _safe_float(row.get('最新价') or row.get('最新') or row.get('收盘'))
+                prev_close = _safe_float(row.get('昨收') or row.get('昨收盘') or row.get('前收盘'))
+                open_price = _safe_float(row.get('今开') or row.get('开盘'))
+                change = _safe_float(row.get('涨跌幅'))
+                change_amount = _safe_float(
+                    row.get('涨跌额') if row.get('涨跌额') is not None else price - prev_close
+                )
+
+                if not price and prev_close:
+                    price = prev_close
+                if not prev_close and price and change:
+                    prev_close = price / (1 + change / 100.0)
+                if not change and price and prev_close:
+                    change = (price - prev_close) / prev_close * 100 if prev_close else 0.0
+                if not change_amount and price and prev_close:
+                    change_amount = price - prev_close
+
+                result.append({
+                    'name': name,
+                    'code': code,
+                    'price': round(price, 4),
+                    'change': round(change, 2),
+                    'change_amount': round(change_amount, 2),
+                    'volume': _safe_float(row.get('成交量')),
+                    'amount': _safe_float(row.get('成交额')),
+                    'high': _safe_float(row.get('最高')),
+                    'low': _safe_float(row.get('最低')),
+                    'open': round(open_price, 4) if open_price else 0,
+                    'prev_close': round(prev_close, 4) if prev_close else 0,
+                })
+
+        if len(result) >= 3:
+            logger.info(f"大盘指数获取成功（东财）: {len(result)}条")
+            _set_cached('market_overview', result)
+            return result
+    except Exception as e:
+        logger.warning(f"大盘指数获取失败（东财）: {e}")
+
+    # ── 兜底数据源：新浪指数接口──────────────────────────────────────────
+    try:
+        needed = {
+            'sh000001': '上证指数',
+            'sz399001': '深证成指',
+            'sz399006': '创业板指',
+            'sh000688': '科创50',
+            'sh000300': '沪深300',
+            'sh000016': '上证50',
+            'sh000905': '中证500',
+            'sh000852': '中证1000',
+        }
         codes_str = ','.join(needed.keys())
         url = 'https://hq.sinajs.cn/list=' + codes_str
         from curl_cffi import requests as cr
@@ -170,10 +347,13 @@ def get_market_overview() -> List[Dict]:
             if key not in needed:
                 continue
             parts = data_str.split(',')
-            if len(parts) >= 5:
+            if len(parts) >= 6:
                 name = needed[key]
-                price = float(parts[1]) if parts[1] else 0
-                prev_close = float(parts[2]) if len(parts) > 2 and parts[2] else price
+                open_price = float(parts[1]) if parts[1] else 0
+                prev_close = float(parts[2]) if len(parts) > 2 and parts[2] else 0
+                price = float(parts[3]) if len(parts) > 3 and parts[3] else prev_close
+                high = float(parts[4]) if len(parts) > 4 and parts[4] else 0
+                low = float(parts[5]) if len(parts) > 5 and parts[5] else 0
                 change = ((price - prev_close) / prev_close * 100) if prev_close else 0
                 result.append({
                     'name': name,
@@ -183,9 +363,9 @@ def get_market_overview() -> List[Dict]:
                     'change_amount': round(price - prev_close, 2),
                     'volume': 0,
                     'amount': 0,
-                    'high': 0,
-                    'low': 0,
-                    'open': float(parts[3]) if len(parts) > 3 and parts[3] else 0,
+                    'high': high,
+                    'low': low,
+                    'open': open_price,
                     'prev_close': prev_close,
                 })
         if result:
@@ -308,8 +488,9 @@ def get_money_flow() -> Dict:
 def get_limit_up_data() -> Dict:
     """
     获取涨跌停数据
-    涨停池: stock_zt_pool_em
-    跌停池: stock_zt_pool_dtgc_em（大跌股，含跌停）
+    家数口径优先使用 Qwen（同花顺口径）；
+    再尝试 q.10jqka 首页 / 同花顺温度计；
+    个股列表继续使用东方财富涨停池。
     """
     cached = _get_cached('limit_up')
     if cached:
@@ -320,14 +501,89 @@ def get_limit_up_data() -> Dict:
         'limit_up_count': 0,
         'limit_down_count': 0,
         'limit_up_stocks': [],
+        'count_source': '',
         'time': datetime.now().strftime('%H:%M'),
     }
+
+    # ── Qwen + 同花顺口径：用户指定的第一优先级 ────────────────────────
+    qwen_counts = _fetch_limit_counts_from_qwen()
+    if qwen_counts:
+        result['limit_up_count'], result['limit_down_count'] = qwen_counts
+        result['count_source'] = 'Qwen+同花顺'
+
+    # ── 同花顺 q 首页 indexflash：优先对齐用户在 q.10jqka.com.cn 看到的口径 ──
+    if not result['count_source']:
+        try:
+            from curl_cffi import requests as cr
+            import json
+            import re
+
+            with _no_http_proxy_env():
+                resp = cr.get(
+                    'https://q.10jqka.com.cn/api.php?t=indexflash&',
+                    headers={
+                        'Referer': 'https://q.10jqka.com.cn/',
+                        'User-Agent': 'Mozilla/5.0',
+                        'Accept': '*/*',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    impersonate='chrome110',
+                    timeout=15,
+                )
+
+            if resp.status_code == 200:
+                text = (resp.text or '').strip()
+                payload = None
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    # 同花顺这类老接口偶尔返回接近 JS 对象字面量，做一次兜底清洗
+                    cleaned = re.sub(r'^\s*\(|\)\s*;?\s*$', '', text)
+                    payload = json.loads(cleaned)
+
+                zdt_data = payload.get('zdt_data') or {}
+                last_zdt = zdt_data.get('last_zdt') or {}
+                ztzs = last_zdt.get('ztzs')
+                dtzs = last_zdt.get('dtzs')
+                if ztzs is not None and dtzs is not None:
+                    result['limit_up_count'] = int(float(ztzs))
+                    result['limit_down_count'] = int(float(dtzs))
+                    result['count_source'] = '同花顺 q首页'
+        except Exception as e:
+            logger.debug(f'同花顺 q 首页涨跌停家数获取失败: {e}')
+
+    # ── 同花顺温度计：优先用于首页“涨跌停对比”家数口径 ─────────────────
+    if not result['count_source']:
+        try:
+            from curl_cffi import requests as cr
+            import re
+
+            with _no_http_proxy_env():
+                resp = cr.get(
+                    'https://stock.10jqka.com.cn/wenduji/',
+                    headers={
+                        'Referer': 'https://stock.10jqka.com.cn/',
+                        'User-Agent': 'Mozilla/5.0',
+                    },
+                    impersonate='chrome110',
+                    timeout=15,
+                )
+            html = resp.content.decode('gbk', 'ignore')
+            m = re.search(r'涨停家数：<i[^>]*>(\d+)</i>.*?跌停家数：<i[^>]*>(\d+)</i>', html, re.S)
+            if m:
+                result['limit_up_count'] = int(m.group(1))
+                result['limit_down_count'] = int(m.group(2))
+                result['count_source'] = '同花顺温度计'
+        except Exception as e:
+            logger.debug(f'同花顺涨跌停家数获取失败: {e}')
 
     try:
         with _ak_eastmoney_direct():
             up_df = _get_ak().stock_zt_pool_em(date=today)
         if up_df is not None and not up_df.empty:
-            result['limit_up_count'] = len(up_df)
+            if not result['limit_up_count']:
+                result['limit_up_count'] = len(up_df)
+                result['count_source'] = '东方财富涨停池'
             for _, row in up_df.head(10).iterrows():
                 result['limit_up_stocks'].append({
                     'name': str(row.get('名称', '')),
@@ -342,9 +598,10 @@ def get_limit_up_data() -> Dict:
         with _ak_eastmoney_direct():
             down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
         if down_df is not None and not down_df.empty:
-            # 大跌股中过滤出跌停（涨跌幅 <= -9.9）
-            limit_down = down_df[down_df['涨跌幅'] <= -9.9]
-            result['limit_down_count'] = len(limit_down)
+            if not result['limit_down_count']:
+                result['limit_down_count'] = len(down_df)
+                if not result['count_source']:
+                    result['count_source'] = '东方财富跌停池'
     except Exception as e:
         logger.warning(f"大跌股池获取失败: {e}")
 

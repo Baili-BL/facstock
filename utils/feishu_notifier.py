@@ -14,13 +14,21 @@ import requests
 logger = logging.getLogger(__name__)
 
 # 飞书 Webhook 地址（支持环境变量覆盖）
-FEISHU_WEBHOOK_URL = os.environ.get(
-    'FEISHU_WEBHOOK_URL',
-    'https://open.feishu.cn/open-apis/bot/v2/hook/22843403-5038-4d34-8105-63354f3f868f'
-)
+FEISHU_WEBHOOK_URL = (
+    os.environ.get('AGENT_PUSH_WEBHOOK_URL')
+    or os.environ.get('FEISHU_WEBHOOK_URL')
+    or ''
+).strip()
 
 # 推送开关（生产环境建议设为 True）
 FEISHU_ENABLED = os.environ.get('FEISHU_ENABLED', 'true').lower() in ('true', '1', 'yes')
+
+
+def _short_text(value: Any, limit: int = 56) -> str:
+    text = str(value or '').strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + '…'
 
 
 class FeishuNotifier:
@@ -301,6 +309,210 @@ class FeishuNotifier:
 
         return self._post(payload)
 
+    def build_agent_digest_payload(self, digest: Dict[str, Any]) -> Dict[str, Any]:
+        """构造游资智能体飞书策略推送卡片。"""
+        slot_key = str(digest.get('slotKey') or '').strip()
+        slot_label = str(digest.get('slotLabel') or '策略推送').strip()
+        generated_at = str(digest.get('generatedAt') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        trigger_type = str(digest.get('triggerType') or 'manual').strip()
+
+        market = digest.get('marketBrief') or {}
+        session = market.get('session') or {}
+        indices = market.get('indices') or []
+        limit_up = int(float(market.get('limitUpCount') or 0))
+        limit_down = int(float(market.get('limitDownCount') or 0))
+        limit_source = str(market.get('limitSource') or '系统聚合').strip()
+        session_phase = str(session.get('phase') or '策略时段').strip()
+
+        consensus = digest.get('consensusStocks') or []
+        reports = digest.get('agentReports') or []
+        errors = digest.get('errors') or []
+
+        header_template_map = {
+            '0900': 'blue',
+            '1230': 'orange',
+            '1430': 'red',
+            '2100': 'indigo',
+        }
+        header_template = header_template_map.get(slot_key, 'blue')
+
+        def _format_pct(val: Any) -> str:
+            try:
+                return f"{float(val):+,.2f}%"
+            except Exception:
+                return "0.00%"
+
+        def _format_price(val: Any) -> str:
+            try:
+                return f"{float(val):.2f}"
+            except Exception:
+                return "--"
+
+        def _stance_label(val: str) -> str:
+            mapping = {
+                'bull': '看多',
+                'bear': '谨慎',
+                'neutral': '中性',
+            }
+            return mapping.get(str(val or '').strip().lower(), '中性')
+
+        index_line = ' ｜ '.join(
+            f"**{item.get('name', '')}** {_format_price(item.get('price'))} ({_format_pct(item.get('change'))})"
+            for item in indices[:3]
+            if item.get('name')
+        ) or '指数数据待同步'
+
+        summary = digest.get('summary') or {}
+        agent_names = ' / '.join(
+            str(item.get('agentName') or '').strip()
+            for item in reports
+            if item.get('agentName')
+        ) or '暂无成功输出'
+
+        elements: List[Dict[str, Any]] = [
+            {
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': (
+                        f"**触发时间** `{generated_at}` ｜ **时段** `{slot_label}` ｜ **会话** `{session_phase}`\n"
+                        f"**执行来源** {trigger_type} ｜ **成功智能体** {summary.get('successCount', 0)}/{summary.get('agentCount', 0)}\n"
+                        f"**参与智能体** {agent_names}"
+                    ),
+                },
+            },
+            {
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': (
+                        f"{index_line}\n"
+                        f"**涨跌停对比** `{limit_up}:{limit_down}` ｜ **口径** {limit_source} ｜ **数据时间** {market.get('limitTime') or generated_at[-8:]}"
+                    ),
+                },
+            },
+        ]
+
+        if consensus:
+            elements.append({'tag': 'hr'})
+            elements.append({
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': '**🎯 共识股票**',
+                },
+            })
+            for idx, item in enumerate(consensus[:5], 1):
+                support_agents = ' / '.join(item.get('supportAgents') or []) or '待观察'
+                summary_line = (
+                    f"{item.get('roleSummary') or '候选'} ｜ {item.get('entryModelSummary') or '观察'}"
+                )
+                if item.get('positionSummary'):
+                    summary_line += f" ｜ {item.get('positionSummary')}"
+                signal_line = str(item.get('signalSummary') or '').strip()
+                content = (
+                    f"**{idx}. {item.get('name', '')}({item.get('code', '')})** "
+                    f"{_format_price(item.get('price'))} `{_format_pct(item.get('changePct'))}`\n"
+                    f"共识强度：**{item.get('supportCount', 0)}** 家 ｜ {support_agents}\n"
+                    f"{summary_line}"
+                )
+                if signal_line:
+                    content += f"\n{signal_line}"
+                elements.append({
+                    'tag': 'div',
+                    'text': {
+                        'tag': 'lark_md',
+                        'content': content,
+                    },
+                })
+
+        if reports:
+            elements.append({'tag': 'hr'})
+            elements.append({
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': '**🧠 智能体观点摘要**',
+                },
+            })
+            for report in reports[:6]:
+                stock_lines = []
+                for stock in (report.get('recommendedStocks') or [])[:2]:
+                    line = (
+                        f"- **{stock.get('name', '')}({stock.get('code', '')})** "
+                        f"{stock.get('role') or '候选'} ｜ {stock.get('entryModel') or '观察'}"
+                    )
+                    if stock.get('positionRatio'):
+                        line += f" ｜ {stock.get('positionRatio')}"
+                    if stock.get('signal'):
+                        line += f"\n  {_short_text(stock.get('signal'), 80)}"
+                    stock_lines.append(line)
+                section = (
+                    f"**{report.get('agentName', '')}｜{report.get('role') or '游资模型'}** "
+                    f"{report.get('confidence', 0)}分 / {_stance_label(report.get('stance', 'neutral'))}\n"
+                    f"市场：{_short_text(report.get('marketCommentary'), 80) or '待观察'}\n"
+                    f"仓位：{_short_text(report.get('positionAdvice'), 80) or '按情绪调整'}\n"
+                    f"风控：{_short_text(report.get('riskWarning'), 80) or '严格止损'}"
+                )
+                if stock_lines:
+                    section += "\n" + "\n".join(stock_lines)
+                elements.append({
+                    'tag': 'div',
+                    'text': {
+                        'tag': 'lark_md',
+                        'content': section,
+                    },
+                })
+
+        if errors:
+            elements.append({'tag': 'hr'})
+            error_lines = []
+            for item in errors[:4]:
+                error_lines.append(
+                    f"- {item.get('agentName') or item.get('agentId')}: {_short_text(item.get('error'), 60)}"
+                )
+            elements.append({
+                'tag': 'div',
+                'text': {
+                    'tag': 'lark_md',
+                    'content': "**⚠️ 未成功输出的智能体**\n" + '\n'.join(error_lines),
+                },
+            })
+
+        elements.append({'tag': 'hr'})
+        elements.append({
+            'tag': 'note',
+            'elements': [
+                {
+                    'tag': 'plain_text',
+                    'content': f'facSstock 自动推送 | {slot_label} | {generated_at}',
+                }
+            ],
+        })
+
+        return {
+            'msg_type': 'interactive',
+            'card': {
+                'config': {'wide_screen_mode': True},
+                'header': {
+                    'title': {
+                        'tag': 'plain_text',
+                        'content': f'📡 游资智能体策略推送｜{slot_label}',
+                    },
+                    'template': header_template,
+                },
+                'elements': elements,
+            },
+        }
+
+    def send_agent_digest(self, digest: Dict[str, Any]) -> bool:
+        """发送游资智能体策略汇总卡片。"""
+        if not self.enabled or not self.is_configured:
+            logger.debug('[Feishu] 推送已禁用或未配置，跳过智能体策略推送')
+            return False
+        payload = self.build_agent_digest_payload(digest)
+        return self._post(payload)
+
 
 # ── 全局单例 ──────────────────────────────────────────────────────────────────
 
@@ -336,3 +548,9 @@ def send_feishu_test(webhook_url: Optional[str] = None) -> bool:
         f'时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n'
         f'Webhook: …{tail}'
     )
+
+
+def send_feishu_agent_digest(digest: Dict[str, Any], webhook_url: Optional[str] = None) -> bool:
+    """快捷函数：发送游资智能体策略推送。"""
+    notifier = FeishuNotifier(webhook_url=webhook_url) if webhook_url else FeishuNotifier()
+    return notifier.send_agent_digest(digest)

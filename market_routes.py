@@ -120,14 +120,14 @@ def api_money_flow():
 
 @market_bp.route('/api/market/limit')
 def api_limit_up():
-    """获取涨跌停数据（Redis 缓存 15s）"""
+    """获取涨跌停数据（Redis 缓存 10s）"""
     hit = get('market/limit')
     if hit is not None:
         return jsonify({'success': True, 'data': hit})
 
     try:
         data = get_limit_up_data()
-        set('market/limit', data, ttl=15)
+        set('market/limit', data, ttl=10)
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

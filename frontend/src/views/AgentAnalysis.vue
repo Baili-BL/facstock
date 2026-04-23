@@ -87,11 +87,11 @@
             class="fac-timeline__item"
           >
             <div class="fac-timeline__dot" :class="{ 'fac-timeline__dot--active': (line.startsWith('[步骤') || line.startsWith('[阶段')) && i === thinkingLines.length - 1 }">
-              <span class="mso">{{ line.startsWith('[步骤') ? 'task_alt' : line.startsWith('[调用') ? 'cloud_download' : line.startsWith('[结果') ? 'database' : line.startsWith('[阶段]') ? 'auto_awesome' : 'smart_toy' }}</span>
+              <span class="mso">{{ line.startsWith('[步骤') ? 'task_alt' : line.startsWith('[调用') ? 'cloud_download' : line.startsWith('[数据') ? 'database' : line.startsWith('[结果') ? 'database' : line.startsWith('[阶段]') ? 'auto_awesome' : 'smart_toy' }}</span>
           </div>
             <div class="fac-timeline__content" :class="{ 'fac-timeline__content--active': (line.startsWith('[步骤') || line.startsWith('[阶段')) && i === thinkingLines.length - 1 }">
               <div class="fac-timeline__title">
-                {{ line.startsWith('[步骤') ? '任务步骤' : line.startsWith('[调用') ? '数据获取' : line.startsWith('[结果') ? '返回数据' : line.startsWith('[阶段]') ? '推理阶段' : '思考中' }}
+                {{ line.startsWith('[步骤') ? '任务步骤' : line.startsWith('[调用') ? '数据获取' : line.startsWith('[数据') ? '数据获取' : line.startsWith('[结果') ? '返回数据' : line.startsWith('[阶段]') ? '推理阶段' : '思考中' }}
                 <span v-if="line.startsWith('[阶段]') && i === thinkingLines.length - 1" class="fac-timeline__dots">
                   <span class="fac-timeline__dot-anim" />
                   <span class="fac-timeline__dot-anim" />
@@ -140,7 +140,7 @@
       </section>
 
       <!-- ── 实时分析报告 ─────────────────────────────────── -->
-      <section v-if="liveReportLines.length" class="fac-report-card">
+      <section v-if="liveReportLines.length || beijingExecution || qiaoExecution || jiaExecution" class="fac-report-card">
         <div class="fac-report-card__head">
           <span class="mso">description</span>
           <h2 class="fac-report-card__title">{{ isRunning ? '实时分析报告' : '分析报告' }}</h2>
@@ -150,6 +150,961 @@
           </span>
         </div>
         <div class="fac-report-card__body" ref="liveEl">
+          <div v-if="qiaoExecution" class="fac-report-card__module">
+            <div class="fac-report-card__module-head">
+              <span class="mso">dashboard</span>
+              <span class="fac-report-card__module-title">乔帮主执行工件</span>
+            </div>
+
+            <section class="fac-beijing-card fac-beijing-card--embedded fac-qiao-card">
+              <div class="fac-beijing-card__body">
+                <div v-if="qiaoExecution.marketGate?.status" class="fac-beijing-card__gate">
+                  <span class="fac-beijing-gate-chip" :class="`fac-beijing-gate-chip--${qiaoExecution.marketGate.status}`">
+                    市场闸门 {{ qiaoExecution.marketGate.status }}
+                  </span>
+                  <span v-if="qiaoExecution.timeAnchor?.phase" class="fac-beijing-gate-chip fac-beijing-gate-chip--anchor">
+                    时间锚点 {{ qiaoExecution.timeAnchor.phase }}
+                  </span>
+                  <span v-if="qiaoExecution.mainTheme?.name" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    主线 {{ qiaoExecution.mainTheme.name }}
+                  </span>
+                  <span v-if="qiaoExecution.mainTheme?.stage" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    阶段 {{ qiaoExecution.mainTheme.stage }}
+                  </span>
+                </div>
+
+                <div class="fac-beijing-card__stats">
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">今日涨停池</span>
+                    <span class="fac-beijing-stat__value">{{ qiaoExecution.stats?.todayLimitUps ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">龙头样本</span>
+                    <span class="fac-beijing-stat__value">{{ qiaoExecution.stats?.leaderCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">可买候选</span>
+                    <span class="fac-beijing-stat__value">{{ qiaoExecution.stats?.actionableCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">低吸命中</span>
+                    <span class="fac-beijing-stat__value">{{ qiaoExecution.stats?.lowAbsorbCount ?? 0 }}</span>
+                  </div>
+                </div>
+
+                <div v-if="qiaoExecution.strategyPanels" class="fac-beijing-panels">
+                  <section v-if="qiaoExecution.strategyPanels.timeAnchor?.phase" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">schedule</span>
+                      <h3 class="fac-beijing-panel__title">时间锚定</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card fac-beijing-panel__card--anchor">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill fac-beijing-panel__pill--anchor">{{ qiaoExecution.strategyPanels.timeAnchor.phase }}</span>
+                        <span class="fac-beijing-panel__count">{{ qiaoExecution.strategyPanels.timeAnchor.executionFocus }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ qiaoExecution.strategyPanels.timeAnchor.window }}</p>
+                      <p class="fac-beijing-panel__desc">{{ qiaoExecution.strategyPanels.timeAnchor.summary }}</p>
+                      <div v-if="qiaoExecution.strategyPanels.timeAnchor.rules?.length" class="fac-beijing-panel__tags">
+                        <span
+                          v-for="(rule, idx) in qiaoExecution.strategyPanels.timeAnchor.rules"
+                          :key="`qiao-anchor-rule-${idx}`"
+                          class="fac-beijing-panel__tag fac-beijing-panel__tag--anchor"
+                        >
+                          {{ rule }}
+                        </span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.mainJudgement" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">insights</span>
+                      <h3 class="fac-beijing-panel__title">主线判断</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill">{{ qiaoExecution.strategyPanels.mainJudgement.mainTheme }}</span>
+                        <span class="fac-beijing-panel__count">{{ qiaoExecution.strategyPanels.mainJudgement.stage }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ qiaoExecution.strategyPanels.mainJudgement.summary }}</p>
+                      <div class="fac-beijing-panel__tags">
+                        <span class="fac-beijing-panel__tag">龙头 {{ qiaoExecution.strategyPanels.mainJudgement.leader }}</span>
+                        <span class="fac-beijing-panel__tag">次主线 {{ qiaoExecution.strategyPanels.mainJudgement.backupTheme }}</span>
+                      </div>
+                      <div v-if="qiaoExecution.strategyPanels.mainJudgement.reasons?.length" class="fac-beijing-step__lines">
+                        <p
+                          v-for="(line, idx) in qiaoExecution.strategyPanels.mainJudgement.reasons"
+                          :key="`qiao-main-judge-${idx}`"
+                          class="fac-beijing-step__line"
+                        >
+                          {{ line }}
+                        </p>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.cycleMap?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">sync</span>
+                      <h3 class="fac-beijing-panel__title">情绪阶段</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in qiaoExecution.strategyPanels.cycleMap"
+                        :key="`qiao-cycle-${item.stage}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--board">{{ item.stage }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count ? '当前' : '观察' }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.leaderPaths?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">schema</span>
+                      <h3 class="fac-beijing-panel__title">龙头路径</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in qiaoExecution.strategyPanels.leaderPaths"
+                        :key="`qiao-leader-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}只</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.entryPlaybook?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">style</span>
+                      <h3 class="fac-beijing-panel__title">入场模型</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in qiaoExecution.strategyPanels.entryPlaybook"
+                        :key="`qiao-entry-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--rule">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}只</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.labelHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">sell</span>
+                      <h3 class="fac-beijing-panel__title">标签命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__tags">
+                      <span
+                        v-for="item in qiaoExecution.strategyPanels.labelHits"
+                        :key="`qiao-label-hit-${item.label}`"
+                        class="fac-beijing-panel__tag"
+                      >
+                        {{ item.label }} · {{ item.count }}
+                      </span>
+                    </div>
+                  </section>
+
+                  <section v-if="qiaoExecution.strategyPanels.dailyRuleHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">checklist</span>
+                      <h3 class="fac-beijing-panel__title">当日规则命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in qiaoExecution.strategyPanels.dailyRuleHits"
+                        :key="`qiao-rule-hit-${item.title}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--rule">{{ item.title }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.status }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.detail }}</p>
+                      </article>
+                    </div>
+                  </section>
+                </div>
+
+                <div v-if="qiaoExecution.stepOutputs?.length" class="fac-beijing-card__steps">
+                  <article
+                    v-for="step in qiaoExecution.stepOutputs"
+                    :key="`qiao-${step.step}-${step.title}`"
+                    class="fac-beijing-step"
+                  >
+                    <div class="fac-beijing-step__head">
+                      <span class="fac-beijing-step__num">步骤 {{ step.step }}</span>
+                      <div class="fac-beijing-step__copy">
+                        <h3 class="fac-beijing-step__title">{{ step.title || `步骤 ${step.step}` }}</h3>
+                        <p class="fac-beijing-step__summary">{{ step.summary || '暂无执行摘要' }}</p>
+                      </div>
+                    </div>
+                    <div v-if="step.frameworkLines?.length" class="fac-beijing-step__section">
+                      <div class="fac-beijing-step__section-label">方法论</div>
+                      <div class="fac-beijing-step__lines fac-beijing-step__lines--method">
+                        <p
+                          v-for="(line, idx) in step.frameworkLines"
+                          :key="`qiao-${step.step}-framework-${idx}`"
+                          class="fac-beijing-step__line fac-beijing-step__line--method"
+                        >
+                          {{ line }}
+                        </p>
+                      </div>
+                    </div>
+                    <div v-if="step.lines?.length" class="fac-beijing-step__lines">
+                      <div class="fac-beijing-step__section-label">当日判断</div>
+                      <p
+                        v-for="(line, idx) in step.lines"
+                        :key="`qiao-${step.step}-${idx}`"
+                        class="fac-beijing-step__line"
+                      >
+                        {{ line }}
+                      </p>
+                    </div>
+                  </article>
+                </div>
+
+                <div v-if="qiaoExecution.leaderCandidates?.length" class="fac-beijing-card__section">
+                  <div class="fac-beijing-card__section-head">龙头路径样本</div>
+                  <div class="fac-beijing-card__list">
+                    <article
+                      v-for="item in qiaoExecution.leaderCandidates"
+                      :key="`qiao-leader-candidate-${item.code}`"
+                      class="fac-beijing-candidate"
+                    >
+                      <div class="fac-beijing-candidate__top">
+                        <div class="fac-beijing-candidate__name">
+                          {{ item.name }}
+                          <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                        </div>
+                        <div class="fac-beijing-candidate__chips">
+                          <span v-if="item.leaderType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.leaderType }}</span>
+                          <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                          <span v-if="item.entryModel" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">{{ item.entryModel }}</span>
+                          <span v-if="item.sector" class="fac-beijing-candidate__chip">{{ item.sector }}</span>
+                        </div>
+                      </div>
+                      <p class="fac-beijing-candidate__reason">{{ item.reason || item.classificationReason || '暂无龙头路径说明' }}</p>
+                      <div class="fac-beijing-candidate__meta">
+                        <span v-if="item.consecutiveDays">连板 {{ item.consecutiveDays }}</span>
+                        <span v-if="item.firstSealTime">首封 {{ item.firstSealTime }}</span>
+                        <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                        <span v-if="item.changePct || item.changePct === 0">涨幅 {{ normalizePctValue(item.changePct, item) }}%</span>
+                        <span v-if="item.score">评分 {{ item.score }}</span>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+
+                <div v-if="qiaoExecution.actionableCandidates?.length" class="fac-beijing-card__section">
+                  <div class="fac-beijing-card__section-head">主升可买候选池</div>
+                  <div class="fac-beijing-card__list">
+                    <article
+                      v-for="item in qiaoExecution.actionableCandidates"
+                      :key="`qiao-actionable-${item.code}`"
+                      class="fac-beijing-candidate"
+                    >
+                      <div class="fac-beijing-candidate__top">
+                        <div class="fac-beijing-candidate__name">
+                          {{ item.name }}
+                          <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                        </div>
+                        <div class="fac-beijing-candidate__chips">
+                          <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                          <span v-if="item.leaderType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.leaderType }}</span>
+                          <span v-if="item.tradeStatus" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--status">{{ item.tradeStatus }}</span>
+                          <span v-if="item.entryModel" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">{{ item.entryModel }}</span>
+                          <span v-if="item.stage" class="fac-beijing-candidate__chip">{{ item.stage }}</span>
+                          <span
+                            v-for="(label, idx) in (item.labels || []).slice(0, 3)"
+                            :key="`${item.code}-qiao-actionable-label-${idx}`"
+                            class="fac-beijing-candidate__chip fac-beijing-candidate__chip--label"
+                          >{{ label }}</span>
+                        </div>
+                      </div>
+                      <p class="fac-beijing-candidate__reason">{{ item.classificationReason || item.reason || '暂无入场说明' }}</p>
+                      <div class="fac-beijing-candidate__meta">
+                        <span v-if="item.entryTrigger">触发 {{ item.entryTrigger }}</span>
+                        <span v-if="item.maSupportSummary">{{ item.maSupportSummary }}</span>
+                        <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                        <span v-if="item.changePct || item.changePct === 0">涨幅 {{ normalizePctValue(item.changePct, item) }}%</span>
+                        <span v-if="item.score">评分 {{ item.score }}</span>
+                      </div>
+                      <div v-if="item.matchedRules?.length" class="fac-beijing-rule-list">
+                        <article
+                          v-for="(rule, idx) in item.matchedRules.slice(0, 3)"
+                          :key="`${item.code}-qiao-rule-${idx}`"
+                          class="fac-beijing-rule-card"
+                        >
+                          <div class="fac-beijing-rule-card__title">{{ rule.title }}</div>
+                          <div class="fac-beijing-rule-card__detail">{{ rule.detail }}</div>
+                        </article>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div v-if="jiaExecution" class="fac-report-card__module">
+            <div class="fac-report-card__module-head">
+              <span class="mso">dashboard</span>
+              <span class="fac-report-card__module-title">炒股养家执行工件</span>
+            </div>
+
+            <section class="fac-beijing-card fac-beijing-card--embedded fac-qiao-card">
+              <div class="fac-beijing-card__body">
+                <div class="fac-beijing-card__gate">
+                  <span v-if="jiaExecution.emotionCycle?.stage" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    情绪阶段 {{ jiaExecution.emotionCycle.stage }}
+                  </span>
+                  <span v-if="jiaExecution.emotionCycle?.status" class="fac-beijing-gate-chip fac-beijing-gate-chip--anchor">
+                    执行状态 {{ jiaExecution.emotionCycle.status }}
+                  </span>
+                  <span v-if="jiaExecution.timeAnchor?.phase" class="fac-beijing-gate-chip fac-beijing-gate-chip--anchor">
+                    时间锚点 {{ jiaExecution.timeAnchor.phase }}
+                  </span>
+                  <span v-if="jiaExecution.mainTheme?.name" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    主线 {{ jiaExecution.mainTheme.name }}
+                  </span>
+                  <span v-if="jiaExecution.mainLeader?.name" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    龙头 {{ jiaExecution.mainLeader.name }}
+                  </span>
+                </div>
+
+                <div class="fac-beijing-card__stats">
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">今日涨停池</span>
+                    <span class="fac-beijing-stat__value">{{ jiaExecution.stats?.todayLimitUps ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">龙头样本</span>
+                    <span class="fac-beijing-stat__value">{{ jiaExecution.stats?.leaderCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">可交易候选</span>
+                    <span class="fac-beijing-stat__value">{{ jiaExecution.stats?.actionableCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">真回封命中</span>
+                    <span class="fac-beijing-stat__value">{{ jiaExecution.stats?.trueSealCount ?? 0 }}</span>
+                  </div>
+                </div>
+
+                <div v-if="jiaExecution.strategyPanels" class="fac-beijing-panels">
+                  <section v-if="jiaExecution.strategyPanels.timeAnchor?.phase" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">schedule</span>
+                      <h3 class="fac-beijing-panel__title">时间锚定</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card fac-beijing-panel__card--anchor">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill fac-beijing-panel__pill--anchor">{{ jiaExecution.strategyPanels.timeAnchor.phase }}</span>
+                        <span class="fac-beijing-panel__count">{{ jiaExecution.strategyPanels.timeAnchor.executionFocus }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ jiaExecution.strategyPanels.timeAnchor.window }}</p>
+                      <p class="fac-beijing-panel__desc">{{ jiaExecution.strategyPanels.timeAnchor.summary }}</p>
+                      <div v-if="jiaExecution.strategyPanels.timeAnchor.rules?.length" class="fac-beijing-panel__tags">
+                        <span
+                          v-for="(rule, idx) in jiaExecution.strategyPanels.timeAnchor.rules"
+                          :key="`jia-anchor-rule-${idx}`"
+                          class="fac-beijing-panel__tag fac-beijing-panel__tag--anchor"
+                        >{{ rule }}</span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.emotionStage?.stage" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">insights</span>
+                      <h3 class="fac-beijing-panel__title">情绪阶段</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill">{{ jiaExecution.strategyPanels.emotionStage.stage }}</span>
+                        <span class="fac-beijing-panel__count">{{ jiaExecution.strategyPanels.emotionStage.positionCap }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ jiaExecution.strategyPanels.emotionStage.summary }}</p>
+                      <div v-if="jiaExecution.strategyPanels.emotionStage.reasons?.length" class="fac-beijing-step__lines">
+                        <p
+                          v-for="(line, idx) in jiaExecution.strategyPanels.emotionStage.reasons"
+                          :key="`jia-emotion-${idx}`"
+                          class="fac-beijing-step__line"
+                        >{{ line }}</p>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.mainFlow" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">flare</span>
+                      <h3 class="fac-beijing-panel__title">主流题材</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill">{{ jiaExecution.strategyPanels.mainFlow.mainTheme }}</span>
+                        <span class="fac-beijing-panel__count">{{ jiaExecution.strategyPanels.mainFlow.leader }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ jiaExecution.strategyPanels.mainFlow.summary }}</p>
+                      <div class="fac-beijing-panel__tags">
+                        <span class="fac-beijing-panel__tag">次主线 {{ jiaExecution.strategyPanels.mainFlow.backupTheme }}</span>
+                        <span class="fac-beijing-panel__tag">龙头 {{ jiaExecution.strategyPanels.mainFlow.leader }}</span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.leaderStructure?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">hub</span>
+                      <h3 class="fac-beijing-panel__title">龙头结构</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.leaderStructure"
+                        :key="`jia-leader-structure-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.buyPointPlaybook?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">touch_app</span>
+                      <h3 class="fac-beijing-panel__title">三类买点</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.buyPointPlaybook"
+                        :key="`jia-buy-point-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.sealVerdictHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">verified</span>
+                      <h3 class="fac-beijing-panel__title">回封真假</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.sealVerdictHits"
+                        :key="`jia-seal-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.positionRules?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">account_balance_wallet</span>
+                      <h3 class="fac-beijing-panel__title">仓位规则</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.positionRules"
+                        :key="`jia-position-${item.stage}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill" :class="{ 'fac-beijing-panel__pill--anchor': item.active }">{{ item.stage }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.range }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.active ? '当前阶段对应的建议总仓位。' : '该阶段的标准仓位上限。' }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.rotationSignal?.summary" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">sync_alt</span>
+                      <h3 class="fac-beijing-panel__title">龙头切换</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill fac-beijing-panel__pill--rule">{{ jiaExecution.strategyPanels.rotationSignal.status }}</span>
+                        <span class="fac-beijing-panel__count">{{ jiaExecution.strategyPanels.rotationSignal.newLeader }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ jiaExecution.strategyPanels.rotationSignal.summary }}</p>
+                      <div class="fac-beijing-panel__tags">
+                        <span class="fac-beijing-panel__tag">旧龙头 {{ jiaExecution.strategyPanels.rotationSignal.oldLeader }}</span>
+                        <span class="fac-beijing-panel__tag">预备方向 {{ jiaExecution.strategyPanels.rotationSignal.newLeader }}</span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.labelHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">sell</span>
+                      <h3 class="fac-beijing-panel__title">标签命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.labelHits"
+                        :key="`jia-label-hit-${item.label}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.label }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}</span>
+                        </div>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="jiaExecution.strategyPanels.dailyRuleHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">task_alt</span>
+                      <h3 class="fac-beijing-panel__title">当日规则命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in jiaExecution.strategyPanels.dailyRuleHits"
+                        :key="`jia-rule-hit-${item.title}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--rule">{{ item.title }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.status }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.detail }}</p>
+                      </article>
+                    </div>
+                  </section>
+                </div>
+
+                <div v-if="jiaExecution.stepOutputs?.length" class="fac-beijing-card__steps">
+                  <article
+                    v-for="step in jiaExecution.stepOutputs"
+                    :key="`jia-${step.step}-${step.title}`"
+                    class="fac-beijing-step"
+                  >
+                    <div class="fac-beijing-step__head">
+                      <span class="fac-beijing-step__num">步骤 {{ step.step }}</span>
+                      <div class="fac-beijing-step__copy">
+                        <h3 class="fac-beijing-step__title">{{ step.title || `步骤 ${step.step}` }}</h3>
+                        <p class="fac-beijing-step__summary">{{ step.summary || '暂无执行摘要' }}</p>
+                      </div>
+                    </div>
+                    <div v-if="step.frameworkLines?.length" class="fac-beijing-step__section">
+                      <div class="fac-beijing-step__section-label">方法论</div>
+                      <div class="fac-beijing-step__lines fac-beijing-step__lines--method">
+                        <p
+                          v-for="(line, idx) in step.frameworkLines"
+                          :key="`jia-${step.step}-framework-${idx}`"
+                          class="fac-beijing-step__line fac-beijing-step__line--method"
+                        >{{ line }}</p>
+                      </div>
+                    </div>
+                    <div v-if="step.lines?.length" class="fac-beijing-step__lines">
+                      <div class="fac-beijing-step__section-label">当日判断</div>
+                      <p
+                        v-for="(line, idx) in step.lines"
+                        :key="`jia-${step.step}-${idx}`"
+                        class="fac-beijing-step__line"
+                      >{{ line }}</p>
+                    </div>
+                  </article>
+                </div>
+
+                <div v-if="jiaExecution.leaderCandidates?.length" class="fac-beijing-card__section">
+                  <div class="fac-beijing-card__section-head">龙头结构样本</div>
+                  <div class="fac-beijing-card__list">
+                    <article
+                      v-for="item in jiaExecution.leaderCandidates"
+                      :key="`jia-leader-candidate-${item.code}`"
+                      class="fac-beijing-candidate"
+                    >
+                      <div class="fac-beijing-candidate__top">
+                        <div class="fac-beijing-candidate__name">
+                          {{ item.name }}
+                          <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                        </div>
+                        <div class="fac-beijing-candidate__chips">
+                          <span v-if="item.leaderType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.leaderType }}</span>
+                          <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                          <span v-if="item.reboundSealVerdict" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">{{ item.reboundSealVerdict }}</span>
+                          <span v-if="item.sector" class="fac-beijing-candidate__chip">{{ item.sector }}</span>
+                        </div>
+                      </div>
+                      <p class="fac-beijing-candidate__reason">{{ item.reason || '暂无龙头结构说明' }}</p>
+                      <div class="fac-beijing-candidate__meta">
+                        <span v-if="item.consecutiveDays">连板 {{ item.consecutiveDays }}</span>
+                        <span v-if="item.firstSealTime">首封 {{ item.firstSealTime }}</span>
+                        <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                        <span v-if="item.changePct || item.changePct === 0">涨幅 {{ normalizePctValue(item.changePct, item) }}%</span>
+                        <span v-if="item.score">评分 {{ item.score }}</span>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+
+                <div v-if="jiaExecution.actionableCandidates?.length" class="fac-beijing-card__section">
+                  <div class="fac-beijing-card__section-head">情绪龙头可交易池</div>
+                  <div class="fac-beijing-card__list">
+                    <article
+                      v-for="item in jiaExecution.actionableCandidates"
+                      :key="`jia-actionable-${item.code}`"
+                      class="fac-beijing-candidate"
+                    >
+                      <div class="fac-beijing-candidate__top">
+                        <div class="fac-beijing-candidate__name">
+                          {{ item.name }}
+                          <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                        </div>
+                        <div class="fac-beijing-candidate__chips">
+                          <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                          <span v-if="item.leaderType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.leaderType }}</span>
+                          <span v-if="item.tradeStatus" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--status">{{ item.tradeStatus }}</span>
+                          <span v-if="item.buyPointType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">{{ item.buyPointType }}</span>
+                          <span
+                            v-for="(label, idx) in (item.labels || []).slice(0, 3)"
+                            :key="`${item.code}-jia-actionable-label-${idx}`"
+                            class="fac-beijing-candidate__chip fac-beijing-candidate__chip--label"
+                          >{{ label }}</span>
+                        </div>
+                      </div>
+                      <p class="fac-beijing-candidate__reason">{{ item.classificationReason || item.reason || '暂无入场说明' }}</p>
+                      <div class="fac-beijing-candidate__meta">
+                        <span v-if="item.entryTrigger">触发 {{ item.entryTrigger }}</span>
+                        <span v-if="item.reboundSealVerdict">{{ item.reboundSealVerdict }}</span>
+                        <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                        <span v-if="item.changePct || item.changePct === 0">涨幅 {{ normalizePctValue(item.changePct, item) }}%</span>
+                        <span v-if="item.score">评分 {{ item.score }}</span>
+                      </div>
+                      <div v-if="item.matchedRules?.length" class="fac-beijing-rule-list">
+                        <article
+                          v-for="(rule, idx) in item.matchedRules.slice(0, 3)"
+                          :key="`${item.code}-jia-rule-${idx}`"
+                          class="fac-beijing-rule-card"
+                        >
+                          <div class="fac-beijing-rule-card__title">{{ rule.title }}</div>
+                          <div class="fac-beijing-rule-card__detail">{{ rule.detail }}</div>
+                        </article>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div v-if="beijingExecution" class="fac-report-card__module">
+            <div class="fac-report-card__module-head">
+              <span class="mso">dashboard</span>
+              <span class="fac-report-card__module-title">北京炒家执行工件</span>
+            </div>
+
+            <section class="fac-beijing-card fac-beijing-card--embedded">
+              <div class="fac-beijing-card__body">
+                <div v-if="beijingExecution.marketGate?.status" class="fac-beijing-card__gate">
+                  <span class="fac-beijing-gate-chip" :class="`fac-beijing-gate-chip--${beijingExecution.marketGate.status}`">
+                    市场闸门 {{ beijingExecution.marketGate.status }}
+                  </span>
+                  <span v-if="beijingExecution.marketGate.positionCap" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
+                    仓位上限 {{ beijingExecution.marketGate.positionCap }}
+                  </span>
+                  <span v-if="beijingExecution.timeAnchor?.phase" class="fac-beijing-gate-chip fac-beijing-gate-chip--anchor">
+                    时间锚点 {{ beijingExecution.timeAnchor.phase }}
+                  </span>
+                </div>
+
+                <div class="fac-beijing-card__stats">
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">今日涨停池</span>
+                    <span class="fac-beijing-stat__value">{{ beijingExecution.stats?.todayLimitUps ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">三有达标</span>
+                    <span class="fac-beijing-stat__value">{{ beijingExecution.stats?.qualifiedCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">可买候选</span>
+                    <span class="fac-beijing-stat__value">{{ beijingExecution.stats?.actionableCount ?? beijingExecution.stats?.recommendedCount ?? 0 }}</span>
+                  </div>
+                  <div class="fac-beijing-stat">
+                    <span class="fac-beijing-stat__label">半小时换手</span>
+                    <span class="fac-beijing-stat__value">{{ beijingExecution.stats?.minuteConfirmedCount ?? 0 }}</span>
+                  </div>
+                </div>
+
+                <div v-if="beijingExecution.boardTypeSummary?.length" class="fac-beijing-card__summary">
+                  <span
+                    v-for="item in beijingExecution.boardTypeSummary"
+                    :key="item.type"
+                    class="fac-beijing-summary-chip"
+                  >
+                    {{ item.type }} {{ item.count }}只
+                  </span>
+                </div>
+
+                <div v-if="beijingExecution.strategyPanels" class="fac-beijing-panels">
+                  <section v-if="beijingExecution.strategyPanels.timeAnchor?.phase" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">schedule</span>
+                      <h3 class="fac-beijing-panel__title">时间锚定</h3>
+                    </div>
+                    <article class="fac-beijing-panel__card fac-beijing-panel__card--anchor">
+                      <div class="fac-beijing-panel__card-top">
+                        <span class="fac-beijing-panel__pill fac-beijing-panel__pill--anchor">{{ beijingExecution.strategyPanels.timeAnchor.phase }}</span>
+                        <span class="fac-beijing-panel__count">{{ beijingExecution.strategyPanels.timeAnchor.executionFocus }}</span>
+                      </div>
+                      <p class="fac-beijing-panel__desc">{{ beijingExecution.strategyPanels.timeAnchor.window }}</p>
+                      <p class="fac-beijing-panel__desc">{{ beijingExecution.strategyPanels.timeAnchor.summary }}</p>
+                      <div v-if="beijingExecution.strategyPanels.timeAnchor.rules?.length" class="fac-beijing-panel__tags">
+                        <span
+                          v-for="(rule, idx) in beijingExecution.strategyPanels.timeAnchor.rules"
+                          :key="`anchor-rule-${idx}`"
+                          class="fac-beijing-panel__tag fac-beijing-panel__tag--anchor"
+                        >
+                          {{ rule }}
+                        </span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section v-if="beijingExecution.strategyPanels.selectionPath?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">schema</span>
+                      <h3 class="fac-beijing-panel__title">选股路径</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid fac-beijing-panel__grid--selection">
+                      <article
+                        v-for="item in beijingExecution.strategyPanels.selectionPath"
+                        :key="`selection-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}只</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="beijingExecution.strategyPanels.boardPlaybook?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">style</span>
+                      <h3 class="fac-beijing-panel__title">六类板型</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in beijingExecution.strategyPanels.boardPlaybook"
+                        :key="`board-${item.type}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--board">{{ item.type }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.count }}只</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.description }}</p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section v-if="beijingExecution.strategyPanels.labelHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">sell</span>
+                      <h3 class="fac-beijing-panel__title">标签命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__tags">
+                      <span
+                        v-for="item in beijingExecution.strategyPanels.labelHits"
+                        :key="`label-hit-${item.label}`"
+                        class="fac-beijing-panel__tag"
+                      >
+                        {{ item.label }} · {{ item.count }}
+                      </span>
+                    </div>
+                  </section>
+
+                  <section v-if="beijingExecution.strategyPanels.dailyRuleHits?.length" class="fac-beijing-panel">
+                    <div class="fac-beijing-panel__head">
+                      <span class="mso">checklist</span>
+                      <h3 class="fac-beijing-panel__title">当日规则命中</h3>
+                    </div>
+                    <div class="fac-beijing-panel__grid">
+                      <article
+                        v-for="item in beijingExecution.strategyPanels.dailyRuleHits"
+                        :key="`rule-hit-${item.title}`"
+                        class="fac-beijing-panel__card"
+                      >
+                        <div class="fac-beijing-panel__card-top">
+                          <span class="fac-beijing-panel__pill fac-beijing-panel__pill--rule">{{ item.title }}</span>
+                          <span class="fac-beijing-panel__count">{{ item.status }}</span>
+                        </div>
+                        <p class="fac-beijing-panel__desc">{{ item.detail }}</p>
+                      </article>
+                    </div>
+                  </section>
+                </div>
+
+                <div v-if="beijingExecution.stepOutputs?.length" class="fac-beijing-card__steps">
+                  <article
+                    v-for="step in beijingExecution.stepOutputs"
+                    :key="`${step.step}-${step.title}`"
+                    class="fac-beijing-step"
+                  >
+                    <div class="fac-beijing-step__head">
+                      <span class="fac-beijing-step__num">步骤 {{ step.step }}</span>
+                      <div class="fac-beijing-step__copy">
+                        <h3 class="fac-beijing-step__title">{{ step.title || `步骤 ${step.step}` }}</h3>
+                        <p class="fac-beijing-step__summary">{{ step.summary || '暂无执行摘要' }}</p>
+                      </div>
+                    </div>
+                    <div v-if="step.frameworkLines?.length" class="fac-beijing-step__section">
+                      <div class="fac-beijing-step__section-label">方法论</div>
+                      <div class="fac-beijing-step__lines fac-beijing-step__lines--method">
+                        <p
+                          v-for="(line, idx) in step.frameworkLines"
+                          :key="`${step.step}-framework-${idx}`"
+                          class="fac-beijing-step__line fac-beijing-step__line--method"
+                        >
+                          {{ line }}
+                        </p>
+                      </div>
+                    </div>
+                    <div v-if="step.lines?.length" class="fac-beijing-step__lines">
+                      <div class="fac-beijing-step__section-label">当日判断</div>
+                      <p
+                        v-for="(line, idx) in step.lines"
+                        :key="`${step.step}-${idx}`"
+                        class="fac-beijing-step__line"
+                      >
+                        {{ line }}
+                      </p>
+                    </div>
+                  </article>
+                </div>
+
+                <div v-if="beijingExecution.actionableCandidates?.length" class="fac-beijing-card__section">
+                  <div class="fac-beijing-card__section-head">盘中可买候选池</div>
+                  <div class="fac-beijing-card__list">
+                    <article
+                      v-for="item in beijingExecution.actionableCandidates"
+                      :key="`actionable-${item.code}`"
+                      class="fac-beijing-candidate"
+                    >
+                      <div class="fac-beijing-candidate__top">
+                        <div class="fac-beijing-candidate__name">
+                          {{ item.name }}
+                          <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                        </div>
+                        <div class="fac-beijing-candidate__chips">
+                          <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                          <span v-if="item.tradeStatus" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--status">{{ item.tradeStatus }}</span>
+                          <span v-if="item.entryModel" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">{{ item.entryModel }}</span>
+                          <span v-if="item.entryPlan" class="fac-beijing-candidate__chip">{{ item.entryPlan }}</span>
+                          <span v-if="item.actionableNow" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--action">当前可执行</span>
+                          <span
+                            v-for="(label, idx) in (item.labels || []).slice(0, 3)"
+                            :key="`${item.code}-actionable-label-${idx}`"
+                            class="fac-beijing-candidate__chip fac-beijing-candidate__chip--label"
+                          >{{ label }}</span>
+                        </div>
+                      </div>
+                      <p class="fac-beijing-candidate__reason">{{ item.classificationReason || item.reason || '暂无盘中执行说明' }}</p>
+                      <div class="fac-beijing-candidate__meta">
+                        <span v-if="item.entryTrigger">触发 {{ item.entryTrigger }}</span>
+                        <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                        <span v-if="item.changePct || item.changePct === 0">涨幅 {{ normalizePctValue(item.changePct, item) }}%</span>
+                        <span v-if="item.score">评分 {{ item.score }}</span>
+                        <span v-if="item.timeAnchorPhase">{{ item.timeAnchorPhase }}</span>
+                      </div>
+                      <div v-if="item.matchedRules?.length" class="fac-beijing-rule-list">
+                        <article
+                          v-for="(rule, idx) in item.matchedRules.slice(0, 3)"
+                          :key="`${item.code}-rule-${idx}`"
+                          class="fac-beijing-rule-card"
+                        >
+                          <div class="fac-beijing-rule-card__title">{{ rule.title }}</div>
+                          <div class="fac-beijing-rule-card__detail">{{ rule.detail }}</div>
+                        </article>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+
+                <div v-if="beijingExecution.boardCandidates?.length" class="fac-beijing-card__list">
+                  <div class="fac-beijing-card__section-head">板池样本</div>
+                  <article
+                    v-for="item in beijingExecution.boardCandidates"
+                    :key="item.code"
+                    class="fac-beijing-candidate"
+                  >
+                    <div class="fac-beijing-candidate__top">
+                      <div class="fac-beijing-candidate__name">
+                        {{ item.name }}
+                        <span class="fac-beijing-candidate__code">{{ item.code }}</span>
+                      </div>
+                      <div class="fac-beijing-candidate__chips">
+                        <span v-if="item.boardType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--board">{{ item.boardType }}</span>
+                        <span v-if="item.selectionType" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--selection">{{ item.selectionType }}</span>
+                        <span v-if="item.buyMethod" class="fac-beijing-candidate__chip">{{ item.buyMethod }}</span>
+                        <span v-if="item.minuteTurnoverLabel && item.minuteTurnoverLabel !== '待观察'" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--label">{{ item.minuteTurnoverLabel }}</span>
+                        <span v-if="item.auctionStrength && item.auctionStrength !== '待观察'" class="fac-beijing-candidate__chip">{{ item.auctionStrength }}</span>
+                        <span v-if="item.teammateStrength && item.teammateStrength !== '待观察'" class="fac-beijing-candidate__chip">{{ item.teammateStrength }}</span>
+                        <span v-if="item.threeHaveSummary" class="fac-beijing-candidate__chip fac-beijing-candidate__chip--pass">{{ item.threeHaveSummary }}</span>
+                        <span
+                          v-for="(label, idx) in (item.labels || []).slice(0, 3)"
+                          :key="`${item.code}-label-${idx}`"
+                          class="fac-beijing-candidate__chip fac-beijing-candidate__chip--label"
+                        >{{ label }}</span>
+                      </div>
+                    </div>
+                    <p class="fac-beijing-candidate__reason">{{ item.classificationReason || item.meta || '暂无分类说明' }}</p>
+                    <div class="fac-beijing-candidate__meta">
+                      <span v-if="item.firstSealTime">首封 {{ item.firstSealTime }}</span>
+                      <span v-if="item.lastSealTime">末封 {{ item.lastSealTime }}</span>
+                      <span v-if="item.brokenBoardCount !== undefined && item.brokenBoardCount !== null">炸板 {{ item.brokenBoardCount }} 次</span>
+                      <span v-if="item.minuteLongestStreak">横盘 {{ item.minuteLongestStreak }} 分</span>
+                      <span v-if="item.auctionStrength">竞价 {{ item.auctionStrength }}</span>
+                      <span v-if="item.teammateStrength">队友 {{ item.teammateStrength }}</span>
+                      <span v-if="item.positionRatio">{{ item.positionRatio }}</span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div v-if="(beijingExecution || qiaoExecution || jiaExecution) && liveReportLines.length" class="fac-report-card__divider" />
+
           <div
             v-for="(line, i) in liveReportLines"
             :key="i"
@@ -233,14 +1188,21 @@
                   </div>
                 </div>
                 <div class="fac-rec-item__badges">
-                  <span v-if="s.trendTag || s.adviseType" class="fac-rec-item__trend-chip">
-                    <span class="mso">{{ s.trendTag.includes('高动能') || s.adviseType.includes('打板') ? 'bolt' : s.trendTag.includes('强势') || s.trendTag.includes('突破') ? 'trending_up' : 'favorite' }}</span>
-                    {{ s.trendTag || s.adviseType }}
-                  </span>
-                  <span v-if="s.sector" class="fac-rec-item__sector-chip">{{ s.sector }}</span>
-                  <span v-if="s.riskLevel" class="fac-rec-item__risk-chip" :class="'fac-rec-item__risk-chip--' + s.riskLevel">
-                    {{ s.riskLevel }}风险
-                  </span>
+                <span v-if="s.trendTag || s.adviseType" class="fac-rec-item__trend-chip">
+                  <span class="mso">{{ s.trendTag.includes('高动能') || s.adviseType.includes('打板') ? 'bolt' : s.trendTag.includes('强势') || s.trendTag.includes('突破') ? 'trending_up' : 'favorite' }}</span>
+                  {{ s.trendTag || s.adviseType }}
+                </span>
+                <span v-if="s.boardType" class="fac-rec-item__board-chip">{{ s.boardType }}</span>
+                <span v-if="s.buyPointType" class="fac-rec-item__board-chip">{{ s.buyPointType }}</span>
+                <span v-if="s.tradeStatus" class="fac-rec-item__sector-chip fac-rec-item__sector-chip--status">{{ s.tradeStatus }}</span>
+                <span v-if="s.leaderType" class="fac-rec-item__sector-chip fac-rec-item__sector-chip--selection">{{ s.leaderType }}</span>
+                <span v-if="s.selectionType" class="fac-rec-item__sector-chip fac-rec-item__sector-chip--selection">{{ s.selectionType }}</span>
+                <span v-if="s.themeRole" class="fac-rec-item__sector-chip fac-rec-item__sector-chip--selection">{{ s.themeRole }}</span>
+                <span v-if="s.stage" class="fac-rec-item__sector-chip">{{ s.stage }}</span>
+                <span v-if="s.sector" class="fac-rec-item__sector-chip">{{ s.sector }}</span>
+                <span v-if="s.riskLevel" class="fac-rec-item__risk-chip" :class="'fac-rec-item__risk-chip--' + s.riskLevel">
+                  {{ s.riskLevel }}风险
+                </span>
                 </div>
               </div>
 
@@ -251,6 +1213,17 @@
                   :key="si"
                   class="fac-rec-item__signal-chip"
                 >{{ sig.trim() }}</span>
+                <span v-if="s.threeHaveSummary" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--primary">{{ s.threeHaveSummary }}</span>
+                <span
+                  v-for="(label, li) in (s.labels || []).slice(0, 4)"
+                  :key="`${s.routeCode}-label-${li}`"
+                  class="fac-rec-item__signal-chip fac-rec-item__signal-chip--muted"
+                >{{ label }}</span>
+                <span v-if="s.actionableNow" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--primary">当前可执行</span>
+                <span v-if="s.emotionFit" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--muted">{{ s.emotionFit }}</span>
+                <span v-if="s.maSupportSummary" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--muted">{{ s.maSupportSummary }}</span>
+                <span v-if="s.auctionStrength" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--muted">{{ s.auctionStrength }}</span>
+                <span v-if="s.teammateStrength" class="fac-rec-item__signal-chip fac-rec-item__signal-chip--muted">{{ s.teammateStrength }}</span>
               </div>
 
               <!-- 核心指标网格 -->
@@ -276,15 +1249,91 @@
               </div>
 
               <!-- 操作信息：仓位 + 持股周期 -->
-              <div v-if="s.positionRatio || s.holdPeriod" class="fac-rec-item__ops">
+              <div v-if="s.positionRatio || s.holdPeriod || s.buyMethod" class="fac-rec-item__ops">
                 <span v-if="s.positionRatio" class="fac-rec-item__op-chip">
                   <span class="mso">account_balance_wallet</span>
                   {{ s.positionRatio }}
+                </span>
+                <span v-if="s.tradeStatus" class="fac-rec-item__op-chip">
+                  <span class="mso">bolt</span>
+                  {{ s.tradeStatus }}
+                </span>
+                <span v-if="s.entryModel" class="fac-rec-item__op-chip">
+                  <span class="mso">track_changes</span>
+                  {{ s.entryModel }}
+                </span>
+                <span v-if="s.buyMethod" class="fac-rec-item__op-chip">
+                  <span class="mso">flash_on</span>
+                  {{ s.buyMethod }}
+                </span>
+                <span v-if="s.entryPlan" class="fac-rec-item__op-chip">
+                  <span class="mso">touch_app</span>
+                  {{ s.entryPlan }}
                 </span>
                 <span v-if="s.holdPeriod" class="fac-rec-item__op-chip">
                   <span class="mso">schedule</span>
                   {{ s.holdPeriod }}
                 </span>
+              </div>
+
+              <div v-if="s.entryTrigger" class="fac-rec-item__sell-plan">
+                <span class="mso">ads_click</span>
+                入场触发：{{ s.entryTrigger }}
+              </div>
+
+              <div v-if="s.exitTrigger" class="fac-rec-item__sell-plan">
+                <span class="mso">logout</span>
+                离场触发：{{ s.exitTrigger }}
+              </div>
+
+              <div v-if="s.timeAnchorWindow" class="fac-rec-item__sell-plan">
+                <span class="mso">schedule</span>
+                时段策略：{{ s.timeAnchorWindow }}
+              </div>
+
+              <div v-if="s.nextDaySellPlan" class="fac-rec-item__sell-plan">
+                <span class="mso">logout</span>
+                次日卖法：{{ s.nextDaySellPlan }}
+              </div>
+
+              <div v-if="s.auctionTeammateSummary" class="fac-rec-item__sell-plan">
+                <span class="mso">insights</span>
+                盘口判断：{{ s.auctionTeammateSummary }}
+              </div>
+
+              <div v-if="s.sealVerdictSummary" class="fac-rec-item__sell-plan">
+                <span class="mso">verified</span>
+                回封判断：{{ s.sealVerdictSummary }}
+              </div>
+
+              <div v-if="s.rotationSignal" class="fac-rec-item__sell-plan">
+                <span class="mso">sync_alt</span>
+                切换信号：{{ s.rotationSignal }}
+              </div>
+
+              <div v-if="s.firstSealTime || s.lastSealTime || s.brokenBoardCountText" class="fac-rec-item__board-meta">
+                <span v-if="s.firstSealTime" class="fac-rec-item__board-meta-chip">首封 {{ s.firstSealTime }}</span>
+                <span v-if="s.lastSealTime" class="fac-rec-item__board-meta-chip">末封 {{ s.lastSealTime }}</span>
+                <span v-if="s.brokenBoardCountText" class="fac-rec-item__board-meta-chip">炸板 {{ s.brokenBoardCountText }}</span>
+                <span v-if="s.minuteTurnoverLabel" class="fac-rec-item__board-meta-chip">{{ s.minuteTurnoverLabel }}</span>
+                <span v-if="s.minuteLongestStreak" class="fac-rec-item__board-meta-chip">横盘 {{ s.minuteLongestStreak }} 分</span>
+              </div>
+
+              <div v-if="s.matchedRules?.length" class="fac-rec-item__rules">
+                <p class="fac-rec-item__reason-label">
+                  <span class="mso">rule</span>
+                  命中规则
+                </p>
+                <div class="fac-rec-item__rule-grid">
+                  <article
+                    v-for="(rule, ri) in s.matchedRules"
+                    :key="`${s.routeCode}-rule-${ri}`"
+                    class="fac-rec-item__rule-card"
+                  >
+                    <div class="fac-rec-item__rule-title">{{ rule.title }}</div>
+                    <div class="fac-rec-item__rule-detail">{{ rule.detail }}</div>
+                  </article>
+                </div>
               </div>
 
               <!-- 推荐逻辑 -->
@@ -320,6 +1369,9 @@
             <h2 class="fac-decomp-card__title">任务拆解</h2>
           </div>
           <div class="fac-decomp-card__body">
+            <p v-if="taskCoreObjective" class="fac-decomp-card__objective">
+              <strong>核心目标：</strong>{{ taskCoreObjective }}
+            </p>
             <div
               v-for="(step, idx) in taskDecomposition"
               :key="idx"
@@ -339,11 +1391,18 @@
 
     <!-- 底部分享栏 -->
     <div v-if="isDone" class="fac-bottom-bar">
-      <button type="button" class="fac-btn-share" @click="printReport">
+      <button type="button" class="fac-btn-share" @click="openShareModal">
         <span class="mso">share</span>
         分享此深度报告
       </button>
     </div>
+
+    <!-- Share Modal -->
+    <ShareModal
+      :visible="showShareModal"
+      :share-data="shareData"
+      @close="showShareModal = false"
+    />
 
     <!-- Footer: Risk Disclosure -->
     <footer class="fac-footer">
@@ -389,6 +1448,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { analyzeWithAgent, fetchTodayAnalysis, fetchAgentInfo } from '@/api/agents.js'
 import { watchlist } from '@/api/strategy.js'
 import TaskProcessCard from './components/TaskProcessCard.vue'
+import ShareModal from '@/components/ShareModal.vue'
+import { useShare } from '@/composables/useShare.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -410,24 +1471,38 @@ const _nameMap = {
   deepseek: '深度思考者', beijing: '北京炒家',
 }
 const _roleMap = {
-  jun: '龙头战法', qiao: '板块轮动', jia: '低位潜伏',
+  jun: '龙头战法', qiao: '龙头主升', jia: '情绪龙头',
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
   deepseek: '深度推理', beijing: '游资打板',
 }
 
 const agentDescMap = {
   jun: '专注挖掘市场领涨龙头，捕捉短线爆发动能，并针对高频情绪波动进行深度解析与即时反馈。',
-  qiao: '擅长识别板块轮动节奏，在热点切换中精准定位下一个接力方向，灵活调整配置策略。',
-  jia: '注重安全边际与价值回归，在市场恐慌时逆向布局低位优质筹码，追求稳健收益。',
+  qiao: '只做主线龙头与主升机会，偏爱买在转折的低吸与充分换手后的确定性打板。',
+  jia: '情绪周期优先，只做主流题材里的最强龙头，严格收敛到分歧低吸、回封打板和反包确认三类买点。',
   speed: '专注于打板策略，识别最强封板意愿，结合量价关系寻找最优介入时机。',
   trend: '追踪中期趋势方向，结合均线系统与动能指标，把握波段性机会。',
   quant: '运用量化模型与回测数据，从统计学角度验证交易逻辑的可靠性。',
   deepseek: '宏观+行业+个股三维共振；布林带+资金流+催化剂三角验证。',
-  beijing: '三有量化选板，六大板型机械执行，1/8仓铁律护本。',
+  beijing: '临盘先判市场闸门，只做前排首板与辨识度后排，扫排分明，次日机械处理。',
 }
 
-// 任务标签配置（beijing 五步为核心）
+// 任务标签配置（人格工件型 Agent 单独定义）
 const agentTaskTags = {
+  jia: [
+    { label: '情绪阶段', icon: 'M12 21q-3.75 0-6.375-2.625T3 12t2.625-6.375T12 3q3.75 0 6.375 2.625T21 12t-2.625 6.375T12 21Zm1-6h-2V7h2v8Zm-1 4q.425 0 .713-.288T13 18q0-.425-.288-.713T12 17q-.425 0-.713.288T11 18q0 .425.288.713T12 19Z' },
+    { label: '主流题材', icon: 'M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z' },
+    { label: '龙头结构', icon: 'M5 3h14a2 2 0 0 1 2 2v4h-2V5H5v14h6v2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm8 7 6 4-6 4v-3H7v-2h6v-3z' },
+    { label: '买点模型', icon: 'M13 3L4 14h6v7l9-11h-6z' },
+    { label: '卖点切换', icon: 'M6.4 19 5 17.6 10.6 12 5 6.4 6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19Z' },
+  ],
+  qiao: [
+    { label: '主线识别', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14l-5-5h3V7h4v4h3l-5 5z' },
+    { label: '情绪阶段', icon: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z' },
+    { label: '龙头路径', icon: 'M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 8h14v-2H7v2zm0-4h14v-2H7v2zm0-6v2h14V7H7z' },
+    { label: '入场模型', icon: 'M13 3L4 14h6v7l9-11h-6z' },
+    { label: '次日卖出', icon: 'M19 13H5v-2h14v2z' },
+  ],
   beijing: [
     { label: '联网搜索', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54' },
     { label: '三有筛选', icon: 'M3 5v14h18V5H3zm16 12H5V7h14v10z' },
@@ -447,9 +1522,49 @@ const taskTags = computed(() => agentTaskTags[agentId.value] || [])
 
 // ── 生命周期 & 请求取消 ─────────────────────────────────────────────────
 let abortCtrl = null
+let analysisAbortRequested = false
+
+function isStalePersonaHistoryPayload(analysisResult = {}) {
+  const structured = analysisResult?.structured || {}
+  const execution = structured?.personaExecution || {}
+  const steps = Array.isArray(execution?.stepOutputs) ? execution.stepOutputs : []
+  if (agentId.value === 'beijing') {
+    const selectionPath = execution?.strategyPanels?.selectionPath || []
+    const timeAnchorPhase = String(execution?.timeAnchor?.phase || execution?.strategyPanels?.timeAnchor?.phase || '').trim()
+    if (!execution || execution.kind !== 'beijing') return true
+    if (!steps.length) return true
+    if (!Array.isArray(selectionPath) || !selectionPath.length) return true
+    if (!timeAnchorPhase) return true
+    return !steps.some(step => Array.isArray(step?.frameworkLines) && step.frameworkLines.length > 0)
+  }
+  if (agentId.value === 'qiao') {
+    const mainJudgement = execution?.strategyPanels?.mainJudgement || {}
+    const entryPlaybook = execution?.strategyPanels?.entryPlaybook || []
+    const timeAnchorPhase = String(execution?.timeAnchor?.phase || execution?.strategyPanels?.timeAnchor?.phase || '').trim()
+    if (!execution || execution.kind !== 'qiao') return true
+    if (!steps.length) return true
+    if (!timeAnchorPhase) return true
+    if (!mainJudgement?.mainTheme || !mainJudgement?.stage) return true
+    if (!Array.isArray(entryPlaybook) || !entryPlaybook.length) return true
+    return !steps.some(step => Array.isArray(step?.frameworkLines) && step.frameworkLines.length > 0)
+  }
+  if (agentId.value === 'jia') {
+    const emotionStage = execution?.strategyPanels?.emotionStage || {}
+    const buyPointPlaybook = execution?.strategyPanels?.buyPointPlaybook || []
+    const timeAnchorPhase = String(execution?.timeAnchor?.phase || execution?.strategyPanels?.timeAnchor?.phase || '').trim()
+    if (!execution || execution.kind !== 'jia') return true
+    if (!steps.length) return true
+    if (!timeAnchorPhase) return true
+    if (!emotionStage?.stage || !emotionStage?.status) return true
+    if (!Array.isArray(buyPointPlaybook) || !buyPointPlaybook.length) return true
+    return !steps.some(step => Array.isArray(step?.frameworkLines) && step.frameworkLines.length > 0)
+  }
+  return false
+}
 
 onBeforeUnmount(() => {
   if (abortCtrl) {
+    analysisAbortRequested = true
     abortCtrl.abort()
     abortCtrl = null
   }
@@ -461,6 +1576,9 @@ onMounted(async () => {
     const today = await fetchTodayAnalysis(agentId.value)
     if (today) {
       const ar = today.analysis_result || {}
+      if (isStalePersonaHistoryPayload(ar)) {
+        console.info(`[AgentAnalysis] ${agentName.value} 历史结果版本较旧，等待用户触发新版分析`)
+      } else {
       const st = ar.structured || {}
       result.value = {
         agent_id: today.agent_id || agentId.value,
@@ -474,25 +1592,29 @@ onMounted(async () => {
         tokens_used: today.tokens_used || 0,
       }
       if (result.value.thinking) {
-        const lines = result.value.thinking.trim().split('\n').filter(Boolean)
-          .map(line => {
-            let t = line.trim()
-            while (t.startsWith('思考中:') || t.startsWith('思考中 ')) {
-              t = t.replace(/^思考中[:：]\s*/, '')
-            }
-            return t
-          })
+        const merged = cleanThinkingChunk(result.value.thinking)
+        if (merged) {
+          thinkingBuffer = merged
+          thinkingLines.value = [merged]
+          mergedThinkingIndex = 0
+        }
+      }
+      if (result.value.analysis) {
+        liveReportLines.value = result.value.analysis
+          .split('\n')
+          .map(line => line.trim())
           .filter(Boolean)
-        thinkingLines.value = lines
-        // 历史记录：把 thinking 内容填充到 liveReportLines 用于展示
-        liveReportLines.value = lines.map(text => ({
-          text,
-          type: text.startsWith('【') ? 'section' : 'normal',
-        }))
+          .map(text => ({
+            text,
+            type: text.startsWith('【') ? 'section' : 'normal',
+          }))
+      } else if (thinkingBuffer) {
+        liveReportLines.value = [{ text: thinkingBuffer, type: 'normal' }]
+        mergedThinkingReportIndex = 0
       }
         isDone.value = true
         isFromHistory.value = true
-        return
+      }
     }
   } catch (e) {
     console.warn('[AgentAnalysis] 加载今日记录失败:', e)
@@ -503,6 +1625,7 @@ onMounted(async () => {
     const info = await fetchAgentInfo(agentId.value)
     if (info) {
       agentInfo.value = info
+      seedTaskFlow(info.reasoningSteps || [])
     }
   } catch (e) {
     console.warn('[AgentAnalysis] 加载 Agent 信息失败:', e)
@@ -516,13 +1639,16 @@ const result = ref(null)
 const favBusy = ref({})
 const favAdded = ref({})
 const showPromptModal = ref(false)
+const showShareModal = ref(false)
 const thinkingLines = ref([])
 const liveReportLines = ref([])
 const normalBuffer = []
 const liveEl = ref(null)
 let thinkingBuffer = ''
+let mergedThinkingIndex = -1
+let mergedThinkingReportIndex = -1
 const realPrompts = ref({ systemPrompt: '', userPrompt: '' })
-const agentInfo = ref({ tagline: '' })
+const agentInfo = ref({ tagline: '', coreObjective: '', reasoningSteps: [] })
 
 // 思考过程展开/折叠状态（分析中可折叠以减少干扰）
 const thinkingExpanded = ref(true)
@@ -534,6 +1660,90 @@ const totalCotSteps = ref(5)
 const currentCotTitle = ref('')
 const currentStepDetail = ref('')   // 当前步骤详细描述（用于 TaskProcessCard）
 const cotDataLines = ref([])    // 数据获取过程的输出
+let cotDataIndexes = {}
+
+function normalizeTaskSteps(steps = []) {
+  if (!Array.isArray(steps)) return []
+  return steps.map((step, idx) => ({
+    step: Number(step?.step) || idx + 1,
+    title: step?.title || step?.name || `步骤 ${idx + 1}`,
+    desc: step?.description || step?.desc || step?.content || '',
+    done: Boolean(step?.done),
+  }))
+}
+
+function seedTaskFlow(steps = []) {
+  const normalized = normalizeTaskSteps(steps)
+  if (!normalized.length) return
+  cotSteps.value = normalized
+  totalCotSteps.value = normalized.length
+  currentCotStep.value = 0
+  currentCotTitle.value = ''
+  currentStepDetail.value = ''
+}
+
+function isAbortLikeError(err) {
+  const message = String(err?.message || '')
+  return (
+    err?.name === 'AbortError' ||
+    /分析已取消|aborted|aborterror|BodyStreamBuffer was aborted/i.test(message) ||
+    (analysisAbortRequested && /network error/i.test(message))
+  )
+}
+
+function cleanThinkingChunk(text = '') {
+  return String(text)
+    .replace(/^思考中[:：]\s*/gm, '')
+    .trim()
+}
+
+function upsertMergedThinking(chunk = '') {
+  const cleaned = cleanThinkingChunk(chunk)
+  if (!cleaned) return
+
+  thinkingBuffer = cleanThinkingChunk(
+    [thinkingBuffer, cleaned].filter(Boolean).join('\n')
+  )
+
+  if (mergedThinkingIndex === -1) {
+    thinkingLines.value.push(thinkingBuffer)
+    mergedThinkingIndex = thinkingLines.value.length - 1
+  } else {
+    thinkingLines.value[mergedThinkingIndex] = thinkingBuffer
+  }
+
+  const reportItem = { text: thinkingBuffer, type: 'normal' }
+  if (mergedThinkingReportIndex === -1) {
+    liveReportLines.value.push(reportItem)
+    mergedThinkingReportIndex = liveReportLines.value.length - 1
+  } else {
+    liveReportLines.value[mergedThinkingReportIndex] = reportItem
+  }
+
+  scrollLive()
+}
+
+function upsertCotDataBlock(step, lines = []) {
+  const normalized = (lines || [])
+    .map(line => String(line || '').trim())
+    .filter(Boolean)
+
+  if (!normalized.length) return
+
+  const nextText = `[数据] ${normalized.join('\n')}`
+  const existingIndex = cotDataIndexes[step]
+
+  if (Number.isInteger(existingIndex) && thinkingLines.value[existingIndex]) {
+    const existingText = String(thinkingLines.value[existingIndex] || '')
+      .replace(/^\[数据\]\s*/, '')
+      .trim()
+    const merged = [existingText, ...normalized].filter(Boolean).join('\n')
+    thinkingLines.value[existingIndex] = `[数据] ${merged}`
+  } else {
+    thinkingLines.value.push(nextText)
+    cotDataIndexes[step] = thinkingLines.value.length - 1
+  }
+}
 
 // ── 加载真实 prompt（弹窗打开时）─────────────────────────────────────
 watch(showPromptModal, async (open) => {
@@ -557,6 +1767,22 @@ const recommendedStocks = computed(() => {
   if (!Array.isArray(raw)) return []
   return raw.map(s => normalizeRecRow(s)).filter(Boolean)
 })
+const personaExecution = computed(() => structured.value?.personaExecution || null)
+const beijingExecution = computed(() => {
+  const execution = personaExecution.value
+  if (agentId.value !== 'beijing' || !execution || execution.kind !== 'beijing') return null
+  return execution
+})
+const qiaoExecution = computed(() => {
+  const execution = personaExecution.value
+  if (agentId.value !== 'qiao' || !execution || execution.kind !== 'qiao') return null
+  return execution
+})
+const jiaExecution = computed(() => {
+  const execution = personaExecution.value
+  if (agentId.value !== 'jia' || !execution || execution.kind !== 'jia') return null
+  return execution
+})
 
 const stanceLabel = computed(() => {
   const m = { bull: '看多', bear: '看空', neutral: '中性' }
@@ -574,6 +1800,122 @@ const gaugeOffset = computed(() => gaugeCirc.value * (1 - confidence.value / 100
 
 const analysisText = computed(() => result.value?.analysis || result.value?.thinking || '')
 
+// ── 分享功能 ────────────────────────────────────────────────────────────────
+const shareLoading = ref(false)
+const shareShortUrl = ref('')
+
+function encodeSharePayload(payload) {
+  try {
+    const json = JSON.stringify(payload || {})
+    const bytes = new TextEncoder().encode(json)
+    let binary = ''
+    bytes.forEach(byte => {
+      binary += String.fromCharCode(byte)
+    })
+    return window.btoa(binary)
+  } catch (err) {
+    console.warn('[AgentAnalysis] 分享 payload 编码失败:', err)
+    return ''
+  }
+}
+
+function buildShareDescription(payload) {
+  const stockNames = (payload.stocks || []).map(item => item.name).filter(Boolean)
+  if (stockNames.length) {
+    return `${payload.confidence}% 信心 | 推荐: ${stockNames.join('、')}`
+  }
+  if (payload.market_commentary) {
+    return `${payload.confidence}% 信心 | ${payload.market_commentary}`
+  }
+  if (payload.position_advice) {
+    return `${payload.confidence}% 信心 | ${payload.position_advice}`
+  }
+  return `${payload.confidence}% 信心指数`
+}
+
+function syncShareMeta(url = shareShortUrl.value || window.location.href) {
+  const payload = getSharePayload()
+  const stanceLabelMap = { bull: '看多', bear: '看空', neutral: '中性' }
+  const stanceText = stanceLabelMap[payload.stance] || '中性'
+  const encoded = encodeSharePayload(payload)
+  useShare({
+    title: `${payload.agent_name}｜${stanceText}深度报告`,
+    description: buildShareDescription(payload),
+    image: encoded ? `/api/og-image?data=${encodeURIComponent(encoded)}` : '/api/og-image?title=FacSstock',
+    url,
+  })
+}
+
+function getSharePayload() {
+  const recs = recommendedStocks.value.slice(0, 3).map(s => ({
+    name: s.name || '',
+    code: s.code || '',
+    changePct: Number(s.changePct ?? 0) || 0,
+    reason: String(s.reason || s.signal || '').substring(0, 80),
+    role: s.role || '',
+    entryModel: s.entryModel || '',
+    tradeStatus: s.tradeStatus || '',
+  }))
+  return {
+    agent_id: agentId.value,
+    agent_name: agentName.value,
+    stance: structured.value?.stance || 'neutral',
+    confidence: confidence.value || 0,
+    market_commentary: (structured.value?.marketCommentary || '').substring(0, 120),
+    position_advice: (structured.value?.positionAdvice || '').substring(0, 120),
+    stocks: recs,
+    original_url: window.location.href,
+  }
+}
+
+const shareData = computed(() => {
+  const payload = getSharePayload()
+  const stanceLabelMap = { bull: '看多', bear: '看空', neutral: '中性' }
+  const stanceText = stanceLabelMap[payload.stance] || '中性'
+  return {
+    title: `${payload.agent_name}｜${stanceText}深度报告`,
+    description: buildShareDescription(payload),
+    shortUrl: shareShortUrl.value || window.location.href,
+    stocks: payload.stocks,
+    confidence: payload.confidence,
+    stance: payload.stance,
+    marketCommentary: payload.market_commentary,
+    positionAdvice: payload.position_advice,
+    stanceText,
+  }
+})
+
+async function openShareModal() {
+  showShareModal.value = true
+  const payload = getSharePayload()
+
+  try {
+    shareLoading.value = true
+    const res = await fetch('/api/share/shorten', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const json = await res.json()
+    shareShortUrl.value = json.short_url || window.location.href
+    syncShareMeta(shareShortUrl.value)
+  } catch {
+    shareShortUrl.value = window.location.href
+    syncShareMeta(window.location.href)
+  } finally {
+    shareLoading.value = false
+  }
+}
+
+// 页面加载时更新 meta（使用精简 OG 图片）
+onMounted(async () => {
+  syncShareMeta(window.location.href)
+})
+
+watch(shareData, () => {
+  syncShareMeta(shareShortUrl.value || window.location.href)
+}, { deep: true })
+
 // 是否有真实思考内容（非占位符）
 const hasThinkingContent = computed(() => {
   return thinkingLines.value.some(l =>
@@ -586,13 +1928,17 @@ const hasThinkingContent = computed(() => {
 
 // ── 任务拆解（层次化模式特有）────────────────────────────────────────────
 const hasTaskDecomposition = computed(() => {
-  const decomp = result.value?.task_decomposition
+  const decomp = result.value?.task_decomposition || agentInfo.value?.reasoningSteps
   return Array.isArray(decomp) && decomp.length > 0
 })
 
 const taskDecomposition = computed(() => {
-  const decomp = result.value?.task_decomposition
+  const decomp = result.value?.task_decomposition || agentInfo.value?.reasoningSteps
   return Array.isArray(decomp) ? decomp : []
+})
+
+const taskCoreObjective = computed(() => {
+  return result.value?.task_core_objective || agentInfo.value?.coreObjective || ''
 })
 
 const systemPromptPreview = computed(() => {
@@ -604,13 +1950,13 @@ const systemPromptPreview = computed(() => {
 const userPromptPreview = computed(() => {
   const m = {
     'jun': '请根据以下今日市场数据，从龙头视角给出你的策略分析...',
-    'qiao': '请根据以下今日市场数据，分析板块轮动节奏与配置方向...',
-    'jia': '请根据以下市场数据，从价值与安全边际角度给出分析...',
+    'qiao': '请先识别主线、阶段与龙头，再从低吸、分歧回流和下午换手板角度给出乔帮主式分析...',
+    'jia': '请先判断情绪阶段、主流题材和龙头结构，再仅在分歧低吸、回封打板、反包确认三类模型里给出炒股养家式分析...',
     'speed': '请根据以下市场数据，分析打板机会与风险...',
     'trend': '请根据以下市场数据，分析中期趋势方向与波段机会...',
     'quant': '请根据以下市场数据，给出量化视角的分析...',
     'deepseek': '请从宏观+行业+个股三维深度推理，结合扫描数据给出分析...',
-    'beijing': '请根据三有量化标准和六大板型，识别今日最强涨停板机会...',
+    'beijing': '请先判断市场闸门，再从题材前排、辨识度后排、板型与次日卖点角度分析首板机会...',
   }
   return m[agentId.value] || '正在加载 Prompt...'
 })
@@ -639,6 +1985,12 @@ function stockRouteCode6(code) {
   return digits.length >= 6 ? digits.slice(0, 6) : digits
 }
 
+function normalizePctValue(raw, row = {}) {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return 0
+  return Math.round(n * 100) / 100
+}
+
 function normalizeRecRow(s) {
   if (!s || typeof s !== 'object') return null
   const codeRaw = String(s.code || '').trim()
@@ -646,8 +1998,7 @@ function normalizeRecRow(s) {
 
   // 涨跌幅：changePct / chg_pct / change_pct
   const chgRaw = s.changePct ?? s.chg_pct ?? s.change_pct
-  const chg = Number(chgRaw)
-  const chg_pct = Number.isFinite(chg) ? Math.round(chg * 100) / 100 : 0
+  const chg_pct = normalizePctValue(chgRaw, s)
 
   // 现价（后端已补调，不应为 0）
   const price = s.price !== undefined && s.price !== null && s.price !== ''
@@ -679,7 +2030,51 @@ function normalizeRecRow(s) {
   const priceRange = String(s.priceRange || s.price_range || s.entry_range || s.buyRange || '').trim()
 
   // 推荐逻辑
-  const reason = String(s.meta || s.reason || signal || '').trim()
+  const reason = String(s.reason || s.meta || signal || '').trim()
+  const boardType = String(s.boardType || '').trim()
+  const leaderType = String(s.leaderType || '').trim()
+  const stage = String(s.stage || '').trim()
+  const selectionType = String(s.selectionType || '').trim()
+  const buyMethod = String(s.buyMethod || '').trim()
+  const buyPointType = String(s.buyPointType || '').trim()
+  const tradeStatus = String(s.tradeStatus || '').trim()
+  const entryPlan = String(s.entryPlan || '').trim()
+  const entryModel = String(s.entryModel || '').trim()
+  const entryTrigger = String(s.entryTrigger || '').trim()
+  const exitTrigger = String(s.exitTrigger || '').trim()
+  const actionableNow = Boolean(s.actionableNow)
+  const emotionStage = String(s.emotionStage || '').trim()
+  const emotionFit = String(s.emotionFit || '').trim()
+  const themeRole = String(s.themeRole || '').trim()
+  const labels = Array.isArray(s.labels) ? s.labels.map(v => String(v || '').trim()).filter(Boolean) : []
+  const matchedRules = Array.isArray(s.matchedRules)
+    ? s.matchedRules
+      .map(rule => ({
+        title: String(rule?.title || '').trim(),
+        detail: String(rule?.detail || '').trim(),
+      }))
+      .filter(rule => rule.title && rule.detail)
+    : []
+  const threeHaveSummary = String(s.threeHaveSummary || '').trim()
+  const firstSealTime = String(s.firstSealTime || '').trim()
+  const lastSealTime = String(s.lastSealTime || '').trim()
+  const nextDaySellPlan = String(s.nextDaySellPlan || '').trim()
+  const reboundSealVerdict = String(s.reboundSealVerdict || '').trim()
+  const sealVerdictSummary = String(s.sealVerdictSummary || '').trim()
+  const rotationSignal = String(s.rotationSignal || '').trim()
+  const maSupportSummary = String(s.maSupportSummary || '').trim()
+  const minuteTurnoverLabel = String(s.minuteTurnoverLabel || '').trim()
+  const minuteEvidence = String(s.minuteEvidence || '').trim()
+  const auctionStrength = String(s.auctionStrength || '').trim()
+  const teammateStrength = String(s.teammateStrength || '').trim()
+  const auctionTeammateSummary = String(s.auctionTeammateSummary || '').trim()
+  const minuteLongestStreak = Number(s.minuteLongestStreak || 0)
+  const timeAnchorPhase = String(s.timeAnchorPhase || '').trim()
+  const timeAnchorWindow = String(s.timeAnchorWindow || '').trim()
+  const brokenBoardCount = s.brokenBoardCount ?? s.brokenBoardCountText ?? ''
+  const brokenBoardCountText = brokenBoardCount !== '' && brokenBoardCount !== null && brokenBoardCount !== undefined
+    ? `${brokenBoardCount}`
+    : ''
 
   return {
     ...s,
@@ -696,6 +2091,41 @@ function normalizeRecRow(s) {
     grade: gradeRaw,
     adviseType,
     signal,
+    boardType,
+    leaderType,
+    stage,
+    selectionType,
+    buyMethod,
+    buyPointType,
+    tradeStatus,
+    entryPlan,
+    entryModel,
+    entryTrigger,
+    exitTrigger,
+    actionableNow,
+    emotionStage,
+    emotionFit,
+    themeRole,
+    labels,
+    matchedRules,
+    threeHaveSummary,
+    firstSealTime,
+    lastSealTime,
+    nextDaySellPlan,
+    reboundSealVerdict,
+    sealVerdictSummary,
+    rotationSignal,
+    maSupportSummary,
+    minuteTurnoverLabel,
+    minuteEvidence,
+    auctionStrength,
+    teammateStrength,
+    auctionTeammateSummary,
+    minuteLongestStreak,
+    timeAnchorPhase,
+    timeAnchorWindow,
+    brokenBoardCount,
+    brokenBoardCountText,
   }
 }
 
@@ -741,9 +2171,14 @@ async function runAnalysis() {
   thinkingLines.value = []
   liveReportLines.value = []
   thinkingBuffer = ''
+  mergedThinkingIndex = -1
+  mergedThinkingReportIndex = -1
+  cotDataIndexes = {}
   normalBuffer.length = 0
   cotSteps.value = []
   currentCotStep.value = 0
+  seedTaskFlow(agentInfo.value?.reasoningSteps || [])
+  analysisAbortRequested = false
 
   abortCtrl = new AbortController()
 
@@ -751,10 +2186,9 @@ async function runAnalysis() {
     // 使用流式接口
     await runAnalysisStream(agentId.value, abortCtrl.signal)
   } catch (err) {
+    if (isAbortLikeError(err) || abortCtrl?.signal?.aborted) return
     console.warn('[AgentAnalysis] 分析中断:', err.message)
-    if (err.message !== '分析已取消') {
-      console.error('[AgentAnalysis] 分析失败:', err)
-    }
+    console.error('[AgentAnalysis] 分析失败:', err)
   } finally {
     isRunning.value = false
     abortCtrl = null
@@ -808,7 +2242,17 @@ async function runAnalysisStream(agentId, signal) {
   let buffer = ''
 
   while (true) {
-    const { done, value } = await reader.read()
+    let chunk
+    try {
+      chunk = await reader.read()
+    } catch (err) {
+      if (signal?.aborted || isAbortLikeError(err)) {
+        throw new Error('分析已取消')
+      }
+      throw err
+    }
+
+    const { done, value } = chunk
     if (done) {
       console.log('[AgentAnalysisStream] 流读取完成')
       break
@@ -841,10 +2285,22 @@ async function runAnalysisStream(agentId, signal) {
 
 function handleStreamEvent(data) {
   switch (data.type) {
+    case 'task_flow_init': {
+      const steps = normalizeTaskSteps(data.steps || [])
+      if (steps.length) {
+        cotSteps.value = steps
+        totalCotSteps.value = data.total || steps.length
+        currentCotStep.value = 0
+        currentCotTitle.value = data.coreObjective ? '核心目标' : ''
+        currentStepDetail.value = data.coreObjective || ''
+      }
+      break
+    }
+
     case 'task_step': {
       // 任务执行过程：前端展示步骤进度
       const step = data.step || 1
-      const total = data.total || 5
+      const total = data.total || cotSteps.value.length || 5
       const title = data.title || ''
       const desc = data.desc || ''
 
@@ -862,6 +2318,10 @@ function handleStreamEvent(data) {
         cotSteps.value.push({ step, title, desc, done: false })
         cotSteps.value.sort((a, b) => a.step - b.step)
       }
+      cotSteps.value = cotSteps.value.map(item => ({
+        ...item,
+        done: item.step < step,
+      }))
       break
     }
 
@@ -890,62 +2350,25 @@ function handleStreamEvent(data) {
       const lines = data.lines || []
       for (const line of lines) {
         cotDataLines.value.push({ step: data.step, text: line })
-        thinkingLines.value.push(`[数据] ${line}`)
-        // 检测错误标记，停止等待状态
-        if (line.includes('[警告]') || line.includes('[错误]') || line.includes('[失败]')) {
-          isRunning.value = false
-        }
       }
+      upsertCotDataBlock(data.step || 0, lines)
       break
     }
 
     case 'thinking': {
-      // 整块接收 thinking 内容，按章节分隔符（【）分批推送
-      const raw = data.content || ''
-      let i = 0
-
-      while (i < raw.length) {
-        // 找到下一个【标题的位置
-        const nextSection = raw.indexOf('【', i)
-        if (nextSection === -1) {
-          // 没有更多【，积累剩余内容
-          thinkingBuffer += raw.slice(i)
-          break
-        }
-
-        // 先把【之前的内容（如果有）作为普通段落 flush
-        if (thinkingBuffer) {
-          const beforeText = thinkingBuffer.trim()
-          if (beforeText) {
-            thinkingLines.value.push(beforeText)
-            liveReportLines.value.push({ text: beforeText, type: 'normal' })
-          }
-          thinkingBuffer = ''
-        }
-
-        // 收集完整的【章节块（到下一个【之前或字符串末尾）
-        const sectionStart = nextSection
-        const sectionEnd = raw.indexOf('【', nextSection + 1)
-        const sectionText = sectionEnd === -1
-          ? raw.slice(sectionStart)
-          : raw.slice(sectionStart, sectionEnd)
-
-        // 去掉"思考中: "前缀
-        let cleanSection = sectionText.replace(/^思考中[:：]\s*/, '')
-        cleanSection = cleanSection.trim()
-        if (cleanSection) {
-          thinkingLines.value.push(cleanSection)
-          liveReportLines.value.push({ text: cleanSection, type: 'section' })
-        }
-
-        i = sectionEnd === -1 ? raw.length : sectionEnd
-        scrollLive()
-      }
+      upsertMergedThinking(data.content || '')
       break
     }
 
     case 'content': {
-      // 正文内容：push 到实时报告区
+      const text = (data.content || '').trim()
+      if (text) {
+        liveReportLines.value.push({
+          text,
+          type: text.startsWith('【') ? 'section' : 'normal',
+        })
+        scrollLive()
+      }
       break
     }
 
@@ -965,35 +2388,18 @@ function handleStreamEvent(data) {
       break
 
     case 'tool_call':
-      // 展示正在调用的工具及参数
-      flushNormalBuffer()
-      const args = data.args || {}
-      thinkingLines.value.push(`[调用] ${data.tool} → 参数: ${JSON.stringify(args)}`)
+      // 工具调用属于内部执行细节，不直接暴露给用户端
       break
 
     case 'tool_result': {
-      // 展示 qwen 返回的数据内容
-      const raw = data.result || ''
-      // 尝试解析为可读格式
-      let display = raw
-      try {
-        const parsed = JSON.parse(raw)
-        display = JSON.stringify(parsed, null, 2)
-      } catch {}
-      // 截断过长数据
-      const lines = display.split('\n')
-      const truncated = lines.length > 30 ? lines.slice(0, 30).join('\n') + '\n... (共' + lines.length + '行)' : display
-      thinkingLines.value.push(`[结果] ${truncated}`)
+      // 工具原始返回只供模型内部消费，不直接展示到时间线
       break
     }
 
     case 'done':
       // flush 剩余 thinking
       if (thinkingBuffer.trim()) {
-        const text = thinkingBuffer.trim()
-        liveReportLines.value.push({ text, type: 'normal' })
-        thinkingLines.value.push(text)
-        thinkingBuffer = ''
+        thinkingBuffer = cleanThinkingChunk(thinkingBuffer)
       }
       // 如果没有实时内容但有分析文本，转成报告
       if (!liveReportLines.value.length && data.analysis) {
@@ -1018,7 +2424,18 @@ function handleStreamEvent(data) {
         cot_steps_marketCommentary: st.marketCommentary || '',
         // 任务拆解数据
         task_decomposition: data.task_decomposition || [],
+        task_core_objective: data.task_core_objective || '',
       }
+      if (Array.isArray(data.task_decomposition) && data.task_decomposition.length) {
+        cotSteps.value = normalizeTaskSteps(data.task_decomposition)
+        totalCotSteps.value = data.task_decomposition.length
+      }
+      const finalSteps = cotSteps.value || []
+      const lastStep = finalSteps[finalSteps.length - 1]
+      currentCotStep.value = finalSteps.length || totalCotSteps.value || currentCotStep.value
+      totalCotSteps.value = finalSteps.length || totalCotSteps.value
+      currentCotTitle.value = lastStep?.title || '执行完成'
+      currentStepDetail.value = lastStep?.desc || '全部任务步骤已完成'
       isDone.value = true
       // 分析完成：将所有 COT 步骤标记为已完成，flush 剩余缓冲区
       flushNormalBuffer()
@@ -1040,6 +2457,9 @@ function resetAnalysis() {
   thinkingLines.value = []
   liveReportLines.value = []
   thinkingBuffer = ''
+  mergedThinkingIndex = -1
+  mergedThinkingReportIndex = -1
+  cotDataIndexes = {}
   normalBuffer.length = 0
   cotSteps.value = []
   currentCotStep.value = 0
@@ -1049,15 +2469,13 @@ function resetAnalysis() {
   currentStepDetail.value = ''
   cotDataLines.value = []
   thinkingExpanded.value = true
+  analysisAbortRequested = false
+  seedTaskFlow(agentInfo.value?.reasoningSteps || [])
 }
 
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/strategy/agents')
-}
-
-function printReport() {
-  window.print()
 }
 </script>
 
@@ -1524,6 +2942,8 @@ function printReport() {
   color: var(--on-surface-variant);
   margin: 0;
   line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .fac-thinking-card__run-btn-wrap {
@@ -1629,6 +3049,31 @@ function printReport() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.fac-report-card__module {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fac-report-card__module-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--primary-container);
+}
+.fac-report-card__module-head .mso {
+  font-size: 18px;
+}
+.fac-report-card__module-title {
+  font-family: var(--font-headline);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.fac-report-card__divider {
+  height: 1px;
+  background: rgba(196, 198, 208, 0.22);
+  margin: 8px 0 10px;
 }
 .fac-report-line {
   font-family: var(--font-body);
@@ -1779,12 +3224,17 @@ function printReport() {
 /* 顶部行：名称代码 | 标签 */
 .fac-rec-item__top {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
   margin-bottom: 14px;
   gap: 12px;
 }
-.fac-rec-item__name-group { display: flex; flex-direction: column; gap: 4px; }
+.fac-rec-item__name-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
 .fac-rec-item__name {
   font-family: var(--font-headline);
   font-size: 1.3rem;
@@ -1795,6 +3245,7 @@ function printReport() {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .fac-rec-item__code-badge {
   font-family: var(--font-mono);
@@ -1818,7 +3269,14 @@ function printReport() {
 .fac-rec-item__grade-badge--a { background: rgba(0, 42, 93, 0.1); color: var(--primary-container); border: 1px solid rgba(0, 42, 93, 0.2); }
 .fac-rec-item__grade-badge--b, .fac-rec-item__grade-badge--c { background: var(--surface-dim); color: var(--on-surface-variant); }
 
-.fac-rec-item__badges { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.fac-rec-item__badges {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
+}
 .fac-rec-item__trend-chip {
   display: inline-flex;
   align-items: center;
@@ -1834,6 +3292,17 @@ function printReport() {
   letter-spacing: 0.03em;
 }
 .fac-rec-item__trend-chip .mso { font-size: 12px; }
+.fac-rec-item__board-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(59, 31, 140, 0.1);
+  color: var(--primary-container);
+}
 .fac-rec-item__sector-chip {
   display: inline-flex;
   padding: 4px 10px;
@@ -1843,6 +3312,14 @@ function printReport() {
   font-weight: 600;
   background: var(--surface-dim);
   color: var(--on-surface-variant);
+}
+.fac-rec-item__sector-chip--selection {
+  background: rgba(59, 31, 140, 0.08);
+  color: var(--primary-container);
+}
+.fac-rec-item__sector-chip--status {
+  background: rgba(8, 153, 129, 0.12);
+  color: #0f766e;
 }
 .fac-rec-item__risk-chip {
   font-family: var(--font-body);
@@ -1872,6 +3349,14 @@ function printReport() {
   border-radius: 6px;
   background: rgba(0, 42, 93, 0.07);
   color: var(--primary-container);
+}
+.fac-rec-item__signal-chip--primary {
+  background: rgba(59, 31, 140, 0.1);
+  color: var(--primary-container);
+}
+.fac-rec-item__signal-chip--muted {
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
 }
 
 /* 指标网格 */
@@ -1921,7 +3406,7 @@ function printReport() {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 0;
   flex-wrap: wrap;
 }
 .fac-rec-item__price {
@@ -1970,6 +3455,69 @@ function printReport() {
   border-radius: 8px;
 }
 .fac-rec-item__op-chip .mso { font-size: 14px; color: var(--on-surface-variant); }
+.fac-rec-item__board-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.fac-rec-item__board-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-rec-item__sell-plan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(242, 54, 69, 0.06);
+  color: var(--on-surface);
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.fac-rec-item__sell-plan .mso {
+  font-size: 14px;
+  color: var(--up);
+}
+.fac-rec-item__rules {
+  border-top: 1px solid rgba(196, 198, 208, 0.15);
+  padding-top: 14px;
+  margin-bottom: 14px;
+}
+.fac-rec-item__rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.fac-rec-item__rule-card {
+  padding: 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(245, 242, 255, 0.9) 0%, rgba(240, 235, 255, 0.78) 100%);
+  border: 1px solid rgba(90, 52, 168, 0.12);
+}
+.fac-rec-item__rule-title {
+  margin-bottom: 6px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--primary-container);
+}
+.fac-rec-item__rule-detail {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--on-surface);
+}
 
 /* 推荐逻辑 */
 .fac-rec-item__reason {
@@ -2025,6 +3573,456 @@ function printReport() {
 }
 .fac-btn-fav .mso { font-size: 16px; }
 
+/* ── Beijing Execution ─────────────────────────────────────────────── */
+.fac-beijing-card {
+  background: var(--surface-container-lowest);
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+.fac-beijing-card--embedded {
+  background: transparent;
+  border-radius: 18px;
+  box-shadow: none;
+  border: 1px solid rgba(90, 52, 168, 0.12);
+}
+.fac-beijing-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--surface-container-low);
+  border-bottom: 1px solid rgba(196, 198, 208, 0.15);
+}
+.fac-beijing-card__head .mso { color: var(--primary-container); font-size: 18px; }
+.fac-beijing-card__title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-card__body {
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fac-beijing-card--embedded .fac-beijing-card__body {
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(247, 244, 255, 0.96) 0%, rgba(242, 238, 255, 0.9) 100%);
+}
+.fac-beijing-card__gate {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fac-beijing-gate-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.fac-beijing-gate-chip--放行 {
+  background: rgba(8, 153, 129, 0.12);
+  color: var(--down);
+}
+.fac-beijing-gate-chip--轻仓试错 {
+  background: rgba(255, 176, 32, 0.16);
+  color: #9a5b00;
+}
+.fac-beijing-gate-chip--空仓等待 {
+  background: rgba(242, 54, 69, 0.1);
+  color: var(--up);
+}
+.fac-beijing-gate-chip--subtle {
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-beijing-gate-chip--anchor {
+  background: rgba(59, 31, 140, 0.1);
+  color: var(--primary-container);
+}
+.fac-beijing-card__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.fac-beijing-stat {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface-container-low);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fac-beijing-stat__label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--on-surface-variant);
+}
+.fac-beijing-stat__value {
+  font-family: var(--font-headline);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-card__summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fac-beijing-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.fac-beijing-panel {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(247, 244, 255, 0.88) 100%);
+  border: 1px solid rgba(90, 52, 168, 0.10);
+}
+.fac-beijing-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.fac-beijing-panel__head .mso {
+  color: var(--primary-container);
+  font-size: 18px;
+}
+.fac-beijing-panel__title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.fac-beijing-panel__grid--selection {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.fac-beijing-panel__card {
+  padding: 12px 12px 10px;
+  border-radius: 14px;
+  background: rgba(241, 236, 255, 0.72);
+  border: 1px solid rgba(90, 52, 168, 0.08);
+}
+.fac-beijing-panel__card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fac-beijing-panel__pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(59, 31, 140, 0.12);
+  color: var(--primary-container);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 800;
+}
+.fac-beijing-panel__pill--board {
+  background: rgba(79, 70, 229, 0.12);
+  color: #4338ca;
+}
+.fac-beijing-panel__pill--rule {
+  background: rgba(0, 150, 136, 0.12);
+  color: #0f766e;
+}
+.fac-beijing-panel__pill--anchor {
+  background: rgba(255, 176, 32, 0.18);
+  color: #9a5b00;
+}
+.fac-beijing-panel__count {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-panel__desc {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--on-surface-variant);
+}
+.fac-beijing-panel__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fac-beijing-panel__tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(90, 52, 168, 0.09);
+  color: var(--primary-container);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+}
+.fac-beijing-panel__tag--anchor {
+  background: rgba(255, 176, 32, 0.14);
+  color: #9a5b00;
+}
+.fac-beijing-card__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fac-beijing-card__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fac-beijing-card__section-head {
+  font-family: var(--font-headline);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-step {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(245, 242, 255, 0.92) 0%, rgba(240, 235, 255, 0.84) 100%);
+  border: 1px solid rgba(90, 52, 168, 0.12);
+}
+.fac-beijing-step__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.fac-beijing-step__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(59, 31, 140, 0.12);
+  color: var(--primary-container);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 800;
+}
+.fac-beijing-step__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.fac-beijing-step__title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--on-surface);
+}
+.fac-beijing-step__summary {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--on-surface);
+}
+.fac-beijing-step__lines {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fac-beijing-step__section {
+  margin-top: 10px;
+}
+.fac-beijing-step__section-label {
+  margin-bottom: 6px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--primary-container);
+}
+.fac-beijing-step__lines--method {
+  margin-top: 0;
+}
+.fac-beijing-step__line {
+  margin: 0;
+  padding-left: 12px;
+  position: relative;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--on-surface-variant);
+}
+.fac-beijing-step__line--method {
+  color: var(--on-surface);
+}
+.fac-beijing-step__line::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--primary-container);
+}
+.fac-beijing-summary-chip,
+.fac-beijing-candidate__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-dim);
+  color: var(--on-surface-variant);
+}
+.fac-beijing-candidate__chip--board {
+  background: rgba(59, 31, 140, 0.1);
+  color: var(--primary-container);
+}
+.fac-beijing-candidate__chip--selection {
+  background: rgba(0, 42, 93, 0.08);
+  color: var(--primary-container);
+}
+.fac-beijing-candidate__chip--pass {
+  background: rgba(0, 42, 93, 0.08);
+  color: var(--primary-container);
+}
+.fac-beijing-candidate__chip--status {
+  background: rgba(8, 153, 129, 0.12);
+  color: #0f766e;
+}
+.fac-beijing-candidate__chip--action {
+  background: rgba(59, 31, 140, 0.12);
+  color: var(--primary-container);
+}
+.fac-beijing-candidate__chip--label {
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+}
+.fac-beijing-card__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fac-beijing-rule-list {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.fac-beijing-rule-card {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(90, 52, 168, 0.08);
+}
+.fac-beijing-rule-card__title {
+  margin-bottom: 4px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--primary-container);
+}
+.fac-beijing-rule-card__detail {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--on-surface);
+}
+.fac-beijing-candidate {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface-container-low);
+  border: 1px solid rgba(196, 198, 208, 0.12);
+}
+.fac-beijing-candidate__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.fac-beijing-candidate__name {
+  font-family: var(--font-headline);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--on-surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fac-beijing-candidate__code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  background: var(--surface-dim);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.fac-beijing-candidate__chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.fac-beijing-candidate__reason {
+  margin: 0 0 8px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--on-surface);
+}
+.fac-beijing-candidate__meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+}
+@media (max-width: 640px) {
+  .fac-rec-item__rule-grid,
+  .fac-beijing-rule-list,
+  .fac-beijing-card__stats {
+    grid-template-columns: 1fr;
+  }
+  .fac-beijing-panel__grid,
+  .fac-beijing-panel__grid--selection {
+    grid-template-columns: 1fr;
+  }
+  .fac-beijing-step__head {
+    flex-direction: column;
+  }
+  .fac-beijing-candidate__top {
+    flex-direction: column;
+  }
+  .fac-beijing-candidate__chips {
+    justify-content: flex-start;
+  }
+}
+
 /* ── Task Decomposition ─────────────────────────────────────────────── */
 .fac-decomp-card {
   background: var(--surface-container-lowest);
@@ -2051,6 +4049,14 @@ function printReport() {
   margin: 0;
 }
 .fac-decomp-card__body { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.fac-decomp-card__objective {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(59, 31, 140, 0.08);
+  color: var(--on-surface);
+  line-height: 1.55;
+}
 .fac-decomp-step {
   padding: 14px 16px;
   background: var(--surface-container-low);

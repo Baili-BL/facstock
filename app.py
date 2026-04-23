@@ -4,13 +4,10 @@
 布林带收缩策略 - Flask Web 应用
 """
 
-import sys
+import sys, os, logging
 sys.stdout.reconfigure(line_buffering=True)
 
-from flask import Flask, jsonify, request
-import logging
-import os
-from flask import send_from_directory, abort
+from flask import Flask, jsonify, request, send_from_directory, abort, redirect, Response
 
 # 加载 .env 文件
 from dotenv import load_dotenv
@@ -31,7 +28,7 @@ app = Flask(__name__)
 # 注册蓝图（所有 /api/* 路由统一由蓝图处理）
 from ticai.routes import ticai_bp
 from market_routes import market_bp
-from strategy_routes import strategy_bp
+from strategy_routes import strategy_bp, analyze_single_agent
 from task_routes import task_bp
 from tv_udf_routes import tv_udf_bp
 app.register_blueprint(ticai_bp)
@@ -39,6 +36,21 @@ app.register_blueprint(market_bp)
 app.register_blueprint(strategy_bp)
 app.register_blueprint(task_bp)
 app.register_blueprint(tv_udf_bp, url_prefix='/tv_udf')
+
+try:
+    from utils.agent_push_service import TraderAgentPushScheduler, TraderAgentPushService
+
+    trader_agent_push_service = TraderAgentPushService(
+        analyze_agent_fn=analyze_single_agent,
+    )
+    trader_agent_push_scheduler = TraderAgentPushScheduler(
+        service=trader_agent_push_service,
+    )
+    app.extensions['trader_agent_push_service'] = trader_agent_push_service
+    app.extensions['trader_agent_push_scheduler'] = trader_agent_push_scheduler
+    trader_agent_push_scheduler.start()
+except Exception as push_boot_error:
+    logger.exception('游资智能体飞书推送服务启动失败: %s', push_boot_error)
 
 # ==================== AI 分析接口（保留在 app.py，与蓝图不冲突） ====================
 
@@ -197,19 +209,20 @@ def clear_ai_reports():
 def get_agent_prompts():
     """返回所有智能体的元信息（供前端展示）"""
     try:
-        from agent_prompts import AGENTS
-        agents_info = [
-            {
-                "id": a["id"],
-                "name": a["name"],
-                "role": a["role"],
-                "style": a["style"],
-                "tagline": a["tagline"],
-                "adviseType": a["adviseType"],
-            }
-            for a in AGENTS.values()
-        ]
-        return jsonify({"success": True, "data": agents_info})
+        from utils.llm import get_agent_registry
+        registry = get_agent_registry()
+        return jsonify({"success": True, "data": registry.list_agents()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/agents/architecture')
+def get_agent_architecture():
+    """返回策略智能体系统架构说明（供前端架构台展示）。"""
+    try:
+        from utils.llm import get_agent_registry
+        registry = get_agent_registry()
+        return jsonify({"success": True, "data": registry.get_architecture_overview()})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
@@ -220,20 +233,12 @@ def get_agent_prompt_detail(agent_id):
     try:
         from utils.llm import get_agent_registry
         registry = get_agent_registry()
-        agent = registry.get(agent_id)
+        agent = registry.describe_agent(agent_id, include_prompts=True)
         if not agent:
             return jsonify({"success": False, "error": f"未知 Agent ID: {agent_id}"}), 404
         return jsonify({
             "success": True,
-            "data": {
-                "id": agent.get("id"),
-                "name": agent.get("name"),
-                "role": agent.get("role"),
-                "tagline": agent.get("tagline", ""),
-                "adviseType": agent.get("adviseType", ""),
-                "system_prompt": agent.get("system_prompt", ""),
-                "user_prompt_template": agent.get("user_prompt_template", ""),
-            }
+            "data": agent
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
@@ -2008,6 +2013,556 @@ def _do_web_search(query: str) -> str:
         pass
 
     return f"搜索「{query}」暂时无法获取结果。请根据您已有的市场知识进行判断。"
+
+
+def _generate_og_image(title: str, subtitle: str = '', agent_id: str = '') -> bytes:
+    """使用 PIL 生成 OG 分享图片（1200x630）"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return _generate_og_image_fallback(title, subtitle)
+
+    W, H = 1200, 630
+    img = Image.new('RGB', (W, H), '#f8f5ff')
+    draw = ImageDraw.Draw(img)
+
+    # 渐变效果（简化版：用多个矩形模拟）
+    for i in range(H):
+        ratio = i / H
+        r = int(90 + ratio * 10)
+        g = int(42 + ratio * 10)
+        b = int(140 - ratio * 20)
+        draw.line([(0, i), (W, i)], fill=(r, g, b))
+
+    # 顶部装饰条
+    draw.rectangle([(0, 0), (W, 6)], fill='#5a34a8')
+
+    # Logo 区域
+    draw.rounded_rectangle([(50, 50), (170, 110)], radius=8, fill='#5a34a8')
+    draw.text((110, 72), 'FacSstock', fill='#ffffff', anchor='mm')
+
+    # 分隔线
+    draw.line([(50, 130), (W - 50, 130)], fill='#c7c2eb', width=1)
+
+    # 标题
+    title_size = 64
+    if len(title) > 20:
+        title_size = 48
+    if len(title) > 30:
+        title_size = 36
+
+    try:
+        font_title = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', title_size)
+    except Exception:
+        try:
+            font_title = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', title_size)
+        except Exception:
+            font_title = ImageFont.load_default()
+    except OSError:
+        try:
+            font_title = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', title_size)
+        except Exception:
+            font_title = ImageFont.load_default()
+
+    try:
+        font_sub = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 32)
+    except Exception:
+        try:
+            font_sub = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 32)
+        except Exception:
+            font_sub = ImageFont.load_default()
+    except OSError:
+        try:
+            font_sub = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 32)
+        except Exception:
+            font_sub = ImageFont.load_default()
+
+    # 副标题
+    if subtitle:
+        if len(subtitle) > 40:
+            subtitle = subtitle[:37] + '...'
+        bbox = draw.textbbox((0, 0), subtitle, font=font_sub)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, 180), subtitle, fill='#464455', font=font_sub, anchor='lm')
+
+    # 主标题（多行处理）
+    max_chars_per_line = 22
+    words = title.split()
+    lines = []
+    current = ''
+    for word in words:
+        test = (current + ' ' + word).strip()
+        if len(test) > max_chars_per_line:
+            if current:
+                lines.append(current)
+            current = word
+        else:
+            current = test
+    if current:
+        lines.append(current)
+
+    total_text_h = len(lines) * (title_size + 16)
+    start_y = 230 + (300 - total_text_h) / 2 if total_text_h < 300 else 240
+
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font_title)
+        tw = bbox[2] - bbox[0]
+        y = start_y + i * (title_size + 16)
+        draw.text(((W - tw) / 2, y), line, fill='#1e1633', font=font_title, anchor='lm')
+
+    # Agent ID 标签
+    if agent_id:
+        label_text = f'Agent: {agent_id}'
+        bbox = draw.textbbox((0, 0), label_text, font=font_sub)
+        lw = bbox[2] - bbox[0]
+        label_x = W - lw - 50
+        label_y = H - 80
+        draw.rounded_rectangle([(label_x - 20, label_y - 10), (W - 30, H - 30)], radius=10, fill='rgba(59,31,140,0.1)')
+        draw.text((label_x, label_y), label_text, fill='#5a34a8', font=font_sub, anchor='lm')
+
+    # 底部装饰
+    draw.line([(50, H - 40), (W - 50, H - 40)], fill='#c7c2eb', width=1)
+
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()
+
+
+def _generate_og_image_fallback(title: str, subtitle: str = '', agent_id: str = '') -> bytes:
+    """降级方案：返回纯色块 + 文字 SVG 转 PNG"""
+    import io, base64
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
+    <rect width="1200" height="630" fill="#f8f5ff"/>
+    <rect width="1200" height="6" fill="#5a34a8"/>
+    <text x="600" y="320" font-size="48" fill="#1e1633" text-anchor="middle" font-family="sans-serif">{title[:50]}</text>
+    <text x="600" y="380" font-size="28" fill="#464455" text-anchor="middle" font-family="sans-serif">{subtitle[:60]}</text>
+    <text x="600" y="570" font-size="20" fill="#5a34a8" text-anchor="middle" font-family="sans-serif">FacSstock</text>
+    </svg>'''.encode('utf-8')
+    try:
+        from PIL import Image
+        import subprocess
+        result = subprocess.run(['convert', 'svg:-', 'png:-'], input=svg, capture_output=True)
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    return svg
+
+# ── 分享短链接与精简 OG 图片 ───────────────────────────────────────────────
+
+import json as _json, base64 as _base64, hashlib as _hashlib, time as _time
+from urllib.parse import quote as _url_quote
+
+_share_data_store = {}  # {short_code: {url, data, created_at}}
+
+
+class ShareData:
+    """分享数据编码/解码，用于短链接和动态 OG 图片"""
+    def __init__(self, agent_id='', agent_name='', stance='', confidence=0,
+                 market_commentary='', position_advice='', top_stocks=None,
+                 original_url=''):
+        self.agent_id = agent_id or ''
+        self.agent_name = agent_name or agent_id or ''
+        self.stance = stance or 'neutral'
+        self.confidence = max(0, min(100, int(confidence or 0)))
+        self.market_commentary = (market_commentary or '')[:200]
+        self.position_advice = (position_advice or '')[:200]
+        self.top_stocks = (top_stocks or [])[:5]  # 最多5只
+        self.original_url = original_url or ''
+        self.created_at = int(_time.time())
+
+    def to_dict(self):
+        return {
+            'aid': self.agent_id,
+            'an': self.agent_name,
+            'st': self.stance,
+            'cf': self.confidence,
+            'mc': self.market_commentary,
+            'pa': self.position_advice,
+            'ts': self.top_stocks,
+            'ou': self.original_url,
+            'ca': self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            agent_id=d.get('aid', ''),
+            agent_name=d.get('an', ''),
+            stance=d.get('st', 'neutral'),
+            confidence=d.get('cf', 0),
+            market_commentary=d.get('mc', ''),
+            position_advice=d.get('pa', ''),
+            top_stocks=d.get('ts', []),
+            original_url=d.get('ou', ''),
+        )
+
+    def encode(self) -> str:
+        raw = _json.dumps(self.to_dict(), ensure_ascii=False)
+        return _base64.urlsafe_b64encode(raw.encode('utf-8')).decode('ascii')
+
+    @classmethod
+    def decode(cls, encoded: str):
+        try:
+            raw = _base64.urlsafe_b64decode(encoded.encode('ascii')).decode('utf-8')
+            return cls.from_dict(_json.loads(raw))
+        except Exception:
+            return None
+
+    @classmethod
+    def from_request_args(cls, args):
+        """从请求参数构建 ShareData"""
+        stocks_raw = args.get('stocks', '')
+        top_stocks = []
+        if stocks_raw:
+            try:
+                top_stocks = _json.loads(_base64.b64decode(stocks_raw.encode('ascii')).decode('utf-8'))
+            except Exception:
+                pass
+        return cls(
+            agent_id=args.get('agent_id', ''),
+            agent_name=args.get('agent_name', ''),
+            stance=args.get('stance', ''),
+            confidence=int(args.get('confidence', 0) or 0),
+            market_commentary=args.get('market_commentary', ''),
+            position_advice=args.get('position_advice', ''),
+            top_stocks=top_stocks,
+            original_url=args.get('original_url', ''),
+        )
+
+
+def _make_short_code(data: ShareData) -> str:
+    """基于分享内容生成确定性的短码，避免同日不同内容互相覆盖。"""
+    payload = data.to_dict()
+    payload.pop('ca', None)
+    raw = _json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:8]
+
+
+_STANCE_LABELS = {'bull': '看多', 'bear': '看空', 'neutral': '中性'}
+_STANCE_COLORS = {'bull': (0, 180, 80), 'bear': (220, 50, 50), 'neutral': (100, 100, 200)}
+
+
+def _generate_share_og_image(data: ShareData) -> bytes:
+    """生成精简版分享 OG 图片：信心指数 + 推荐结果（1200x630）"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return _generate_share_og_image_fallback(data)
+
+    W, H = 1200, 630
+    img = Image.new('RGB', (W, H), '#f8f5ff')
+    draw = ImageDraw.Draw(img)
+
+    # 背景渐变
+    for y in range(H):
+        ratio = y / H
+        r = int(248 - ratio * 8)
+        g = int(245 - ratio * 4)
+        b = int(255 - ratio * 0)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+    # 顶部渐变条
+    for y in range(8):
+        alpha = int(255 * (1 - y / 8))
+        draw.line([(0, y), (W, y)], fill=(90, 52, 168))
+
+    # Logo
+    draw.rounded_rectangle([(40, 30), (200, 80)], radius=8, fill='#5a34a8')
+    draw.text((120, 52), 'FacSstock', fill='#ffffff', anchor='mm')
+
+    # Agent 名称
+    agent_text = data.agent_name or data.agent_id or 'AI 策略分析'
+    draw.text((220, 52), agent_text, fill='#5a34a8', anchor='lm')
+
+    # 分隔线
+    draw.line([(40, 100), (W - 40, 100)], fill='#c7c2eb', width=1)
+
+    # ── 左侧：信心指数区域 ────────────────────────────────────────────────
+    left_x = 40
+    left_y = 120
+    left_w = 320
+
+    # 信心指数大圆环
+    cx, cy = left_x + left_w // 2, left_y + 140
+    r_outer = 110
+    r_inner = 80
+
+    # 背景圆（灰色底）
+    draw.ellipse([(cx - r_outer, cy - r_outer), (cx + r_outer, cy + r_outer)],
+                 fill='#e5e0ff')
+    draw.ellipse([(cx - r_inner, cy - r_inner), (cx + r_inner, cy + r_inner)],
+                 fill='#f8f5ff')
+
+    # 信心值彩色弧（简化：画一段弧形的粗线段来模拟）
+    conf = data.confidence
+    stance_color = _STANCE_COLORS.get(data.stance, (90, 52, 168))
+    arc_color = stance_color
+
+    # 信心值文字
+    try:
+        font_big = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 52)
+    except Exception:
+        try:
+            font_big = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 52)
+        except Exception:
+            font_big = ImageFont.load_default()
+
+    conf_text = f'{conf}%'
+    try:
+        font_label = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 18)
+    except Exception:
+        try:
+            font_label = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 18)
+        except Exception:
+            font_label = ImageFont.load_default()
+
+    # 信心值文字居中
+    bbox_big = draw.textbbox((0, 0), conf_text, font=font_big)
+    tw, th = bbox_big[2] - bbox_big[0], bbox_big[3] - bbox_big[1]
+    draw.text((cx - tw / 2, cy - th / 2 - 8), conf_text, fill=arc_color, font=font_big)
+
+    bbox_lbl = draw.textbbox((0, 0), '信心指数', font=font_label)
+    lw = bbox_lbl[2] - bbox_lbl[0]
+    draw.text((cx - lw / 2, cy + r_inner - 5), '信心指数', fill='#464455', font=font_label)
+
+    # 立场标签
+    stance_label = _STANCE_LABELS.get(data.stance, '中性')
+    try:
+        font_stance = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 24)
+    except Exception:
+        try:
+            font_stance = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 24)
+        except Exception:
+            font_stance = ImageFont.load_default()
+
+    # 立场背景
+    stance_text = f'{stance_label}市场'
+    bbox_st = draw.textbbox((0, 0), stance_text, font=font_stance)
+    sw = bbox_st[2] - bbox_st[0]
+    sh = bbox_st[3] - bbox_st[1]
+    draw.rounded_rectangle([(cx - sw / 2 - 14, left_y + 280), (cx + sw / 2 + 14, left_y + 280 + sh + 16)],
+                          radius=20, fill=arc_color)
+    draw.text((cx, left_y + 288), stance_text, fill='#ffffff', font=font_stance, anchor='lm')
+
+    # 市场简评（截断）
+    if data.market_commentary:
+        try:
+            font_desc = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 14)
+        except Exception:
+            try:
+                font_desc = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 14)
+            except Exception:
+                font_desc = ImageFont.load_default()
+
+        commentary = data.market_commentary[:80] + ('...' if len(data.market_commentary) > 80 else '')
+        draw.text((left_x, left_y + 340), commentary, fill='#464455', font=font_desc)
+
+    # ── 右侧：推荐结果区域 ────────────────────────────────────────────────
+    right_x = 400
+    right_y = 120
+    card_w = 380
+    card_h = 90
+    card_gap = 12
+
+    draw.text((right_x, right_y - 8), '推荐股票', fill='#1e1633', font=font_stance)
+
+    for i, stock in enumerate(data.top_stocks[:3]):
+        cy = right_y + 40 + i * (card_h + card_gap)
+        # 卡片背景
+        draw.rounded_rectangle([(right_x, cy), (right_x + card_w, cy + card_h)],
+                               radius=12, fill='#ffffff')
+        # 股票名
+        name = stock.get('name', stock.get('stock_name', '')) or ''
+        code = stock.get('code', stock.get('stock_code', '')) or ''
+        chg = float(stock.get('changePct', stock.get('chg_pct', 0)) or 0)
+        chg_text = f'{chg:+.2f}%'
+        chg_color = (0, 160, 80) if chg >= 0 else (220, 50, 50)
+
+        try:
+            font_name_s = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 18)
+        except Exception:
+            try:
+                font_name_s = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 18)
+            except Exception:
+                font_name_s = ImageFont.load_default()
+        try:
+            font_code = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 12)
+        except Exception:
+            try:
+                font_code = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 12)
+            except Exception:
+                font_code = ImageFont.load_default()
+
+        draw.text((right_x + 16, cy + 12), name, fill='#1e1633', font=font_name_s)
+        draw.text((right_x + 16, cy + 38), code, fill='#464455', font=font_code)
+
+        # 涨跌色块
+        chg_bbox = draw.textbbox((0, 0), chg_text, font=font_name_s)
+        chg_w = chg_bbox[2] - chg_bbox[0]
+        draw.rounded_rectangle([(right_x + card_w - chg_w - 36, cy + 18),
+                               (right_x + card_w - 16, cy + 54)],
+                              radius=8, fill=(chg_color[0], chg_color[1], chg_color[2], 30))
+        draw.text((right_x + card_w - chg_w - 28, cy + 26), chg_text,
+                  fill=chg_color, font=font_name_s)
+
+        # 推荐理由（截断）
+        reason = stock.get('reason', stock.get('reason_text', '')) or ''
+        if reason:
+            reason_short = reason[:30] + ('...' if len(reason) > 30 else '')
+            draw.text((right_x + 16, cy + 62), reason_short, fill='#888', font=font_code)
+
+    # 底部：原始链接提示
+    if data.original_url:
+        try:
+            font_url = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 11)
+        except Exception:
+            try:
+                font_url = ImageFont.truetype('/System/Library/Fonts/STHeiti Light.ttc', 11)
+            except Exception:
+                font_url = ImageFont.load_default()
+
+        url_short = data.original_url[:60]
+        draw.text((40, H - 36), url_short, fill='#aaa', font=font_url)
+
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()
+
+
+def _generate_share_og_image_fallback(data: ShareData) -> bytes:
+    stance_label = _STANCE_LABELS.get(data.stance, '中性')
+    stock_names = ' | '.join([s.get('name', '') or '' for s in data.top_stocks[:3]])
+    title = f"{data.agent_name or 'AI分析'} {stance_label} 信心{data.confidence}%"
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
+    <rect width="1200" height="630" fill="#f8f5ff"/>
+    <rect width="1200" height="8" fill="#5a34a8"/>
+    <text x="600" y="280" font-size="56" fill="#1e1633" text-anchor="middle" font-family="sans-serif">{title[:40]}</text>
+    <text x="600" y="350" font-size="28" fill="#464455" text-anchor="middle" font-family="sans-serif">推荐: {stock_names[:50]}</text>
+    <text x="600" y="430" font-size="22" fill="#5a34a8" text-anchor="middle" font-family="sans-serif">FacSstock</text>
+    </svg>'''.encode('utf-8')
+    return svg
+
+
+@app.route('/api/share/shorten', methods=['POST'])
+def share_shorten():
+    """
+    生成分享短链接。
+    POST body: {
+        agent_id, agent_name, stance, confidence,
+        market_commentary, position_advice,
+        stocks: [{name, code, changePct, reason}],
+        original_url
+    }
+    返回: {short_url, short_code}
+    """
+    try:
+        body = request.get_json() or {}
+        sd = ShareData(
+            agent_id=body.get('agent_id', ''),
+            agent_name=body.get('agent_name', ''),
+            stance=body.get('stance', ''),
+            confidence=int(body.get('confidence', 0) or 0),
+            market_commentary=body.get('market_commentary', ''),
+            position_advice=body.get('position_advice', ''),
+            top_stocks=body.get('stocks', []),
+            original_url=body.get('original_url', ''),
+        )
+
+        short_code = _make_short_code(sd)
+        encoded_data = sd.encode()
+        short_url = f'{request.host_url.rstrip("/")}/s/{short_code}?d={_url_quote(encoded_data)}'
+
+        _share_data_store[short_code] = {
+            'data': sd.to_dict(),
+            'url': short_url,
+            'created_at': int(_time.time()),
+        }
+        logger.info(f"[Share] short_code={short_code} agent={sd.agent_name} conf={sd.confidence}")
+
+        return jsonify({'success': True, 'short_url': short_url, 'short_code': short_code})
+    except Exception as e:
+        logger.warning(f"[Share] shorten failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/s/<short_code>')
+def share_redirect(short_code):
+    """短链接重定向到原始页面"""
+    entry = _share_data_store.get(short_code)
+    if entry:
+        original_url = entry['data'].get('ou', '/')
+        logger.info(f"[Share] redirect {short_code} -> {original_url}")
+        return redirect(original_url)
+    encoded = request.args.get('d', '')
+    if encoded:
+        sd = ShareData.decode(encoded)
+        if sd and sd.original_url:
+            logger.info(f"[Share] redirect fallback {short_code} -> {sd.original_url}")
+            return redirect(sd.original_url)
+    # 未找到，返回首页
+    return redirect('/')
+
+
+@app.route('/api/og-image')
+def serve_og_image():
+    """
+    动态生成 OG 分享图片（1200x630 PNG）。
+    支持两种模式：
+      1. data=base64(data) — 完整分享数据（精简版：信心指数 + 推荐股票）
+      2. title=...&subtitle=... — 旧版兼容参数
+    示例: /api/og-image?data=<base64>
+    """
+    encoded = request.args.get('data', '')
+    if encoded:
+        # 新版：解码分享数据生成精简图片
+        sd = ShareData.decode(encoded)
+        if not sd:
+            abort(400, 'Invalid share data')
+        try:
+            png_data = _generate_share_og_image(sd)
+            return Response(png_data, mimetype='image/png', headers={
+                'Cache-Control': 'public, max-age=3600',
+                'Content-Length': str(len(png_data)),
+            })
+        except Exception as e:
+            logger.warning(f"[OG-Image] share OG 生成失败: {e}")
+            abort(500)
+    else:
+        # 旧版兼容
+        title = request.args.get('title', 'FacSstock - 智能股票策略分析')
+        subtitle = request.args.get('subtitle', '基于AI的股票策略分析工具，支持布林带策略、AI选股、主题投资等多种功能。')
+        agent_id = request.args.get('agent_id', '')
+        if len(title) > 80:
+            title = title[:77] + '...'
+        try:
+            png_data = _generate_og_image(title, subtitle, agent_id)
+            return Response(png_data, mimetype='image/png', headers={
+                'Cache-Control': 'public, max-age=3600',
+                'Content-Length': str(len(png_data)),
+            })
+        except Exception as e:
+            logger.warning(f"[OG-Image] 生成失败: {e}")
+            abort(500)
+
+
+@app.route('/api/share/config')
+def share_config():
+    """
+    返回当前环境的分享配置（供前端使用）。
+    """
+    origin = request.host_url.rstrip('/')
+    return jsonify({
+        'success': True,
+        'data': {
+            'origin': origin,
+            'defaultTitle': 'FacSstock - 智能股票策略分析',
+            'defaultDesc': '基于AI的股票策略分析工具，支持布林带策略、AI选股、主题投资等多种功能。',
+            'defaultImage': f'{origin}/api/og-image?title=FacSstock',
+        }
+    })
 
 
 if __name__ == '__main__':

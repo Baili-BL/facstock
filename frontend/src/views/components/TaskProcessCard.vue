@@ -2,7 +2,9 @@
   <section class="task-card">
     <div class="task-card__head">
       <div class="task-card__head-left">
-        <span class="mso">route</span>
+        <svg class="icon task-card__head-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <use href="#icon-strategy" />
+        </svg>
         <h2 class="task-card__title">任务执行过程</h2>
       </div>
       <div class="task-card__head-right">
@@ -11,7 +13,9 @@
           执行中 · {{ elapsedTime }}
         </span>
         <span v-else-if="isDone" class="task-card__done-badge">
-          <span class="mso">check_circle</span>
+          <svg class="icon task-card__done-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <use href="#icon-check" />
+          </svg>
           已完成
         </span>
       </div>
@@ -24,19 +28,21 @@
         :key="idx"
         class="task-card__step"
         :class="{
-          'task-card__step--active': idx === currentStep - 1 && isRunning,
-          'task-card__step--done': step.done || (isDone && idx < steps.length - 1) || (idx < currentStep - 1),
-          'task-card__step--pending': !step.done && idx >= currentStep - 1 && !isDone,
+          'task-card__step--active': idx === effectiveCurrentStep - 1 && isRunning,
+          'task-card__step--done': step.done || (isDone && idx < steps.length - 1) || (idx < effectiveCurrentStep - 1),
+          'task-card__step--pending': !step.done && idx >= effectiveCurrentStep - 1 && !isDone,
         }"
       >
         <div class="task-card__step-indicator">
           <!-- Active: pulsing ring -->
-          <div v-if="idx === currentStep - 1 && isRunning" class="task-card__step-ring">
+          <div v-if="idx === effectiveCurrentStep - 1 && isRunning" class="task-card__step-ring">
             <div class="task-card__step-ring-inner" />
           </div>
           <!-- Done: check icon -->
-          <div v-else-if="step.done || (isDone && idx < steps.length - 1) || idx < currentStep - 1" class="task-card__step-check">
-            <span class="mso">check</span>
+          <div v-else-if="step.done || (isDone && idx < steps.length - 1) || idx < effectiveCurrentStep - 1" class="task-card__step-check">
+            <svg class="icon task-card__step-check-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#icon-check" />
+            </svg>
           </div>
           <!-- Pending: number -->
           <div v-else class="task-card__step-num">{{ idx + 1 }}</div>
@@ -46,7 +52,7 @@
         <div
           v-if="idx < steps.length - 1"
           class="task-card__step-connector"
-          :class="{ 'task-card__step-connector--done': step.done || idx < currentStep - 1 || isDone }"
+          :class="{ 'task-card__step-connector--done': step.done || idx < effectiveCurrentStep - 1 || isDone }"
         />
 
         <!-- Label -->
@@ -58,17 +64,19 @@
     </div>
 
     <!-- Active step detail panel -->
-    <div v-if="currentStep > 0" class="task-card__detail">
+    <div v-if="effectiveCurrentStep > 0" class="task-card__detail">
       <div class="task-card__detail-header">
         <span class="task-card__detail-step-badge">
-          步骤 {{ currentStep }} / {{ steps.length }}
+          步骤 {{ effectiveCurrentStep }} / {{ steps.length }}
         </span>
-        <span class="task-card__detail-title">{{ currentStepTitle }}</span>
+        <span class="task-card__detail-title">{{ effectiveCurrentTitle }}</span>
       </div>
       <div class="task-card__detail-body">
         <div class="task-card__detail-text">
-          <span class="mso">east</span>
-          <p>{{ currentStepDetail || '正在执行...' }}</p>
+          <svg class="icon task-card__detail-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <use href="#icon-chevron-right" />
+          </svg>
+          <p>{{ effectiveCurrentDetail }}</p>
         </div>
         <!-- Progress bar for active step -->
         <div v-if="isRunning" class="task-card__progress-bar">
@@ -201,6 +209,29 @@ const consensusColor = computed(() => {
   const m = { bull: '#f23645', bear: '#089981', neutral: '#717786' }
   return m[props.stance] || '#717786'
 })
+
+const effectiveCurrentStep = computed(() => {
+  if (props.isDone && props.steps.length) {
+    return props.steps.length
+  }
+  return props.currentStep
+})
+
+const effectiveCurrentTitle = computed(() => {
+  if (!props.isDone && props.currentStepTitle) {
+    return props.currentStepTitle
+  }
+  const idx = effectiveCurrentStep.value - 1
+  return props.steps[idx]?.title || ''
+})
+
+const effectiveCurrentDetail = computed(() => {
+  if (!props.isDone && props.currentStepDetail) {
+    return props.currentStepDetail
+  }
+  const idx = effectiveCurrentStep.value - 1
+  return props.steps[idx]?.desc || (props.isRunning ? '正在执行...' : '全部任务步骤已完成')
+})
 </script>
 
 <style scoped>
@@ -228,8 +259,9 @@ const consensusColor = computed(() => {
   gap: 8px;
 }
 
-.task-card__head-left .mso {
-  font-size: 20px;
+.task-card__head-icon {
+  width: 20px;
+  height: 20px;
   color: var(--primary-container);
 }
 
@@ -279,8 +311,9 @@ const consensusColor = computed(() => {
   border-radius: 999px;
 }
 
-.task-card__done-badge .mso {
-  font-size: 14px;
+.task-card__done-icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* ── Horizontal Stepper ─────────────────────────────────────────────── */
@@ -366,8 +399,9 @@ const consensusColor = computed(() => {
   justify-content: center;
 }
 
-.task-card__step-check .mso {
-  font-size: 18px;
+.task-card__step-check-icon {
+  width: 18px;
+  height: 18px;
   color: white;
 }
 
@@ -475,8 +509,9 @@ const consensusColor = computed(() => {
   gap: 8px;
 }
 
-.task-card__detail-text .mso {
-  font-size: 16px;
+.task-card__detail-icon {
+  width: 16px;
+  height: 16px;
   color: var(--primary);
   flex-shrink: 0;
   margin-top: 1px;

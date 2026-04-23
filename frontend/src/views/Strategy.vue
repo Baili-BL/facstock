@@ -67,10 +67,12 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { scan, report } from '@/api/strategy.js'
+import { fetchAgentArchitecture } from '@/api/agents.js'
 
 const stats = ref({ scans: '—', stocks: '—', sectors: '—' })
 const latestScan = ref(null)
 const reportCount = ref('—')
+const agentCount = ref('—')
 
 const baseCards = computed(() => {
   const scans = stats.value.scans
@@ -87,7 +89,7 @@ const baseCards = computed(() => {
       pill: '游资专家库',
       title: '游资智能体 · 策略智能体',
       desc: '市场监测下的多角色策略库：胜率、收益与状态一览；全场策略总结跳转大模型解读。',
-      headline: '6',
+      headline: agentCount.value !== '—' ? String(agentCount.value) : '—',
       headlineLbl: '策略角色（位）',
       m1Lbl: '扫描次数',
       m1Val: scans,
@@ -192,6 +194,16 @@ async function loadReportCount() {
   }
 }
 
+async function loadAgentCatalog() {
+  try {
+    const data = await fetchAgentArchitecture()
+    const personas = Array.isArray(data?.personaAgents) ? data.personaAgents : []
+    agentCount.value = personas.length ? String(personas.length) : '—'
+  } catch {
+    agentCount.value = '—'
+  }
+}
+
 function formatScanTime(timeStr) {
   if (!timeStr) return '—'
   try {
@@ -216,6 +228,7 @@ function formatScanTime(timeStr) {
 onMounted(() => {
   loadHistory()
   loadReportCount()
+  loadAgentCatalog()
 })
 </script>
 

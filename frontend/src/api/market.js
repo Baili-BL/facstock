@@ -43,7 +43,7 @@ export const market = {
   overview:  () => cached('market/overview',  30_000, () => apiFetch('/api/market/overview',    'market/overview')),
   snapshot:  () => cached('market/snapshot/v2',  15_000, () => apiFetch('/api/market/snapshot',    'market/snapshot/v2')),
   flow:      () => cached('market/flow',      30_000, () => apiFetch('/api/market/flow',         'market/flow')),
-  limit:     () => cached('market/limit',     15_000, () => apiFetch('/api/market/limit',        'market/limit')),
+  limit:     () => cached('market/limit',     10_000, () => apiFetch('/api/market/limit',        'market/limit')),
   turnover:  () => cached('market/turnover',  30_000, () => apiFetch('/api/market/turnover',    'market/turnover')),
   sectors:   () => cached('market/sectors',   30_000, () => apiFetch('/api/market/sectors',     'market/sectors')),
   sectorsConcept: () => cached('market/sectors/concept', 30_000,

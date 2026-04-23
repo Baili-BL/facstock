@@ -35,6 +35,11 @@ export async function fetchAgentPrompts() {
   return json.data // AgentProfile[]
 }
 
+export async function fetchAgentArchitecture() {
+  const json = await apiGet(`${BASE}/agents/architecture`)
+  return json.data
+}
+
 // ─── 单个 Agent 分析 ────────────────────────────────────────────────────
 
 /**

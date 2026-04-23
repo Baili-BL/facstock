@@ -41,6 +41,7 @@ COPY junge_trader.py .
 COPY database.py .
 COPY cache.py .
 COPY a_share_session.py .
+COPY task_routes.py .
 COPY bollinger_squeeze_strategy.py .
 COPY ticai/ ./ticai/
 COPY utils/ ./utils/

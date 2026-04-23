@@ -171,6 +171,31 @@ svg.icon-lg  { width: 24px; height: 24px; }
 svg.icon-xl  { width: 32px; height: 32px; }
 svg.icon-full { width: 40px; height: 40px; }
 
+/* ── 5.1 Material Symbols (global) ───────────────── */
+.mso,
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+.mso-fill {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
 /* ── 6. Utility colors ─────────────────────────────── */
 .up    { color: var(--up)   !important; }
 .down  { color: var(--down) !important; }

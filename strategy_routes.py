@@ -5,7 +5,7 @@
 """
 
 import os
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from typing import Optional
 import database as db
 import json
@@ -14,12 +14,12 @@ import requests
 import threading
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import pandas as _pd
 from cache import get, set as _cache_set, invalidate
 import logging
-from utils.feishu_notifier import send_feishu_scan_alert, send_feishu_test
+from utils.feishu_notifier import FeishuNotifier, send_feishu_scan_alert, send_feishu_test
 
 logger = logging.getLogger(__name__)
 strategy_bp = Blueprint('strategy', __name__)
@@ -917,6 +917,77 @@ def test_feishu():
     except Exception as e:
         logger.exception('飞书测试失败')
         return jsonify({'success': False, 'error': str(e)})
+
+
+def _get_trader_agent_push_service():
+    return current_app.extensions.get('trader_agent_push_service')
+
+
+def _get_trader_agent_push_scheduler():
+    return current_app.extensions.get('trader_agent_push_scheduler')
+
+
+@strategy_bp.route('/api/agents/push/status', methods=['GET'])
+def get_agent_push_status():
+    """返回游资智能体飞书推送调度状态。"""
+    try:
+        service = _get_trader_agent_push_service()
+        scheduler = _get_trader_agent_push_scheduler()
+        if not service:
+            return jsonify({'success': False, 'error': '游资智能体推送服务尚未初始化'}), 503
+
+        service_status = service.status()
+        scheduler_status = scheduler.status() if scheduler else {
+            'enabled': False,
+            'running': False,
+            'slots': [],
+            'nextSlot': None,
+        }
+        return jsonify({
+            'success': True,
+            'data': {
+                **service_status,
+                **scheduler_status,
+            },
+        })
+    except Exception as e:
+        logger.exception('获取游资智能体推送状态失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/agents/push/trigger', methods=['POST'])
+def trigger_agent_push():
+    """手动触发一次游资智能体飞书推送。"""
+    try:
+        service = _get_trader_agent_push_service()
+        if not service:
+            return jsonify({'success': False, 'error': '游资智能体推送服务尚未初始化'}), 503
+
+        body = request.get_json(silent=True) or {}
+        agent_ids = body.get('agent_ids') or body.get('agentIds')
+        slot_key = str(body.get('slot_key') or body.get('slotKey') or '').strip() or None
+        slot_label = str(body.get('slot_label') or body.get('slotLabel') or '').strip() or None
+        webhook_url = str(body.get('webhook_url') or body.get('webhookUrl') or '').strip() or None
+        dry_run = bool(body.get('dry_run') if 'dry_run' in body else body.get('dryRun', False))
+        include_payload = bool(body.get('include_payload') if 'include_payload' in body else body.get('includePayload', False))
+
+        result = service.run_push(
+            agent_ids=agent_ids,
+            slot_key=slot_key,
+            slot_label=slot_label,
+            trigger_type='manual',
+            webhook_url=webhook_url,
+            dry_run=dry_run,
+        )
+
+        if include_payload:
+            notifier = FeishuNotifier(webhook_url=webhook_url)
+            result['payloadPreview'] = notifier.build_agent_digest_payload(result.get('digest') or {})
+
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        logger.exception('手动触发游资智能体推送失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @strategy_bp.route('/api/bollinger/alerts', methods=['GET'])
@@ -2183,45 +2254,9 @@ def get_stock_quote(code: str):
         if not code or not code.isdigit() or len(code) != 6:
             return jsonify({'success': False, 'error': '无效股票代码'}), 400
 
-        result = _get_quote_sina(code)
+        result = _get_quote_with_fallback(code)
         if result:
             return jsonify({'success': True, **result})
-
-        # 备选：东方财富批量接口
-        mkt = "1" if code.startswith(("6", "9")) else "0"
-        secid = f"{mkt}.{code}"
-        try:
-            resp = requests.get(
-                "http://push2.eastmoney.com/api/qt/ulist/get",
-                params={
-                    "fltt": "2",
-                    "secids": secid,
-                    "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62",
-                },
-                timeout=8,
-            )
-            items = resp.json().get('data', {}).get('diff', [])
-            if items:
-                item = items[0]
-                return jsonify({
-                    'success': True,
-                    'code': code,
-                    'name': item.get('f14', ''),
-                    'close': item.get('f2'),
-                    'pct_change': item.get('f3'),
-                    'change': item.get('f4'),
-                    'volume': item.get('f5'),
-                    'amount': item.get('f6'),
-                    'turnover': item.get('f8'),
-                    'qty_ratio': item.get('f10'),
-                    'high': item.get('f15'),
-                    'low': item.get('f16'),
-                    'open': item.get('f17'),
-                    'prev_close': item.get('f18'),
-                    'mkt_cap': _eastmoney_mkt_cap_yuan(item),
-                })
-        except Exception:
-            pass
 
         return jsonify({'success': False, 'error': '未找到行情数据'}), 404
 
@@ -2307,63 +2342,106 @@ def _get_quote_sina(code: str) -> Optional[dict]:
         return None
 
 
+def _get_quote_with_fallback(code: str) -> Optional[dict]:
+    """优先新浪，失败后降级东方财富。"""
+    result = _get_quote_sina(code)
+    if result:
+        return result
+
+    mkt = "1" if code.startswith(("6", "9")) else "0"
+    try:
+        resp = requests.get(
+            "http://push2.eastmoney.com/api/qt/ulist/get",
+            params={
+                "fltt": "2",
+                "secids": f"{mkt}.{code}",
+                "fields": "f2,f3,f4,f5,f6,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62",
+            },
+            timeout=8,
+        )
+        items = resp.json().get('data', {}).get('diff', [])
+        if not items:
+            return None
+        item = items[0]
+        return {
+            'code': code,
+            'name': item.get('f14', ''),
+            'close': item.get('f2'),
+            'pct_change': item.get('f3'),
+            'change': item.get('f4'),
+            'volume': item.get('f5'),
+            'amount': item.get('f6'),
+            'turnover': item.get('f8'),
+            'qty_ratio': item.get('f10'),
+            'high': item.get('f15'),
+            'low': item.get('f16'),
+            'open': item.get('f17'),
+            'prev_close': item.get('f18'),
+            'mkt_cap': _eastmoney_mkt_cap_yuan(item),
+        }
+    except Exception:
+        return None
+
+
 def _enrich_stocks_realtime(structured: dict) -> None:
     """
-    批量获取推荐股票的实时行情，并回填到 structured['recommendedStocks'] 中。
-    仅补调 price/changePct 为空或 0 的股票，避免覆盖 AI 已给出的合理区间。
+    批量获取推荐股票的实时行情，并回填到 structured 中。
+    对扫描型推荐（如北京炒家的可买候选）会强制刷新，避免沿用旧扫描快照。
     """
-    recs = structured.get('recommendedStocks', [])
-    if not recs:
+    target_groups = []
+
+    recs = structured.get('recommendedStocks', []) or []
+    if recs:
+        target_groups.append(recs)
+
+    execution = structured.get('personaExecution') or {}
+    actionables = execution.get('actionableCandidates', []) or []
+    board_candidates = execution.get('boardCandidates', []) or []
+    if actionables:
+        target_groups.append(actionables)
+    if board_candidates:
+        target_groups.append(board_candidates)
+
+    if not target_groups:
         return
 
     # 收集需要补调的代码
     codes_to_fetch = []
-    code_index = {}
-    for i, rec in enumerate(recs):
-        code = str(rec.get('code') or '').strip()
-        if len(code) == 6 and code.isdigit():
+    code_rows = {}
+    for rows in target_groups:
+        for rec in rows:
+            code = str(rec.get('code') or '').strip()
+            if len(code) != 6 or not code.isdigit():
+                continue
+            force_refresh = bool(
+                rec.get('forceRealtimeQuote')
+                or rec.get('actionSource') == 'scan'
+                or rec.get('boardType') == '未上板'
+            )
             price = rec.get('price')
             chg = rec.get('changePct') or rec.get('chg_pct') or rec.get('change_pct')
-            if price in (None, '', 0) or chg in (None, '', 0):
+            need_fetch = force_refresh or price in (None, '', 0) or chg in (None, '', 0)
+            if need_fetch and code not in codes_to_fetch:
                 codes_to_fetch.append(code)
-                code_index[code] = i
+            if need_fetch:
+                code_rows.setdefault(code, []).append((rec, force_refresh))
 
     if not codes_to_fetch:
         return
 
     # 批量查询（新浪优先，逐个降级东方财富）
     for code in codes_to_fetch:
-        q = _get_quote_sina(code)
-        if not q:
-            # 备选东方财富
-            mkt = "1" if code.startswith(("6", "9")) else "0"
-            try:
-                resp = requests.get(
-                    "http://push2.eastmoney.com/api/qt/ulist/get",
-                    params={
-                        "fltt": "2", "secids": f"{mkt}.{code}",
-                        "fields": "f2,f3,f4,f12,f14",
-                    },
-                    timeout=8,
-                )
-                items = resp.json().get('data', {}).get('diff', [])
-                if items:
-                    item = items[0]
-                    q = {
-                        'close': item.get('f2'),
-                        'pct_change': item.get('f3'),
-                        'name': item.get('f14', ''),
-                    }
-            except Exception:
-                pass
+        q = _get_quote_with_fallback(code)
 
         if q and q.get('close'):
-            idx = code_index[code]
-            recs[idx]['price'] = q['close']
-            recs[idx]['changePct'] = q['pct_change']
-            # 如果后端没有 name 但行情有，也补上
-            if not recs[idx].get('name') and q.get('name'):
-                recs[idx]['name'] = q['name']
+            for rec, force_refresh in code_rows.get(code, []):
+                if force_refresh or rec.get('price') in (None, '', 0):
+                    rec['price'] = q['close']
+                if force_refresh or rec.get('changePct') in (None, '', 0) or rec.get('chg_pct') in (None, '', 0):
+                    rec['changePct'] = q['pct_change']
+                # 如果后端没有 name 但行情有，也补上
+                if not rec.get('name') and q.get('name'):
+                    rec['name'] = q['name']
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2378,7 +2456,7 @@ def _enrich_stocks_realtime(structured: dict) -> None:
 
 from utils.llm import get_client, get_agent_registry, CallOptions
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
@@ -2578,6 +2656,216 @@ def analyze_single_agent(agent_id: str) -> Dict[str, Any]:
     if not profile:
         return {'agent_id': agent_id, 'success': False, 'error': f'未知 Agent: {agent_id}'}
 
+    if agent_id == 'beijing':
+        try:
+            overview_text = _get_market_overview()
+            beijing_artifacts = _build_beijing_execution_artifacts(overview_text=overview_text)
+            beijing_context = _build_beijing_execution_context_text(beijing_artifacts)
+            prompt_bundle = _load_single_agent_prompt_bundle(
+                agent_id,
+                registry,
+                search_data=beijing_artifacts.get('searchDataPreview', ''),
+                agent_execution_context=beijing_context,
+                force_empty_scan=True,
+            )
+
+            options = CallOptions(
+                temperature=profile.get('temperature', 0.3),
+                max_tokens=profile.get('max_tokens', 3000),
+            )
+            resp = get_client().call(
+                prompt=prompt_bundle['user_prompt'],
+                system=profile.get('system_prompt', ''),
+                options=options,
+            )
+
+            result = {
+                'agent_id': agent_id,
+                'agent_name': profile.get('name', ''),
+                'name_brand': profile.get('name', ''),
+                'role_subtitle': profile.get('role', ''),
+                'avatar_url': '',
+                'success': False,
+                'raw_response': resp.content if resp.success else '',
+                'structured': None,
+                'analysis': '',
+                'tokens_used': resp.tokens_used,
+            }
+
+            if not resp.success:
+                result['error'] = resp.error or 'LLM 调用返回空'
+                fallback = _build_beijing_fallback_structured(beijing_artifacts)
+                result['structured'] = _merge_beijing_structured(fallback, beijing_artifacts)
+                _enrich_stocks_realtime(result['structured'])
+                result['analysis'] = '【北京炒家执行工件】\n' + beijing_context
+                return result
+
+            parsed = registry.extract_json(resp.content)
+            structured = parsed or _build_beijing_fallback_structured(beijing_artifacts)
+            structured = registry.sanitize(
+                structured,
+                prompt_bundle['all_stocks'],
+                default_advise_type=profile.get('adviseType', '游资打板'),
+            )
+            structured = _merge_beijing_structured(structured, beijing_artifacts)
+            _enrich_stocks_realtime(structured)
+
+            markdown_analysis = _strip_json_from_analysis(resp.content).strip()
+            if not markdown_analysis:
+                markdown_analysis = '【北京炒家执行工件】\n' + beijing_context
+
+            result['success'] = True
+            result['structured'] = structured
+            result['analysis'] = markdown_analysis
+            return result
+        except Exception as exc:
+            logger.error('北京炒家执行失败: %s', exc, exc_info=True)
+            return {
+                'agent_id': agent_id,
+                'success': False,
+                'error': f'北京炒家执行失败: {exc}',
+            }
+
+    if agent_id == 'qiao':
+        try:
+            overview_text = _get_market_overview()
+            qiao_artifacts = _build_qiao_execution_artifacts(overview_text=overview_text)
+            qiao_context = _build_qiao_execution_context_text(qiao_artifacts)
+            prompt_bundle = _load_single_agent_prompt_bundle(
+                agent_id,
+                registry,
+                search_data=qiao_artifacts.get('searchDataPreview', ''),
+                agent_execution_context=qiao_context,
+                force_empty_scan=True,
+            )
+
+            options = CallOptions(
+                temperature=profile.get('temperature', 0.3),
+                max_tokens=profile.get('max_tokens', 3000),
+            )
+            resp = get_client().call(
+                prompt=prompt_bundle['user_prompt'],
+                system=profile.get('system_prompt', ''),
+                options=options,
+            )
+
+            result = {
+                'agent_id': agent_id,
+                'agent_name': profile.get('name', ''),
+                'name_brand': profile.get('name', ''),
+                'role_subtitle': profile.get('role', ''),
+                'avatar_url': '',
+                'success': False,
+                'raw_response': resp.content if resp.success else '',
+                'structured': None,
+                'analysis': '',
+                'tokens_used': resp.tokens_used,
+            }
+
+            if not resp.success:
+                result['error'] = resp.error or 'LLM 调用返回空'
+                fallback = _build_qiao_fallback_structured(qiao_artifacts)
+                result['structured'] = _merge_qiao_structured(fallback, qiao_artifacts)
+                _enrich_stocks_realtime(result['structured'])
+                result['analysis'] = '【乔帮主执行工件】\n' + qiao_context
+                return result
+
+            parsed = registry.extract_json(resp.content)
+            structured = parsed or _build_qiao_fallback_structured(qiao_artifacts)
+            structured = registry.sanitize(
+                structured,
+                prompt_bundle['all_stocks'],
+                default_advise_type=profile.get('adviseType', '龙头主升'),
+            )
+            structured = _merge_qiao_structured(structured, qiao_artifacts)
+            _enrich_stocks_realtime(structured)
+
+            markdown_analysis = _strip_json_from_analysis(resp.content).strip()
+            if not markdown_analysis:
+                markdown_analysis = '【乔帮主执行工件】\n' + qiao_context
+
+            result['success'] = True
+            result['structured'] = structured
+            result['analysis'] = markdown_analysis
+            return result
+        except Exception as exc:
+            logger.error('乔帮主执行失败: %s', exc, exc_info=True)
+            return {
+                'agent_id': agent_id,
+                'success': False,
+                'error': f'乔帮主执行失败: {exc}',
+            }
+
+    if agent_id == 'jia':
+        try:
+            overview_text = _get_market_overview()
+            jia_artifacts = _build_jia_execution_artifacts(overview_text=overview_text)
+            jia_context = _build_jia_execution_context_text(jia_artifacts)
+            prompt_bundle = _load_single_agent_prompt_bundle(
+                agent_id,
+                registry,
+                search_data=jia_artifacts.get('searchDataPreview', ''),
+                agent_execution_context=jia_context,
+                force_empty_scan=True,
+            )
+
+            options = CallOptions(
+                temperature=profile.get('temperature', 0.3),
+                max_tokens=profile.get('max_tokens', 3000),
+            )
+            resp = get_client().call(
+                prompt=prompt_bundle['user_prompt'],
+                system=profile.get('system_prompt', ''),
+                options=options,
+            )
+
+            result = {
+                'agent_id': agent_id,
+                'agent_name': profile.get('name', ''),
+                'name_brand': profile.get('name', ''),
+                'role_subtitle': profile.get('role', ''),
+                'avatar_url': '',
+                'success': False,
+                'raw_response': resp.content if resp.success else '',
+                'structured': None,
+                'analysis': '',
+                'tokens_used': resp.tokens_used,
+            }
+
+            if not resp.success:
+                result['error'] = resp.error or 'LLM 调用返回空'
+                fallback = _build_jia_fallback_structured(jia_artifacts)
+                result['structured'] = _merge_jia_structured(fallback, jia_artifacts)
+                _enrich_stocks_realtime(result['structured'])
+                result['analysis'] = '【炒股养家执行工件】\n' + jia_context
+                return result
+
+            parsed = registry.extract_json(resp.content)
+            structured = parsed or _build_jia_fallback_structured(jia_artifacts)
+            structured = registry.sanitize(
+                structured,
+                prompt_bundle['all_stocks'],
+                default_advise_type=profile.get('adviseType', '情绪龙头'),
+            )
+            structured = _merge_jia_structured(structured, jia_artifacts)
+            _enrich_stocks_realtime(structured)
+
+            markdown_analysis = _strip_json_from_analysis(resp.content).strip()
+            if not markdown_analysis:
+                markdown_analysis = '【炒股养家执行工件】\n' + jia_context
+
+            result['success'] = True
+            result['structured'] = structured
+            result['analysis'] = markdown_analysis
+            return result
+        except Exception as exc:
+            logger.error('炒股养家执行失败: %s', exc, exc_info=True)
+            return {
+                'agent_id': agent_id,
+                'success': False,
+                'error': f'炒股养家执行失败: {exc}',
+            }
+
     market = get_market_snapshot()
     prompt = render_prompt(profile, market)
 
@@ -2663,6 +2951,13 @@ def get_agent_prompts():
     return jsonify({'success': True, 'data': agents})
 
 
+@strategy_bp.route('/api/agents/architecture')
+def get_agent_architecture():
+    """返回策略智能体系统架构、层级说明与人格目录。"""
+    registry = get_agent_registry()
+    return jsonify({'success': True, 'data': registry.get_architecture_overview()})
+
+
 @strategy_bp.route('/api/agents/analyze/<agent_id>', methods=['POST'])
 def analyze_single_agent_api(agent_id):
     """单 Agent 分析接口"""
@@ -2673,6 +2968,47 @@ def analyze_single_agent_api(agent_id):
     result = analyze_single_agent(agent_id)
     # 内层 result 含 success: False 时不可与外层 success 合并，否则覆盖为 false 导致前端误判失败
     agent_success = result.pop('success', True)
+    if agent_success:
+        try:
+            structured = result.get('structured') or {}
+            report_date = datetime.now().strftime('%Y-%m-%d')
+            raw_text = result.get('raw_response') or result.get('analysis') or ''
+            thinking = result.get('thinking') or ''
+            ar_payload = {
+                'structured': structured,
+                'raw_text': raw_text,
+                'thinking': thinking,
+                'marketCommentary': structured.get('marketCommentary', ''),
+                'positionAdvice': structured.get('positionAdvice', ''),
+                'riskWarning': structured.get('riskWarning', ''),
+                'stance': structured.get('stance', ''),
+                'confidence': structured.get('confidence', 0),
+                'recommendedStocks': structured.get('recommendedStocks', []),
+            }
+            snap = db.build_analysis_holdings_snapshot(
+                db.get_holdings_by_agent(agent_id),
+                ar_payload,
+            )
+            db.save_agent_analysis_history(
+                agent_id=agent_id,
+                report_date=report_date,
+                holdings_snapshot=snap,
+                analysis_result=ar_payload,
+                raw_response=raw_text,
+                thinking=thinking,
+                stance=structured.get('stance', ''),
+                confidence=int(structured.get('confidence', 0) or 0),
+                tokens_used=int(result.get('tokens_used', 0) or 0),
+            )
+
+            rec_stocks = structured.get('recommendedStocks', []) or []
+            if rec_stocks:
+                try:
+                    db.save_recommended_stocks_as_holdings(agent_id, rec_stocks)
+                except Exception as save_err:
+                    logger.warning('[Analyze] 保存推荐股到持仓失败 agent=%s err=%s', agent_id, save_err)
+        except Exception as hist_err:
+            logger.warning('[Analyze] 保存分析历史失败 agent=%s err=%s', agent_id, hist_err)
     return jsonify({'success': True, 'agent_success': agent_success, **result})
 
 
@@ -2684,7 +3020,12 @@ def analyze_single_agent_stream(agent_id):
     """
     import flask
     import json
-    from utils.llm.agents import get_agent_registry, AGENT_TOOLS, COMMON_TOOLS
+    from utils.llm.agents import (
+        AGENT_TOOLS,
+        COMMON_TOOLS,
+        get_agent_registry,
+        get_agent_task_decomposition,
+    )
     from flask import request
 
     def get_agent_tools(agent_id: str):
@@ -2710,36 +3051,77 @@ def analyze_single_agent_stream(agent_id):
         _agent_id = agent_id
         registry = get_agent_registry()
         profile = registry.get(_agent_id)
+        agent_view = registry.describe_agent(_agent_id, include_prompts=True) or {}
         
         if not profile:
             yield f"data: {json.dumps({'type': 'error', 'error': '未知 Agent'})}\n\n"
             return
 
-        try:
-            # ══ 数据获取阶段：分步骤推送每个数据源的获取状态 ═══════════════════
-            step_data = {'type': 'cot', 'step': 1, 'total': 5, 'title': '获取市场快照', 'message': '正在拉取大盘指数数据（上证、深证、创业板、科创50）...'}
-            task_step_data = {'type': 'task_step', 'step': 1, 'total': 5, 'title': '市场数据获取', 'desc': '拉取大盘指数、涨跌统计...'}
-            yield f"data: {json.dumps(step_data)}\n\n"
-            yield f"data: {json.dumps(task_step_data)}\n\n"
-            import akshare as ak
-            try:
-                df = ak.stock_zh_index_spot_em()
-                if df is not None and not df.empty:
-                    indices = {'上证指数': '000001', '深证成指': '399001', '创业板': '399006', '科创50': '000688'}
-                    snapshot_lines = []
-                    for name, code in indices.items():
-                        row = df[df['代码'] == code]
-                        if not row.empty:
-                            price = row.iloc[0].get('最新价', 0)
-                            chg = row.iloc[0].get('涨跌幅', 0)
-                            snapshot_lines.append(f"  {name}: {price} ({chg:+.2f}%)")
-                    if snapshot_lines:
-                        yield f"data: {json.dumps({'type': 'cot_data', 'step': 1, 'lines': snapshot_lines})}\n\n"
-            except Exception as snap_err:
-                yield f"data: {json.dumps({'type': 'cot_data', 'step': 1, 'lines': [f'  [警告] 大盘快照获取失败: {snap_err}']})}\n\n"
+        def sse(payload: Dict[str, Any]) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'type': 'cot', 'step': 2, 'total': 5, 'title': '联网搜索市场数据', 'message': '正在联网搜索今日涨停板、连板股、市场情绪、主线题材...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'task_step', 'step': 2, 'total': 5, 'title': '联网搜索', 'desc': '搜索今日涨停板、市场情绪、主线题材...'})}\n\n"
+        try:
+            task_decomposition = get_agent_task_decomposition(_agent_id)
+            current_task_step = 0
+
+            def next_task_step_payload():
+                nonlocal current_task_step
+                if not task_decomposition or current_task_step >= len(task_decomposition):
+                    return None
+                step_info = task_decomposition[current_task_step]
+                current_task_step += 1
+                return {
+                    'type': 'task_step',
+                    'step': current_task_step,
+                    'total': len(task_decomposition),
+                    'title': step_info.get('title', f'步骤 {current_task_step}'),
+                    'desc': step_info.get('description', ''),
+                    'status': 'running',
+                }
+
+            if task_decomposition:
+                yield sse({
+                    'type': 'task_flow_init',
+                    'total': len(task_decomposition),
+                    'coreObjective': agent_view.get('coreObjective', ''),
+                    'steps': [
+                        {
+                            'step': idx + 1,
+                            'title': item.get('title', f'步骤 {idx + 1}'),
+                            'desc': item.get('description', ''),
+                            'done': False,
+                        }
+                        for idx, item in enumerate(task_decomposition)
+                    ],
+                })
+
+            # ══ 共享事实层：优先读取轻量级市场概览，避免一开始就被东财快照阻塞 ═════════
+            yield sse({
+                'type': 'cot',
+                'step': 1,
+                'total': 3,
+                'title': '共享事实同步',
+                'message': '正在读取大盘概览、扫描结果和可复用市场上下文...',
+            })
+            overview_text = _get_market_overview()
+            if overview_text and '暂时无法获取' not in overview_text:
+                snapshot_lines = [f"  {line.strip()}" for line in overview_text.split('\n') if line.strip()]
+                if snapshot_lines and _agent_id not in {'beijing', 'qiao', 'jia'}:
+                    yield sse({'type': 'cot_data', 'step': 1, 'lines': snapshot_lines})
+            elif _agent_id not in {'beijing', 'qiao', 'jia'}:
+                yield sse({
+                    'type': 'cot_data',
+                    'step': 1,
+                    'lines': ['  [警告] 暂未拿到实时指数快照，缺失字段将按待观察处理'],
+                })
+
+            yield sse({
+                'type': 'cot',
+                'step': 2,
+                'total': 3,
+                'title': '联网补充',
+                'message': '正在补充涨停板、市场情绪、主线题材与新闻催化...',
+            })
 
             search_result = _call_deepseek_search(
                 prompt=(
@@ -2755,46 +3137,139 @@ def analyze_single_agent_stream(agent_id):
             )
 
             if not search_result.success:
-                yield f"data: {json.dumps({'type': 'error', 'error': f'联网搜索失败: {search_result.error}'})}\n\n"
-                return
+                search_data = '【联网补充失败，请仅基于共享事实层已有数据分析，缺失字段统一写“待观察”】'
+                if _agent_id not in {'beijing', 'qiao', 'jia'}:
+                    yield sse({
+                        'type': 'cot_data',
+                        'step': 2,
+                        'lines': [f"  [警告] 联网补充失败: {search_result.error}"],
+                    })
+            else:
+                search_data = search_result.content or ''
 
-            search_data = search_result.content
-            yield f"data: {json.dumps({'type': 'cot', 'step': 3, 'total': 5, 'title': '联网搜索完成', 'message': '数据获取成功，开始构建分析策略...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'task_step', 'step': 3, 'total': 5, 'title': '数据整合', 'desc': '整理搜索结果，构建市场分析...'})}\n\n"
-            # 把联网数据分段落打印
-            for para in search_data.split('\n'):
-                if para.strip():
-                    yield f"data: {json.dumps({'type': 'cot_data', 'step': 3, 'lines': [para.strip()]})}\n\n"
+            yield sse({
+                'type': 'cot',
+                'step': 3,
+                'total': 3,
+                'title': '方法论执行',
+                'message': f"{profile.get('name', _agent_id)} 正在按既定方法论拆解当前市场...",
+            })
 
-            # ══ 任务拆解阶段（COT风格）═════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'cot', 'step': 4, 'total': 5, 'title': '任务拆解（COT推理）', 'message': 'AI 正在拆解分析任务链...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'task_step', 'step': 4, 'total': 5, 'title': '任务拆解', 'desc': 'COT推理：市场理解→题材识别→龙头定位...'})}\n\n"
+            all_stocks = _collect_latest_scan_candidates()
+            beijing_artifacts = None
+            qiao_artifacts = None
+            jia_artifacts = None
+            auto_task_progress = _agent_id not in {'beijing', 'qiao', 'jia'}
 
-            # 发送 COT 思考链步骤
-            cot_steps = [
-                ("[COT-1] 市场理解", "分析当前大盘走势，判断市场所处阶段（启动/发酵/高潮/退潮）"),
-                ("[COT-2] 题材识别", "识别今日最强主线题材，判断题材级别（S/A/B/C级）"),
-                ("[COT-3] 龙头定位", "寻找主线龙头股，判断容量（中军/先锋/跟风）"),
-                ("[COT-4] 资金验证", "验证资金认可度，查看放量情况和板块联动"),
-                ("[COT-5] 策略制定", "制定买入时机、仓位配置、离场预案"),
-            ]
-            for idx, (title, desc) in enumerate(cot_steps, 1):
-                yield f"data: {json.dumps({'type': 'cot_step', 'step': idx, 'title': title, 'desc': desc})}\n\n"
-                yield f"data: {json.dumps({'type': 'task_step', 'step': idx, 'total': 5, 'title': title, 'desc': desc})}\n\n"
-                import time as _time
-                _time.sleep(0.15)
+            if _agent_id not in {'beijing', 'qiao', 'jia'}:
+                task_payload = next_task_step_payload()
+                if task_payload:
+                    yield sse(task_payload)
 
-            yield f"data: {json.dumps({'type': 'cot', 'step': 5, 'total': 5, 'title': '执行策略分析', 'message': '各分析 Agent 正在执行子任务...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'task_step', 'step': 5, 'total': 5, 'title': '策略输出', 'desc': '整合分析结论，给出推荐股票和操作策略...'})}\n\n"
+                # 非人格工件型 Agent 保留联网数据逐段回放
+                for para in search_data.split('\n'):
+                    if para.strip():
+                        yield sse({'type': 'cot_data', 'step': 2, 'lines': [para.strip()]})
 
             # ── 第二步：构建 prompt 并分析 ──────────────────────────────────
-            # 在 market 数据中加入联网搜索结果
-            market = get_market_snapshot()
-            market['search_data'] = search_data
-            prompt = render_prompt(profile, market)
+            if _agent_id == 'beijing':
+                beijing_artifacts = _build_beijing_execution_artifacts(
+                    search_data=search_data,
+                    overview_text=overview_text,
+                )
+                beijing_context = _build_beijing_execution_context_text(beijing_artifacts)
+                prompt_bundle = _load_single_agent_prompt_bundle(
+                    _agent_id,
+                    registry,
+                    search_data=search_data,
+                    agent_execution_context=beijing_context,
+                    force_empty_scan=True,
+                )
+                prompt = prompt_bundle['user_prompt']
+                all_stocks = prompt_bundle['all_stocks']
+                tools = []
 
-            # 获取 Agent 专属工具（用于分析阶段查个股行情）
-            tools = get_agent_tools(_agent_id)
+                for step_output in beijing_artifacts.get('stepOutputs', []):
+                    task_payload = next_task_step_payload()
+                    if task_payload:
+                        yield sse(task_payload)
+                    step_no = task_payload.get('step') if task_payload else int(step_output.get('step') or 0)
+                    lines = []
+                    summary = str(step_output.get('summary') or '').strip()
+                    if summary:
+                        lines.append(summary)
+                    lines.extend([f"方法论：{line}" for line in (step_output.get('frameworkLines', [])[:3])])
+                    lines.extend([f"当日判断：{line}" for line in (step_output.get('lines', [])[:3])])
+                    if lines:
+                        yield sse({'type': 'cot_data', 'step': step_no, 'lines': lines})
+            elif _agent_id == 'qiao':
+                qiao_artifacts = _build_qiao_execution_artifacts(
+                    search_data=search_data,
+                    overview_text=overview_text,
+                )
+                qiao_context = _build_qiao_execution_context_text(qiao_artifacts)
+                prompt_bundle = _load_single_agent_prompt_bundle(
+                    _agent_id,
+                    registry,
+                    search_data=search_data,
+                    agent_execution_context=qiao_context,
+                    force_empty_scan=True,
+                )
+                prompt = prompt_bundle['user_prompt']
+                all_stocks = prompt_bundle['all_stocks']
+                tools = []
+
+                for step_output in qiao_artifacts.get('stepOutputs', []):
+                    task_payload = next_task_step_payload()
+                    if task_payload:
+                        yield sse(task_payload)
+                    step_no = task_payload.get('step') if task_payload else int(step_output.get('step') or 0)
+                    lines = []
+                    summary = str(step_output.get('summary') or '').strip()
+                    if summary:
+                        lines.append(summary)
+                    lines.extend([f"方法论：{line}" for line in (step_output.get('frameworkLines', [])[:3])])
+                    lines.extend([f"当日判断：{line}" for line in (step_output.get('lines', [])[:3])])
+                    if lines:
+                        yield sse({'type': 'cot_data', 'step': step_no, 'lines': lines})
+            elif _agent_id == 'jia':
+                jia_artifacts = _build_jia_execution_artifacts(
+                    search_data=search_data,
+                    overview_text=overview_text,
+                )
+                jia_context = _build_jia_execution_context_text(jia_artifacts)
+                prompt_bundle = _load_single_agent_prompt_bundle(
+                    _agent_id,
+                    registry,
+                    search_data=search_data,
+                    agent_execution_context=jia_context,
+                    force_empty_scan=True,
+                )
+                prompt = prompt_bundle['user_prompt']
+                all_stocks = prompt_bundle['all_stocks']
+                tools = []
+
+                for step_output in jia_artifacts.get('stepOutputs', []):
+                    task_payload = next_task_step_payload()
+                    if task_payload:
+                        yield sse(task_payload)
+                    step_no = task_payload.get('step') if task_payload else int(step_output.get('step') or 0)
+                    lines = []
+                    summary = str(step_output.get('summary') or '').strip()
+                    if summary:
+                        lines.append(summary)
+                    lines.extend([f"方法论：{line}" for line in (step_output.get('frameworkLines', [])[:3])])
+                    lines.extend([f"当日判断：{line}" for line in (step_output.get('lines', [])[:3])])
+                    if lines:
+                        yield sse({'type': 'cot_data', 'step': step_no, 'lines': lines})
+            else:
+                # 在 market 数据中加入联网搜索结果
+                market = get_market_snapshot()
+                market['search_data'] = search_data
+                prompt = render_prompt(profile, market)
+
+                # 获取 Agent 专属工具（用于分析阶段查个股行情）
+                tools = get_agent_tools(_agent_id)
 
             # 构建消息
             messages = [
@@ -2811,7 +3286,7 @@ def analyze_single_agent_stream(agent_id):
             max_tokens = profile.get('max_tokens', 3000)
 
             # 发送准备完成消息
-            yield f"data: {json.dumps({'type': 'status', 'message': '正在调用 AI 分析...'})}\n\n"
+            yield sse({'type': 'status', 'message': '正在调用 AI 分析...'})
 
             # 处理 Function Calling 循环
             MAX_TOOL_CALLS = 5
@@ -2839,7 +3314,12 @@ def analyze_single_agent_stream(agent_id):
                     all_thinking += resp.reasoning_content
                     thinking_content = resp.reasoning_content.strip()
                     if thinking_content:
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': thinking_content})}\n\n"
+                        yield sse({'type': 'thinking', 'content': thinking_content})
+
+                        if auto_task_progress:
+                            task_payload = next_task_step_payload()
+                            if task_payload:
+                                yield sse(task_payload)
 
                 # 收集最终内容
                 final_content = resp.content
@@ -2851,16 +3331,10 @@ def analyze_single_agent_stream(agent_id):
                     for tc in resp.tool_calls:
                         tool_name = tc['name']
                         tool_args = tc.get('arguments', {})
-                        
-                        # 发送工具调用信息
-                        yield f"data: {json.dumps({'type': 'tool_call', 'tool': tool_name, 'args': tool_args})}\n\n"
-                        
+
                         # 执行工具
                         tool_result = execute_tool(tool_name, tool_args)
-                        
-                        # 发送工具结果
-                        yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': tool_result})}\n\n"
-                        
+
                         # 添加到消息历史
                         messages.append({
                             "role": "assistant",
@@ -2909,14 +3383,81 @@ def analyze_single_agent_stream(agent_id):
                     'recommendedStocks': [],
                 }
 
+            structured = registry.sanitize(
+                structured,
+                all_stocks,
+                default_advise_type=profile.get('adviseType', '波段'),
+            )
+            if _agent_id == 'beijing' and beijing_artifacts:
+                structured = _merge_beijing_structured(structured, beijing_artifacts)
+            if _agent_id == 'qiao' and qiao_artifacts:
+                structured = _merge_qiao_structured(structured, qiao_artifacts)
+            if _agent_id == 'jia' and jia_artifacts:
+                structured = _merge_jia_structured(structured, jia_artifacts)
+
             # ── 批量补调推荐股票的实时行情 ──────────────────────────────────
             _enrich_stocks_realtime(structured)
 
+            if auto_task_progress:
+                task_payload = next_task_step_payload()
+                if task_payload:
+                    yield sse(task_payload)
+
             # 把分析内容分段落实时发送到前端（去掉 JSON 代码块，只留 Markdown）
-            markdown_content = _strip_json_from_analysis(final_content)
+            markdown_content = _strip_json_from_analysis(final_content).strip()
+            if _agent_id == 'beijing' and beijing_artifacts:
+                looks_like_json_only = not markdown_content or markdown_content.startswith('{') or markdown_content.startswith('```json')
+                if looks_like_json_only:
+                    markdown_content = _build_beijing_markdown_summary(structured, beijing_artifacts)
+            if _agent_id == 'qiao' and qiao_artifacts:
+                looks_like_json_only = not markdown_content or markdown_content.startswith('{') or markdown_content.startswith('```json')
+                if looks_like_json_only:
+                    markdown_content = _build_qiao_markdown_summary(structured, qiao_artifacts)
+            if _agent_id == 'jia' and jia_artifacts:
+                looks_like_json_only = not markdown_content or markdown_content.startswith('{') or markdown_content.startswith('```json')
+                if looks_like_json_only:
+                    markdown_content = _build_jia_markdown_summary(structured, jia_artifacts)
             for para in markdown_content.split('\n'):
                 if para.strip():
-                    yield f"data: {json.dumps({'type': 'content', 'content': para.strip()})}\n\n"
+                    yield sse({'type': 'content', 'content': para.strip()})
+
+            try:
+                report_date = datetime.now().strftime('%Y-%m-%d')
+                ar_payload = {
+                    'structured': structured,
+                    'raw_text': final_content,
+                    'thinking': all_thinking,
+                    'marketCommentary': structured.get('marketCommentary', ''),
+                    'positionAdvice': structured.get('positionAdvice', ''),
+                    'riskWarning': structured.get('riskWarning', ''),
+                    'stance': structured.get('stance', ''),
+                    'confidence': structured.get('confidence', 0),
+                    'recommendedStocks': structured.get('recommendedStocks', []),
+                }
+                snap = db.build_analysis_holdings_snapshot(
+                    db.get_holdings_by_agent(_agent_id),
+                    ar_payload,
+                )
+                db.save_agent_analysis_history(
+                    agent_id=_agent_id,
+                    report_date=report_date,
+                    holdings_snapshot=snap,
+                    analysis_result=ar_payload,
+                    raw_response=final_content or '',
+                    thinking=all_thinking,
+                    stance=structured.get('stance', ''),
+                    confidence=int(structured.get('confidence', 0) or 0),
+                    tokens_used=total_tokens,
+                )
+
+                rec_stocks = structured.get('recommendedStocks', []) or []
+                if rec_stocks:
+                    try:
+                        db.save_recommended_stocks_as_holdings(_agent_id, rec_stocks)
+                    except Exception as save_err:
+                        logger.warning('[Stream] 保存推荐股到持仓失败 agent=%s err=%s', _agent_id, save_err)
+            except Exception as hist_err:
+                logger.warning('[Stream] 保存分析历史失败 agent=%s err=%s', _agent_id, hist_err)
 
             done_payload = {
                 'type': 'done',
@@ -2925,14 +3466,16 @@ def analyze_single_agent_stream(agent_id):
                 'structured': structured,
                 'analysis': markdown_content,
                 'thinking': all_thinking,
-                'tokens_used': total_tokens
+                'tokens_used': total_tokens,
+                'task_decomposition': task_decomposition,
+                'task_core_objective': agent_view.get('coreObjective', ''),
             }
-            yield f"data: {json.dumps(done_payload)}\n\n"
+            yield sse(done_payload)
 
         except Exception as e:
             import traceback
             logger.error(f"[Stream] agent={_agent_id} error={e}\n{traceback.format_exc()}")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield sse({'type': 'error', 'error': str(e)})
 
     return flask.Response(
         stream_response(),
@@ -3497,12 +4040,4960 @@ def _get_market_overview() -> str:
     return "暂时无法获取市场概览数据"
 
 
+def _format_news_for_batch(news_list) -> str:
+    """将新闻列表格式化为统一的批量分析输入文本。"""
+    lines = []
+    for idx, item in enumerate((news_list or [])[:10], 1):
+        title = item.get('title', '') if isinstance(item, dict) else ''
+        source = item.get('source', '') if isinstance(item, dict) else ''
+        news_time = item.get('time', '') if isinstance(item, dict) else ''
+        lines.append(f"【新闻{idx}】[{news_time}] {title}（{source}）")
+    return '\n'.join(lines) if lines else '【暂无最新消息】'
+
+
+def _safe_float_num(val, default: float = 0.0) -> float:
+    if val is None or val == '':
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        text = str(val).strip().replace(',', '').replace('%', '').replace('+', '')
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int_num(val, default: int = 0) -> int:
+    if val is None or val == '':
+        return default
+    if isinstance(val, int):
+        return val
+    try:
+        text = str(val).strip().replace(',', '').split('.')[0]
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_code6(code: Any) -> str:
+    raw = ''.join(ch for ch in str(code or '').strip() if ch.isdigit())
+    return raw[-6:] if len(raw) >= 6 else raw
+
+
+def _format_clock_hhmm(val: Any) -> str:
+    raw = str(val or '').strip()
+    if not raw or raw.lower() == 'nan':
+        return '待观察'
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return '待观察'
+    digits = digits.zfill(6)[-6:]
+    return f'{digits[:2]}:{digits[2:4]}'
+
+
+def _clock_to_int(val: Any) -> int:
+    raw = str(val or '').strip()
+    if not raw or raw.lower() == 'nan':
+        return 0
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    return int(digits.zfill(6)[-6:]) if digits else 0
+
+
+def _to_yi(val: Any) -> float:
+    return round(_safe_float_num(val) / 100000000, 2)
+
+
+def _normalize_scan_pct_change(val: Any) -> float:
+    pct = _safe_float_num(val)
+    if abs(pct) <= 1.0:
+        pct *= 100.0
+    return round(pct, 2)
+
+
+def _code_to_tencent_symbol(code: Any) -> str:
+    norm = _normalize_code6(code)
+    if norm.startswith(('6', '9')):
+        return f'sh{norm}'
+    return f'sz{norm}'
+
+
+def _estimate_prev_close(price: Any, change_pct: Any) -> float:
+    latest_price = _safe_float_num(price)
+    pct = _safe_float_num(change_pct)
+    if latest_price <= 0:
+        return 0.0
+    base = 1 + pct / 100.0
+    if abs(base) < 1e-9:
+        return 0.0
+    prev_close = latest_price / base
+    return round(prev_close, 4) if prev_close > 0 else 0.0
+
+
+def _extract_json_payload(text: str) -> str:
+    raw = str(text or '').strip()
+    if not raw:
+        return ''
+
+    import re
+
+    fenced = re.search(r'```json\s*([\s\S]*?)```', raw, re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+
+    fenced = re.search(r'```\s*([\s\S]*?)```', raw)
+    if fenced:
+        return fenced.group(1).strip()
+
+    for start, end in (('[', ']'), ('{', '}')):
+        s = raw.find(start)
+        e = raw.rfind(end)
+        if s != -1 and e != -1 and e > s:
+            return raw[s:e + 1].strip()
+    return raw
+
+
+def _load_json_loose(text: str) -> Any:
+    payload = _extract_json_payload(text)
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
+def _get_stock_intraday_minutes_tencent(code: str) -> List[Dict[str, Any]]:
+    symbol = _code_to_tencent_symbol(code)
+    url = 'https://web.ifzq.gtimg.cn/appstock/app/minute/query'
+    params = {
+        '_var': f'min_data_{symbol}',
+        'code': symbol,
+        'r': str(int(datetime.now().timestamp())),
+    }
+    headers = {
+        'Referer': 'https://finance.qq.com',
+        'User-Agent': 'Mozilla/5.0',
+    }
+
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        resp = session.get(url, params=params, headers=headers, timeout=8)
+        text = resp.text or ''
+
+        import re
+
+        matched = re.search(r'=(\{.*\})', text, re.DOTALL)
+        if not matched:
+            return []
+
+        raw = json.loads(matched.group(1))
+        symbol_data = (raw.get('data') or {}).get(symbol, {})
+        lines = ((symbol_data.get('data') or {}).get('data') or []) if isinstance(symbol_data, dict) else []
+        if not lines:
+            return []
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        result: List[Dict[str, Any]] = []
+        for line in lines:
+            parts = str(line or '').split(' ')
+            if len(parts) < 2:
+                continue
+            hhmm = ''.join(ch for ch in parts[0] if ch.isdigit()).zfill(4)[-4:]
+            try:
+                price = float(parts[1])
+            except (TypeError, ValueError):
+                continue
+            volume = _safe_float_num(parts[2]) if len(parts) > 2 else 0.0
+            amount = _safe_float_num(parts[3]) if len(parts) > 3 else 0.0
+            result.append({
+                'time': f'{today} {hhmm[:2]}:{hhmm[2:]}',
+                'hhmm': int(hhmm),
+                'price': price,
+                'volume': volume,
+                'amount': amount,
+            })
+        return result
+    except Exception as exc:
+        logger.debug('[Beijing] 腾讯分时获取失败 code=%s err=%s', code, exc)
+        return []
+
+
+def _normalize_intraday_price_scale(minutes: List[Dict[str, Any]], latest_price: float) -> List[Dict[str, Any]]:
+    if not minutes or latest_price <= 0:
+        return minutes
+
+    tail_price = _safe_float_num(minutes[-1].get('price'))
+    if tail_price <= 0:
+        return minutes
+
+    scale_candidates = [1, 10, 100, 1000]
+    best_scale = 1
+    best_error = float('inf')
+    for scale in scale_candidates:
+        scaled = tail_price / scale
+        err = abs(scaled - latest_price) / max(latest_price, 1e-6)
+        if err < best_error:
+            best_error = err
+            best_scale = scale
+
+    if best_scale == 1:
+        return minutes
+
+    normalized: List[Dict[str, Any]] = []
+    for item in minutes:
+        one = dict(item)
+        one['price'] = round(_safe_float_num(item.get('price')) / best_scale, 4)
+        normalized.append(one)
+    return normalized
+
+
+def _analyze_beijing_minute_evidence(
+    code: str,
+    *,
+    latest_price: Any,
+    change_pct: Any,
+    first_seal_int: int = 0,
+) -> Dict[str, Any]:
+    default = {
+        'minuteDataStatus': 'unavailable',
+        'openChangeProxy': None,
+        'minuteTurnoverMinutes': 0,
+        'minuteLongestStreak': 0,
+        'minuteTurnoverLabel': '待观察',
+        'minuteEvidence': '分钟级换手证据待观察',
+    }
+
+    prev_close = _estimate_prev_close(latest_price, change_pct)
+    if prev_close <= 0:
+        return default
+
+    minutes = _get_stock_intraday_minutes_tencent(code)
+    if not minutes:
+        return default
+
+    latest_price_num = _safe_float_num(latest_price)
+    minutes = _normalize_intraday_price_scale(minutes, latest_price_num)
+    seal_hhmm = max(0, int(first_seal_int or 0) // 100)
+    scoped = [item for item in minutes if not seal_hhmm or int(item.get('hhmm') or 0) <= seal_hhmm]
+    scoped = scoped or minutes
+
+    zone_total = 0
+    zone_longest = 0
+    current = 0
+    for item in scoped:
+        pct = (_safe_float_num(item.get('price')) - prev_close) / prev_close * 100
+        if 5.8 <= pct <= 8.2:
+            zone_total += 1
+            current += 1
+            zone_longest = max(zone_longest, current)
+        else:
+            current = 0
+
+    open_price = _safe_float_num(scoped[0].get('price')) if scoped else 0.0
+    open_change_proxy = round((open_price - prev_close) / prev_close * 100, 2) if open_price > 0 else None
+
+    if zone_longest >= 25:
+        label = '横盘半小时'
+        evidence = f'上板前在6%-8%区间最长横盘 {zone_longest} 分钟，累计 {zone_total} 分钟，接近北京炒家“横半小时换手板”审美。'
+    elif zone_longest >= 15:
+        label = '长换手'
+        evidence = f'上板前在6%-8%区间最长横盘 {zone_longest} 分钟，累计 {zone_total} 分钟，换手已较充分。'
+    elif zone_total >= 10:
+        label = '反复换手'
+        evidence = f'上板前在6%-8%区间累计停留 {zone_total} 分钟，存在一定抛压交换。'
+    else:
+        label = '待观察'
+        evidence = f'上板前在6%-8%区间累计仅 {zone_total} 分钟，分钟级换手仍偏一般。'
+
+    return {
+        'minuteDataStatus': 'ok',
+        'openChangeProxy': open_change_proxy,
+        'minuteTurnoverMinutes': zone_total,
+        'minuteLongestStreak': zone_longest,
+        'minuteTurnoverLabel': label,
+        'minuteEvidence': evidence,
+    }
+
+
+def _build_beijing_peer_snapshot(
+    item: Dict[str, Any],
+    sector_map: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    sector = str(item.get('sector') or '').strip()
+    if not sector:
+        return {
+            'peerBoardCount': 0,
+            'peerEarlyCount': 0,
+            'peerSummary': '缺少明确板块队友，更多看个股自身强度。',
+        }
+
+    peers = [peer for peer in sector_map.get(sector, []) if peer.get('code') != item.get('code')]
+    if not peers:
+        return {
+            'peerBoardCount': 0,
+            'peerEarlyCount': 0,
+            'peerSummary': '同板块没有明显涨停队友，板块带动偏弱。',
+        }
+
+    early_peers = [peer for peer in peers if int(peer.get('firstSealInt') or 0) and int(peer.get('firstSealInt') or 0) <= 100000]
+    preview = '、'.join(peer.get('name', '') for peer in sorted(peers, key=lambda one: int(one.get('firstSealInt') or 999999))[:2] if peer.get('name'))
+    if early_peers:
+        summary = f'同板块有 {len(peers)} 只涨停队友，{preview or "前排队友"} 较早封板，具备带动效应。'
+    else:
+        summary = f'同板块有 {len(peers)} 只队友，但更像同步跟涨，带动性一般。'
+    return {
+        'peerBoardCount': len(peers),
+        'peerEarlyCount': len(early_peers),
+        'peerSummary': summary,
+    }
+
+
+def _beijing_heuristic_auction_strength(
+    *,
+    open_change_proxy: Any,
+    board_type: str,
+    first_seal_int: int,
+) -> str:
+    open_change = _safe_float_num(open_change_proxy, default=999.0)
+    if board_type == '一字板' or open_change >= 8:
+        return '竞价涨停'
+    if open_change >= 5:
+        return '竞价强势'
+    if open_change >= 3:
+        return '高开强势'
+    if open_change <= -2:
+        return '低开弱势'
+    if first_seal_int and first_seal_int <= 93500:
+        return '高开强势'
+    if open_change != 999.0:
+        return '平开待确认'
+    return '待观察'
+
+
+def _beijing_heuristic_teammate_strength(
+    *,
+    resonance_count: int,
+    peer_early_count: int,
+    peer_board_count: int,
+) -> str:
+    if resonance_count >= 3 and peer_early_count >= 1:
+        return '队友强'
+    if resonance_count >= 2 and peer_board_count >= 1:
+        return '队友一般'
+    if peer_board_count >= 1:
+        return '队友弱'
+    return '待观察'
+
+
+def _infer_beijing_auction_teammates_with_qwen(
+    items: List[Dict[str, Any]],
+    *,
+    search_data: str = '',
+) -> Dict[str, Dict[str, Any]]:
+    if not items:
+        return {}
+
+    search_hint_lines = []
+    for raw_line in str(search_data or '').splitlines():
+        text = str(raw_line or '').strip().lstrip('-').strip()
+        if not text or text in {'---', '***'}:
+            continue
+        search_hint_lines.append(text)
+        if len(search_hint_lines) >= 6:
+            break
+
+    prompt = (
+        f"当前时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}\n"
+        "你是北京炒家的盘口助手。请结合公开盘面信息和给定事实，只输出 JSON 数组，不要写任何解释。\n"
+        "数组元素字段严格为：code, auctionStrength, teammateStrength, summary。\n"
+        "约束：\n"
+        "1. auctionStrength 只能是：竞价涨停 / 竞价强势 / 高开强势 / 平开待确认 / 低开弱势 / 待观察\n"
+        "2. teammateStrength 只能是：队友强 / 队友一般 / 队友弱 / 待观察\n"
+        "3. summary 控制在 18 个字以内\n"
+        "4. 若公开信息不足，输出待观察，不要编造具体竞价金额。\n\n"
+        f"联网补充摘要：{'; '.join(search_hint_lines) if search_hint_lines else '待观察'}\n\n"
+        f"候选列表：\n{json.dumps(items, ensure_ascii=False)}"
+    )
+
+    try:
+        response = _call_deepseek_search(prompt=prompt, model='qwen-plus')
+        if not response.success:
+            return {}
+        parsed = _load_json_loose(response.content or '')
+        if isinstance(parsed, dict):
+            parsed = parsed.get('items') or parsed.get('data') or []
+        if not isinstance(parsed, list):
+            return {}
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            code = _normalize_code6(item.get('code'))
+            if not code:
+                continue
+            result[code] = {
+                'auctionStrength': str(item.get('auctionStrength') or '').strip(),
+                'teammateStrength': str(item.get('teammateStrength') or '').strip(),
+                'auctionTeammateSummary': str(item.get('summary') or '').strip(),
+            }
+        return result
+    except Exception as exc:
+        logger.warning('[Beijing] Qwen 竞价/队友判断失败: %s', exc)
+        return {}
+
+
+def _collect_latest_scan_candidates() -> List[Dict[str, Any]]:
+    latest_scan = db.get_latest_scan()
+    if not latest_scan:
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    results_dict = latest_scan.get('results', {}) or {}
+    for sector_name, sector_data in results_dict.items():
+        if not isinstance(sector_data, dict):
+            continue
+        for stock in sector_data.get('stocks', []) or []:
+            if not isinstance(stock, dict):
+                continue
+            one = dict(stock)
+            one['sector'] = one.get('sector') or sector_name
+            one['code'] = _normalize_code6(one.get('code'))
+            if one['code']:
+                candidates.append(one)
+    return candidates
+
+
+def _load_single_agent_prompt_bundle(
+    agent_id: str,
+    registry,
+    *,
+    search_data: str = '',
+    agent_execution_context: str = '',
+    force_empty_scan: bool = False,
+) -> Dict[str, Any]:
+    from ai_service import fetch_market_news, fetch_junge_enhanced_news
+    from junge_trader import format_holdings_for_prompt, format_scan_data_for_prompt
+
+    all_stocks = _collect_latest_scan_candidates()
+    latest_scan = db.get_latest_scan()
+    scan_time = latest_scan.get('scan_time', '') if latest_scan else ''
+    scan_date = scan_time[:10] if scan_time else datetime.now().strftime('%Y-%m-%d')
+
+    if force_empty_scan:
+        scan_data_text = ''
+    else:
+        try:
+            scan_data_text = format_scan_data_for_prompt(all_stocks) if all_stocks else ''
+        except Exception:
+            scan_data_text = ''
+
+    try:
+        news_list = fetch_junge_enhanced_news(scan_date) if agent_id == 'jun' else fetch_market_news(scan_date)
+        news_text = _format_news_for_batch(news_list)
+    except Exception:
+        news_text = '【暂无最新消息】'
+
+    try:
+        holdings_text = format_holdings_for_prompt(db.get_holdings_by_agent(agent_id))
+    except Exception:
+        holdings_text = '【暂无历史持仓数据】'
+
+    current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+    user_prompt = registry.build_user_prompt(
+        agent_id=agent_id,
+        scan_data=scan_data_text,
+        news_data=news_text,
+        holdings_data=holdings_text,
+        current_time=current_time,
+        scan_date=scan_date,
+        extra_context={
+            'search_data': search_data,
+            'agent_execution_context': agent_execution_context,
+        },
+    )
+
+    return {
+        'all_stocks': all_stocks,
+        'scan_data_text': scan_data_text,
+        'news_text': news_text,
+        'holdings_text': holdings_text,
+        'current_time': current_time,
+        'scan_date': scan_date,
+        'user_prompt': user_prompt,
+    }
+
+
+def _parse_market_overview_metrics(overview_text: str) -> Dict[str, Any]:
+    import re
+
+    metrics = []
+    for raw_line in (overview_text or '').splitlines():
+        line = str(raw_line or '').strip()
+        if not line:
+            continue
+        match = re.search(r'([+-]?\d+(?:\.\d+)?)%\)', line)
+        if not match:
+            continue
+        name = line.split(':', 1)[0].strip()
+        pct = _safe_float_num(match.group(1))
+        metrics.append({'name': name, 'pct': pct})
+
+    positive_count = sum(1 for item in metrics if item['pct'] >= 0.30)
+    negative_count = sum(1 for item in metrics if item['pct'] <= -0.30)
+
+    return {
+        'metrics': metrics,
+        'positiveCount': positive_count,
+        'negativeCount': negative_count,
+    }
+
+
+def _build_beijing_market_gate(
+    overview_text: str,
+    search_data: str,
+    *,
+    today_count: int,
+    qualified_count: int,
+    early_count: int,
+    top_industries: List[tuple],
+) -> Dict[str, Any]:
+    text = f"{overview_text}\n{search_data}"
+    overview_metrics = _parse_market_overview_metrics(overview_text)
+
+    positive_hits = sum(
+        1 for kw in (
+            '赚钱效应强', '情绪回暖', '情绪修复', '主线明确', '强修复', '市场回暖', '强势', '普涨',
+        ) if kw in text
+    )
+    negative_hits = sum(
+        1 for kw in (
+            '亏钱效应扩散', '退潮', '冰点', '高位补跌', '分化明显', '弱势', '情绪退潮', '杀跌',
+        ) if kw in text
+    )
+
+    score = 0
+    score += 2 if today_count >= 40 else 1 if today_count >= 25 else -2
+    score += 2 if early_count >= 10 else 1 if early_count >= 5 else -1
+    score += 2 if qualified_count >= 4 else 1 if qualified_count >= 2 else -1
+    score += 1 if top_industries and top_industries[0][1] >= 3 else 0
+    score += 1 if overview_metrics['positiveCount'] > overview_metrics['negativeCount'] else -1 if overview_metrics['negativeCount'] > overview_metrics['positiveCount'] else 0
+    score += min(2, positive_hits)
+    score -= min(2, negative_hits)
+
+    if score >= 4:
+        status = '放行'
+        action = '首板模式放行，优先题材前排与强换手回封。'
+        position_cap = '3/8以内'
+    elif score >= 1:
+        status = '轻仓试错'
+        action = '只做最强换手板或回封板，秒拉与尾盘板回避。'
+        position_cap = '1/8-2/8'
+    else:
+        status = '空仓等待'
+        action = '首板模式关闭，宁愿空仓，也不勉强出手。'
+        position_cap = '0-1/16观察'
+
+    reasons = []
+    if overview_metrics['metrics']:
+        reasons.append(
+            '指数概况：' + ' / '.join(
+                f"{item['name']}{item['pct']:+.2f}%"
+                for item in overview_metrics['metrics'][:4]
+            )
+        )
+    reasons.append(f'涨停池 {today_count} 只，10:30 前强板 {early_count} 只，三有达标 {qualified_count} 只')
+    if top_industries:
+        reasons.append(
+            '热点板块：' + '、'.join(
+                f'{sector}{count}只' for sector, count in top_industries[:3]
+            )
+        )
+    reasons.append(f'情绪判定：{action}')
+
+    return {
+        'status': status,
+        'action': action,
+        'positionCap': position_cap,
+        'score': score,
+        'reasons': reasons,
+    }
+
+
+def _build_beijing_time_anchor(now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or datetime.now()
+    hhmm = now.hour * 100 + now.minute
+    label = now.strftime('%H:%M')
+
+    if hhmm < 925:
+        return {
+            'phaseCode': 'preopen',
+            'phase': '盘前预备',
+            'window': f'{label}｜先做预备池，不给追价指令',
+            'summary': '盘前先看题材发酵、队友预期与预备池，不在竞价前主观重仓。',
+            'executionFocus': '只列预备池，等待竞价确认',
+            'positionBias': '不开新仓，最多观察仓',
+            'rules': [
+                '先看题材与队友，谁更可能卡位前排。',
+                '盘前不抢买点，真正的先手要等竞价和开盘确认。',
+                '把候选缩到最强 3-5 只，等 9:30 后再做动作。',
+            ],
+        }
+    if hhmm < 930:
+        return {
+            'phaseCode': 'auction',
+            'phase': '集合竞价',
+            'window': f'{label}｜只看竞价强弱与队友表现',
+            'summary': '集合竞价阶段重点看高开强弱、队友联动和主线是否继续发酵。',
+            'executionFocus': '竞价确认，不提前追价',
+            'positionBias': '只做竞价确认，不做无脑抢单',
+            'rules': [
+                '竞价强但队友弱，要防独苗冲高回落。',
+                '队友强时，自己的票竞价一般也可能被板块带起来。',
+                '竞价阶段只确认方向，真正下手要等开盘承接。',
+            ],
+        }
+    if hhmm < 1000:
+        return {
+            'phaseCode': 'open_attack',
+            'phase': '早盘抢先手',
+            'window': f'{label}｜谁先板干谁，优先题材前排',
+            'summary': '这是北京炒家最积极的时间窗，优先做前排强板与最早转强票。',
+            'executionFocus': '前排先手 / 半路跟随',
+            'positionBias': '可用标准仓位，最强票可更积极',
+            'rules': [
+                '优先题材前排、最早转强、板块带动性强的票。',
+                '看到资金坚决点火，可以半路跟随，不必等完全封死。',
+                '独苗票和弱板块票仍然谨慎，先手不等于乱追。',
+            ],
+        }
+    if hhmm < 1030:
+        return {
+            'phaseCode': 'morning_confirm',
+            'phase': '换手确认',
+            'window': f'{label}｜核心看 6%-8% 换手与早回封',
+            'summary': '最适合确认换手板、回封板和强分歧转一致，质量通常高于情绪乱点火。',
+            'executionFocus': '换手板 / 回封板',
+            'positionBias': '标准仓位，优先做充分换手',
+            'rules': [
+                '6%-8% 横住越久，越接近理想换手板。',
+                '早回封优于尾盘回封，空头释放后再上板更稳。',
+                '10:30 前仍是核心窗口，超过后就别乱追拖沓板。',
+            ],
+        }
+    if hhmm < 1130:
+        return {
+            'phaseCode': 'late_morning',
+            'phase': '上午后段',
+            'window': f'{label}｜降一档仓位，只做辨识度与回封确认',
+            'summary': '前排先手优势下降，后面更适合做辨识度后排、回封确认或分歧低吸。',
+            'executionFocus': '辨识度后排 / 分歧低吸',
+            'positionBias': '仓位降一档，不追慢板',
+            'rules': [
+                '不再乱追上午后段才启动的拖沓板。',
+                '只做有板块、有辨识度、有承接的后排与回封。',
+                '高位直线拉升宁愿错过，也不做情绪化接盘。',
+            ],
+        }
+    if hhmm < 1300:
+        return {
+            'phaseCode': 'lunch',
+            'phase': '午间观察',
+            'window': f'{label}｜整理预案，不做主动进攻',
+            'summary': '午间阶段不做新开仓，重点是复核板池、承接与下午回流方向。',
+            'executionFocus': '观察 / 复核',
+            'positionBias': '不开新仓',
+            'rules': [
+                '复核上午最强题材是否具备下午回流条件。',
+                '整理卖出预案和下午重点票，不凭情绪乱追。',
+                '午间没有新的确定性买点，耐心比出手更重要。',
+            ],
+        }
+    if hhmm < 1400:
+        return {
+            'phaseCode': 'afternoon',
+            'phase': '午后回流',
+            'window': f'{label}｜只做回流、回封与辨识度低吸',
+            'summary': '午后主要看主线回流、强回封和辨识度票，不做无脑追高。',
+            'executionFocus': '回流确认 / 低吸跟随',
+            'positionBias': '轻一档仓位',
+            'rules': [
+                '只做主线回流，不做边角题材补涨。',
+                '更适合低吸或回封确认，不适合盲目追秒板。',
+                '队友掉队、板块散乱时宁愿不做。',
+            ],
+        }
+    if hhmm < 1430:
+        return {
+            'phaseCode': 'tail_guard',
+            'phase': '尾盘谨慎',
+            'window': f'{label}｜尾盘板风险抬升，观察优先',
+            'summary': '2 点后越往后越像偷鸡阶段，只考虑极少数高确定性补票。',
+            'executionFocus': '观察为主 / 极少数确认点',
+            'positionBias': '极轻仓或观察',
+            'rules': [
+                '尾盘板不是主战场，封不住就是最高点接盘。',
+                '若要出手，也只做强回封和绝对主线。',
+                '大多数情况下，留现金比抢最后一板更重要。',
+            ],
+        }
+    if hhmm < 1505:
+        return {
+            'phaseCode': 'tail_avoid',
+            'phase': '尾盘回避',
+            'window': f'{label}｜2点半后原则上不再新开',
+            'summary': '2 点半以后更偏投机和偷鸡，重点转向卖出与次日剧本，不再新开仓。',
+            'executionFocus': '不新开 / 卖出预案',
+            'positionBias': '0-1/16 观察',
+            'rules': [
+                '2 点半后新开仓的赔率显著变差。',
+                '把精力放在持仓处理和次日卖法，不去接最后一棒。',
+                '除非极少数绝对核心回封，否则默认放弃。',
+            ],
+        }
+    return {
+        'phaseCode': 'after_close',
+        'phase': '收盘复核',
+        'window': f'{label}｜收盘后只做复核与次日预案',
+        'summary': '收盘后不再给盘中追价建议，重点复核板池、队友与次日卖出预案。',
+        'executionFocus': '复核 / 预案',
+        'positionBias': '不开新仓',
+        'rules': [
+            '复核最强题材、前排顺序与后排辨识度。',
+            '整理次日卖法，不脑补隔夜神话。',
+            '把买点留给下一个真实盘中确认，而不是收盘后幻想。',
+        ],
+    }
+
+
+def _classify_beijing_board_type(row: Dict[str, Any], yesterday_row: Optional[Dict[str, Any]] = None) -> str:
+    first_seal = _clock_to_int(row.get('首次封板时间'))
+    last_seal = _clock_to_int(row.get('最后封板时间') or row.get('首次封板时间'))
+    broken_count = _safe_int_num(row.get('炸板次数'))
+    consecutive = _safe_int_num(row.get('连板数') or (yesterday_row or {}).get('昨日连板数'))
+    turnover_rate = _safe_float_num(row.get('换手率'))
+
+    if first_seal == 92500 and last_seal == 92500 and broken_count == 0:
+        return '一字板'
+    if last_seal >= 140000:
+        return '尾盘板'
+    if consecutive >= 2 and first_seal and first_seal <= 103000:
+        return '连板'
+    if broken_count > 0:
+        return '回封板'
+    if first_seal and first_seal <= 93500 and turnover_rate < 5:
+        return '秒拉板'
+    return '换手板'
+
+
+def _beijing_selection_type(
+    *,
+    board_type: str,
+    resonance_count: int,
+    first_seal_int: int,
+    mkt_cap_yi: float,
+    turnover_yi: float,
+    turnover_rate: float,
+    seal_amount_yi: float,
+    scan_row: Dict[str, Any],
+    consecutive_days: int,
+) -> tuple:
+    is_first_board = consecutive_days <= 1
+    front_row = bool(first_seal_int and first_seal_int <= 100000 and resonance_count >= 2)
+    recognition_high = bool(scan_row) or mkt_cap_yi >= 60 or turnover_yi >= 10 or seal_amount_yi >= 2 or turnover_rate >= 8
+
+    if board_type == '连板':
+        return '换手连板', '只做有板块效应、10:30前完成换手的最强连板', front_row
+    if is_first_board and front_row:
+        return '板块前排首板', '题材先手最重要，优先做最先上板的前排强票', True
+    if is_first_board and resonance_count >= 2 and recognition_high:
+        return '后排辨识度首板', '错过前排后，优先容量、封单或评分更强的辨识度后排', False
+    if resonance_count <= 1 and (turnover_yi >= 8 or turnover_rate >= 6):
+        return '独立图形票', '没有板块时，只做自己看得懂的独立强势图形', False
+    return '普通跟随', '不在最优审美区间，只能低仓位观察或放弃', False
+
+
+def _beijing_buy_method(board_type: str, *, front_row: bool = False, pass_count: int = 0) -> str:
+    if board_type in ('一字板', '尾盘板'):
+        return '观察'
+    if board_type in ('换手板', '回封板'):
+        return '扫板'
+    if board_type == '秒拉板':
+        return '扫板' if front_row and pass_count >= 2 else '排板'
+    if board_type == '连板':
+        return '扫板' if front_row and pass_count >= 3 else '排板'
+    return '观察'
+
+
+def _beijing_position_ratio(
+    code: str,
+    board_type: str,
+    pass_count: int,
+    *,
+    gate_status: str = '轻仓试错',
+    front_row: bool = False,
+) -> str:
+    if board_type in ('一字板', '尾盘板') or gate_status == '空仓等待':
+        return '0仓观察'
+    if str(code).startswith(('30', '68')):
+        return '1/16仓'
+    if gate_status == '放行' and front_row and pass_count >= 2 and board_type in ('换手板', '回封板', '秒拉板'):
+        return '1/6仓'
+    if gate_status == '放行' and pass_count >= 2:
+        return '1/8仓'
+    return '1/16仓'
+
+
+def _beijing_hold_period(board_type: str, *, front_row: bool = False) -> str:
+    if board_type == '连板':
+        return '只给首小时弱转强窗口'
+    if board_type == '回封板':
+        return '次日看是否继续走强，弱则走'
+    if board_type == '换手板':
+        return '次日冲高不板就兑现'
+    if board_type == '秒拉板':
+        return '竞价不及预期先减仓'
+    return '仅观察，不主动隔夜追价'
+
+
+def _beijing_buy_range(board_type: str, *, front_row: bool = False) -> str:
+    if board_type == '回封板':
+        return '炸板后即将回封涨停时扫板'
+    if board_type == '换手板':
+        return '6%-8%充分换手后上板介入'
+    if board_type == '连板':
+        return '10:30前放量换手确认后参与'
+    if board_type == '秒拉板':
+        return '板块共振强时扫板，否则排板'
+    if board_type == '一字板':
+        return '只看开板后的T字回封'
+    return '仅观察，不主动追价'
+
+
+def _beijing_stop_loss(board_type: str) -> str:
+    if board_type in ('尾盘板', '一字板'):
+        return '不参与，无需设置'
+    if board_type == '回封板':
+        return '炸板未回封就走，次日回抽不涨立卖'
+    if board_type == '秒拉板':
+        return '竞价转弱或开盘翻绿立刻撤'
+    return '高开低走、低开低走反抽、跌停必走'
+
+
+def _beijing_next_day_sell_plan(board_type: str, *, front_row: bool = False) -> str:
+    if board_type == '连板':
+        return '看9:45-10:00是否弱转强，不转强就兑现'
+    if board_type == '回封板':
+        return '高开冲高不板先卖，低开反抽无力立走'
+    if board_type == '换手板':
+        return '高开低于2%要谨慎，冲高不板或翻绿即走'
+    if board_type == '秒拉板':
+        return '竞价不及预期直接减，封板次日优先兑现'
+    if board_type == '一字板':
+        return '除非开板后再度转强，否则不追不留'
+    return '尾盘偷板次日不幻想，先保命再说'
+
+
+def _beijing_scan_selection_type(
+    *,
+    sector_heat: int,
+    pct_change: float,
+    score: int,
+    market_cap_yi: float,
+    sector_rank: int = 999,
+) -> str:
+    if sector_heat >= 2 and sector_rank <= 2 and pct_change >= 2.0:
+        return '板块前排预备'
+    if sector_heat >= 2 and sector_rank <= 5 and (score >= 78 or market_cap_yi >= 50):
+        return '后排辨识度预备'
+    if score >= 78 and market_cap_yi >= 20:
+        return '独立图形票'
+    return '普通观察'
+
+
+def _beijing_actionable_setup(
+    *,
+    pct_change: float,
+    volume_ratio: float,
+    gate_status: str,
+    time_anchor: Optional[Dict[str, Any]] = None,
+    sector_heat: int = 0,
+    score: int = 0,
+) -> Dict[str, str]:
+    phase_code = str((time_anchor or {}).get('phaseCode') or '').strip()
+
+    if gate_status == '空仓等待':
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '空仓等待',
+            'entryTrigger': '闸门未开，不做主动进攻。',
+        }
+
+    if phase_code in {'preopen', 'auction'}:
+        if pct_change >= 0 or volume_ratio >= 1.2:
+            return {
+                'tradeStatus': '竞价确认',
+                'buyMethod': '观察',
+                'entryPlan': '竞价确认',
+                'entryModel': '竞价强弱确认',
+                'entryTrigger': '先看9:25-9:30强弱与队友，真正动作等开盘后承接确认。',
+            }
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '盘前预备',
+            'entryTrigger': '盘前阶段优先做预备池，不给主观追价指令。',
+        }
+
+    if phase_code == 'after_close':
+        if pct_change >= 0 or volume_ratio >= 1.1:
+            return {
+                'tradeStatus': '竞价确认',
+                'buyMethod': '观察',
+                'entryPlan': '次日竞价确认',
+                'entryModel': '次日竞价确认',
+                'entryTrigger': '次日 9:25 先看竞价和队友，再决定是否跟随，不做收盘后意淫追价。',
+            }
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '收盘复核',
+            'entryTrigger': '收盘后只做预案与过滤，不给主观追价指令。',
+        }
+
+    if phase_code in {'lunch', 'tail_avoid'}:
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '时段回避',
+            'entryTrigger': '当前时间窗不适合主动开新仓，优先复核与卖出预案。',
+        }
+
+    if phase_code == 'tail_guard':
+        if 0.0 <= pct_change < 3.0 and volume_ratio >= 1.2:
+            return {
+                'tradeStatus': '可低吸',
+                'buyMethod': '低吸',
+                'entryPlan': '尾盘低吸',
+                'entryModel': '均线回踩承接',
+                'entryTrigger': '只在绝对主线、承接清晰时轻仓低吸，不能追最后一板。',
+            }
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '尾盘回避',
+            'entryTrigger': '2点后风险显著抬升，宁愿错过也别乱追。',
+        }
+
+    if phase_code in {'late_morning', 'afternoon'}:
+        if 5.0 <= pct_change < 8.8 and volume_ratio >= 1.6 and sector_heat >= 2:
+            return {
+                'tradeStatus': '可半路',
+                'buyMethod': '半路',
+                'entryPlan': '回流半路',
+                'entryModel': '分时前高突破',
+                'entryTrigger': '板块回流后再次越过分时前高，且量能继续放大时跟随。',
+            }
+        if 0.5 <= pct_change < 4.8 and volume_ratio >= 1.1:
+            return {
+                'tradeStatus': '可低吸',
+                'buyMethod': '低吸',
+                'entryPlan': '分歧低吸',
+                'entryModel': '均线回踩承接',
+                'entryTrigger': '回踩分时均线或关键承接位不破，再次拐头时分批跟随。',
+            }
+        if -1.5 <= pct_change < 0.5:
+            return {
+                'tradeStatus': '可埋伏',
+                'buyMethod': '低吸',
+                'entryPlan': '小仓预埋',
+                'entryModel': '均线回踩承接',
+                'entryTrigger': '只对主线辨识度票做小仓预埋，等回流确认再加。',
+            }
+        return {
+            'tradeStatus': '仅观察',
+            'buyMethod': '观察',
+            'entryPlan': '等待',
+            'entryModel': '等待确认',
+            'entryTrigger': '当前位置更像追高或拖沓震荡，不是理想买点。',
+        }
+
+    if 6.0 <= pct_change < 9.4 and volume_ratio >= 1.8 and sector_heat >= 2 and score >= 74:
+        return {
+            'tradeStatus': '可半路',
+            'buyMethod': '半路',
+            'entryPlan': '前高突破',
+            'entryModel': '分时前高突破',
+            'entryTrigger': '放量上冲后再过分时前高，且板块没有掉队时跟随。',
+        }
+    if 3.0 <= pct_change < 7.5 and volume_ratio >= 1.3:
+        return {
+            'tradeStatus': '可半路',
+            'buyMethod': '半路',
+            'entryPlan': '放量半路',
+            'entryModel': '分时前高突破',
+            'entryTrigger': '量比继续抬升、分时突破前高且板块不掉队时跟随。',
+        }
+    if 0.8 <= pct_change < 4.5:
+        return {
+            'tradeStatus': '可低吸',
+            'buyMethod': '低吸',
+            'entryPlan': '分歧低吸',
+            'entryModel': '均线回踩承接',
+            'entryTrigger': '回踩分时均线或昨高不破，承接稳定后分批跟随。',
+        }
+    if -1.5 <= pct_change < 1.0:
+        return {
+            'tradeStatus': '可埋伏',
+            'buyMethod': '低吸',
+            'entryPlan': '小仓预埋',
+            'entryModel': '均线回踩承接',
+            'entryTrigger': '先小仓埋伏，等板块继续发酵、量能抬升后再加。',
+        }
+    return {
+        'tradeStatus': '仅观察',
+        'buyMethod': '观察',
+        'entryPlan': '等待',
+        'entryModel': '等待确认',
+        'entryTrigger': '涨幅位置或节奏不理想，先不着急动手。',
+    }
+
+
+def _beijing_actionable_position_ratio(
+    *,
+    code: str,
+    trade_status: str,
+    gate_status: str,
+    score: int,
+    sector_heat: int,
+) -> str:
+    if gate_status == '空仓等待' or trade_status == '仅观察':
+        return '0-1/16观察'
+    if str(code).startswith(('30', '68')):
+        return '1/16仓'
+    if trade_status == '可半路' and gate_status == '放行' and score >= 78 and sector_heat >= 3:
+        return '1/6仓'
+    if trade_status in ('可半路', '可低吸'):
+        return '1/8仓'
+    return '1/16仓'
+
+
+def _beijing_actionable_labels(
+    *,
+    selection_type: str,
+    trade_status: str,
+    sector_heat: int,
+    volume_ratio: float,
+    score: int,
+) -> List[str]:
+    labels: List[str] = []
+    if selection_type:
+        labels.append(selection_type)
+    if trade_status == '可半路':
+        labels.append('盘中可买')
+        labels.append('放量半路')
+    elif trade_status == '可低吸':
+        labels.append('盘中可买')
+        labels.append('分歧低吸')
+    elif trade_status == '可埋伏':
+        labels.append('预埋伏')
+    if sector_heat >= 3:
+        labels.append('板块联动')
+    if volume_ratio >= 1.5:
+        labels.append('量比抬升')
+    if score >= 80:
+        labels.append('高分命中')
+
+    seen = set()
+    deduped: List[str] = []
+    for label in labels:
+        text = str(label or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped[:6]
+
+
+def _beijing_selection_type_detail(selection_type: str) -> str:
+    mapping = {
+        '板块前排首板': '题材前排与先手优先，谁先板干谁。',
+        '后排辨识度首板': '错过前排后，优先做容量、逻辑、图形更强的辨识度后排。',
+        '换手连板': '只做有板块效应、10:30 前完成换手的强连板。',
+        '独立图形票': '没有板块时，只做看得懂的独立强图形。',
+        '板块前排预备': '虽然未上板，但已具备题材前排和先手特征，可先纳入盘中预备池。',
+        '后排辨识度预备': '错过前排后，保留仍可参与的辨识度后排。',
+    }
+    return mapping.get(selection_type, '当前仍需继续观察题材地位与辨识度。')
+
+
+def _beijing_entry_model_for_board(
+    *,
+    board_type: str,
+    minute_turnover_label: str,
+    broken_count: int,
+    front_row: bool,
+) -> str:
+    if board_type == '回封板' or broken_count > 0:
+        return '回封确认'
+    if board_type == '换手板':
+        if minute_turnover_label in {'横盘半小时', '长换手'}:
+            return '分时前高突破'
+        return '均线回踩承接'
+    if board_type == '秒拉板':
+        return '分时前高突破'
+    if board_type == '连板':
+        return '强更强确认'
+    if board_type == '尾盘板':
+        return '尾盘回避'
+    if board_type == '一字板':
+        return '只看T字回封'
+    return '待观察'
+
+
+def _beijing_matched_rules(
+    item: Dict[str, Any],
+    *,
+    market_gate: Dict[str, Any],
+    time_anchor: Dict[str, Any],
+    is_actionable: bool = False,
+) -> List[Dict[str, str]]:
+    rules: List[Dict[str, str]] = []
+
+    phase = str(time_anchor.get('phase') or '当前时段').strip()
+    execution_focus = str(time_anchor.get('executionFocus') or '看最强票').strip()
+    rules.append({
+        'title': '时间锚定',
+        'detail': f'{phase}阶段优先{execution_focus}，不是全天都用同一套打法。',
+    })
+
+    selection_type = str(item.get('selectionType') or '').strip()
+    if selection_type:
+        rules.append({
+            'title': '选股路径',
+            'detail': _beijing_selection_type_detail(selection_type),
+        })
+
+    entry_model = str(item.get('entryModel') or '').strip()
+    entry_trigger = str(item.get('entryTrigger') or '').strip()
+    if entry_model or entry_trigger:
+        detail = entry_model or '待观察'
+        if entry_trigger:
+            detail = f'{detail}：{entry_trigger}'
+        rules.append({
+            'title': '入场模型',
+            'detail': detail,
+        })
+
+    if is_actionable:
+        sector_heat = int(item.get('sectorHeat') or 0)
+        score = int(item.get('score') or 0)
+        volume_ratio = float(item.get('volumeRatio') or 0)
+        rules.append({
+            'title': '盘中可买',
+            'detail': (
+                f"{item.get('tradeStatus','待观察')}，评分 {score}，板块热度 {sector_heat}，"
+                f"量比 {volume_ratio:.2f}。"
+            ),
+        })
+    else:
+        minute_turnover = str(item.get('minuteTurnoverLabel') or '').strip()
+        minute_evidence = str(item.get('minuteEvidence') or '').strip()
+        board_type = str(item.get('boardType') or '').strip()
+        if board_type == '回封板' or int(item.get('brokenBoardCount') or 0) > 0:
+            rules.append({
+                'title': '回封更稳',
+                'detail': item.get('classificationReason') or '炸板后回封代表空头释放，早回封优于尾盘回封。',
+            })
+        elif minute_turnover and minute_turnover != '待观察':
+            rules.append({
+                'title': '换手证据',
+                'detail': minute_evidence or f'{minute_turnover}，更接近理想换手板审美。',
+            })
+
+        auction_strength = str(item.get('auctionStrength') or '').strip()
+        teammate_strength = str(item.get('teammateStrength') or '').strip()
+        if auction_strength or teammate_strength:
+            rules.append({
+                'title': '竞价与队友',
+                'detail': item.get('auctionTeammateSummary') or f'{auction_strength} / {teammate_strength}',
+            })
+
+    position_ratio = str(item.get('positionRatio') or '').strip()
+    stop_loss = str(item.get('stopLoss') or '').strip()
+    gate_status = str(market_gate.get('status') or '待观察').strip()
+    if position_ratio or stop_loss:
+        risk_text = f'闸门{gate_status}，仓位 {position_ratio or "待观察"}。'
+        if stop_loss:
+            risk_text = f'{risk_text} {stop_loss}'
+        rules.append({
+            'title': '仓位风控',
+            'detail': risk_text,
+        })
+
+    deduped: List[Dict[str, str]] = []
+    seen = set()
+    for one in rules:
+        title = str(one.get('title') or '').strip()
+        detail = str(one.get('detail') or '').strip()
+        if not title or not detail:
+            continue
+        key = (title, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({'title': title, 'detail': detail})
+    return deduped[:5]
+
+
+def _beijing_refresh_actionable_candidates(
+    candidates: List[Dict[str, Any]],
+    *,
+    market_gate: Dict[str, Any],
+    time_anchor: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """用实时行情刷新预备池，避免扫描快照和展示/标签错位。"""
+    if not candidates:
+        return []
+
+    for item in candidates:
+        code = _normalize_code6(item.get('code'))
+        if not code:
+            continue
+        quote = _get_quote_with_fallback(code)
+        if not quote:
+            continue
+        close_price = _safe_float_num(quote.get('close'))
+        pct_change = _safe_float_num(quote.get('pct_change'))
+        if close_price > 0:
+            item['price'] = round(close_price, 2)
+        item['changePct'] = round(pct_change, 2)
+
+    sector_members: Dict[str, List[Dict[str, Any]]] = {}
+    for item in candidates:
+        sector = str(item.get('sector') or '').strip()
+        if sector:
+            sector_members.setdefault(sector, []).append(item)
+
+    sector_rank_map: Dict[str, int] = {}
+    for sector, members in sector_members.items():
+        ranked = sorted(
+            members,
+            key=lambda one: (
+                _safe_float_num(one.get('changePct')),
+                _safe_float_num(one.get('score')),
+                _safe_float_num(one.get('volumeRatio')),
+            ),
+            reverse=True,
+        )
+        for idx, one in enumerate(ranked, 1):
+            code = _normalize_code6(one.get('code'))
+            if code:
+                sector_rank_map[code] = idx
+
+    refreshed: List[Dict[str, Any]] = []
+    gate_status = str(market_gate.get('status') or '轻仓试错')
+    action_priority = {
+        '可半路': 5,
+        '可低吸': 4,
+        '可埋伏': 3,
+        '竞价确认': 2,
+        '仅观察': 0,
+    }
+    for item in candidates:
+        code = _normalize_code6(item.get('code'))
+        pct_change = round(_safe_float_num(item.get('changePct')), 2)
+        volume_ratio = round(_safe_float_num(item.get('volumeRatio')), 2)
+        score = int(item.get('score') or 0)
+        sector_heat = int(item.get('sectorHeat') or 0)
+        sector_rank = int(sector_rank_map.get(code, item.get('sectorRank') or 999))
+        market_cap_yi = _safe_float_num(item.get('marketCapYi') or 0)
+
+        # 实时表现明显转弱或已经封死的，不再当成“可买预备池”。
+        if pct_change <= -3.0 or pct_change >= 9.4:
+            continue
+
+        setup = _beijing_actionable_setup(
+            pct_change=pct_change,
+            volume_ratio=volume_ratio,
+            gate_status=gate_status,
+            time_anchor=time_anchor,
+            sector_heat=sector_heat,
+            score=score,
+        )
+        trade_status = setup.get('tradeStatus') or '仅观察'
+        if trade_status == '仅观察':
+            continue
+
+        selection_type = _beijing_scan_selection_type(
+            sector_heat=sector_heat,
+            pct_change=pct_change,
+            score=score,
+            market_cap_yi=market_cap_yi,
+            sector_rank=sector_rank,
+        )
+        position_ratio = _beijing_actionable_position_ratio(
+            code=code,
+            trade_status=trade_status,
+            gate_status=gate_status,
+            score=score,
+            sector_heat=sector_heat,
+        )
+        labels = _beijing_actionable_labels(
+            selection_type=selection_type,
+            trade_status=trade_status,
+            sector_heat=sector_heat,
+            volume_ratio=volume_ratio,
+            score=score,
+        )
+        actionable_now = trade_status in {'可半路', '可低吸', '可埋伏'} and time_anchor.get('phaseCode') not in {
+            'preopen', 'auction', 'lunch', 'tail_avoid', 'after_close',
+        }
+
+        item.update({
+            'selectionType': selection_type,
+            'tradeStatus': trade_status,
+            'buyMethod': setup.get('buyMethod', '观察'),
+            'entryPlan': setup.get('entryPlan', ''),
+            'entryModel': setup.get('entryModel', ''),
+            'entryTrigger': setup.get('entryTrigger', ''),
+            'positionRatio': position_ratio,
+            'labels': labels,
+            'signal': f"{selection_type}/{trade_status}/{setup.get('buyMethod', '观察')}",
+            'actionableNow': actionable_now,
+            'sectorRank': sector_rank,
+            'classificationReason': (
+                f"{time_anchor.get('phase', '当前时段')}优先做{setup.get('entryPlan', '待观察')}，"
+                f"当前涨幅 {pct_change:+.2f}%，量比 {volume_ratio:.2f}。"
+            ),
+            'reason': (
+                f"{selection_type}｜{time_anchor.get('phase', '当前时段')}｜{trade_status}｜"
+                f"板块热度 {sector_heat}，板块排序 #{sector_rank}，评分 {score}，更适合 {setup.get('entryPlan', '待观察')}。"
+            ),
+            'meta': (
+                f"当前涨幅 {pct_change:+.2f}%｜量比 {volume_ratio:.2f}｜评分 {score}｜"
+                f"板块热度 {sector_heat}｜时段 {time_anchor.get('phase', '待观察')}"
+            ),
+        })
+        refreshed.append(item)
+
+    refreshed.sort(
+        key=lambda item: (
+            1 if item.get('actionableNow') else 0,
+            action_priority.get(str(item.get('tradeStatus') or ''), 0),
+            -int(item.get('sectorRank') or 999),
+            1 if item.get('selectionType') == '板块前排预备' else 0,
+            float(item.get('sectorHeat') or 0),
+            float(item.get('score') or 0),
+            float(item.get('changePct') or 0),
+        ),
+        reverse=True,
+    )
+    return refreshed
+
+
+def _beijing_method_labels(
+    *,
+    board_type: str,
+    selection_type: str,
+    gate_status: str,
+    first_seal_int: int,
+    last_seal_int: int,
+    broken_count: int,
+    resonance_count: int,
+    turnover_rate: float,
+    turnover_yi: float,
+    mkt_cap_yi: float,
+    front_row: bool,
+    minute_turnover_label: str = '',
+    minute_longest_streak: int = 0,
+    auction_strength: str = '',
+    teammate_strength: str = '',
+) -> List[str]:
+    labels: List[str] = []
+
+    if selection_type:
+        labels.append(selection_type)
+    if front_row:
+        labels.append('前排先手')
+    elif selection_type == '后排辨识度首板':
+        labels.append('辨识度后排')
+
+    if gate_status == '轻仓试错':
+        labels.append('轻仓试错')
+    elif gate_status == '空仓等待':
+        labels.append('空仓优先')
+
+    if resonance_count >= 3:
+        labels.append('板块联动')
+    elif board_type == '秒拉板':
+        labels.append('独苗秒板风险')
+
+    if mkt_cap_yi >= 80 or turnover_yi >= 20:
+        labels.append('大容量')
+
+    if minute_turnover_label == '横盘半小时':
+        labels.append('横盘半小时')
+    elif minute_turnover_label == '长换手':
+        labels.append('长换手')
+    elif minute_turnover_label == '反复换手':
+        labels.append('反复换手')
+
+    if minute_longest_streak >= 25:
+        labels.append('6-8换手充分')
+
+    if auction_strength in ('竞价涨停', '竞价强势', '高开强势'):
+        labels.append(auction_strength)
+    elif auction_strength == '低开弱势':
+        labels.append('竞价偏弱')
+
+    if teammate_strength == '队友强':
+        labels.append('队友带动')
+    elif teammate_strength == '队友弱':
+        labels.append('队友偏弱')
+
+    if board_type == '换手板':
+        labels.extend(['换手板优先', '可直接扫板'])
+        if turnover_rate >= 8:
+            labels.append('换手充分')
+        if minute_longest_streak >= 25:
+            labels.append('横盘后上板')
+        elif 100000 <= first_seal_int <= 110000:
+            labels.append('疑似长换手')
+    elif board_type == '回封板':
+        labels.extend(['回封更稳', '空头释放'])
+        if broken_count >= 1:
+            labels.append('炸板后回封')
+        if last_seal_int and last_seal_int <= 110000:
+            labels.append('早回封优先')
+    elif board_type == '秒拉板':
+        labels.extend(['秒板新手回避', '仅排不扫'])
+        if front_row or resonance_count >= 3:
+            labels.append('板块先锋')
+    elif board_type == '连板':
+        labels.extend(['换手连板', '只做强更强'])
+        if first_seal_int and first_seal_int <= 103000:
+            labels.append('10:30前连板')
+    elif board_type == '一字板':
+        labels.extend(['一字不追', '只看T字回封'])
+    elif board_type == '尾盘板':
+        labels.append('尾盘慎打')
+        if last_seal_int >= 143000:
+            labels.append('2点半投机板')
+        elif last_seal_int >= 140000:
+            labels.append('2点后少打')
+
+    seen = set()
+    deduped: List[str] = []
+    for one in labels:
+        text = str(one or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped[:6]
+
+
+def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str = '') -> Dict[str, Any]:
+    from market_data import _ak_eastmoney_direct, _get_ak
+
+    today = datetime.now().strftime('%Y%m%d')
+    today_df = _pd.DataFrame()
+    yesterday_df = _pd.DataFrame()
+    yesterday_date = ''
+
+    try:
+        with _ak_eastmoney_direct():
+            today_df = _get_ak().stock_zt_pool_em(date=today)
+    except Exception as exc:
+        logger.warning('[Beijing] 今日涨停池获取失败: %s', exc)
+
+    for delta in range(1, 8):
+        probe_date = (datetime.now() - timedelta(days=delta)).strftime('%Y%m%d')
+        try:
+            with _ak_eastmoney_direct():
+                probe_df = _get_ak().stock_zt_pool_previous_em(date=probe_date)
+            if probe_df is not None and not probe_df.empty:
+                yesterday_df = probe_df
+                yesterday_date = probe_date
+                break
+        except Exception as exc:
+            logger.debug('[Beijing] 昨日涨停池探测失败 date=%s err=%s', probe_date, exc)
+
+    scan_candidates = _collect_latest_scan_candidates()
+    scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
+    yesterday_map = {}
+    if yesterday_df is not None and not yesterday_df.empty:
+        for _, row in yesterday_df.iterrows():
+            row_dict = row.to_dict()
+            yesterday_map[_normalize_code6(row_dict.get('代码'))] = row_dict
+
+    industry_counts: Dict[str, int] = {}
+    if today_df is not None and not today_df.empty:
+        for _, row in today_df.iterrows():
+            sector = str(row.get('所属行业') or '').strip()
+            if sector:
+                industry_counts[sector] = industry_counts.get(sector, 0) + 1
+
+    board_priority = {
+        '换手板': 5,
+        '回封板': 4,
+        '秒拉板': 3,
+        '连板': 3,
+        '一字板': 1,
+        '尾盘板': 0,
+    }
+
+    board_candidates: List[Dict[str, Any]] = []
+    if today_df is not None and not today_df.empty:
+        for _, row in today_df.iterrows():
+            row_dict = row.to_dict()
+            code = _normalize_code6(row_dict.get('代码'))
+            if not code:
+                continue
+
+            scan_row = scan_map.get(code, {})
+            yesterday_row = yesterday_map.get(code, {})
+            sector = str(row_dict.get('所属行业') or scan_row.get('sector') or '').strip()
+            resonance_count = industry_counts.get(sector, 0) if sector else 0
+            turnover_yi = _to_yi(row_dict.get('成交额'))
+            mkt_cap_yi = _to_yi(row_dict.get('流通市值'))
+            turnover_rate = _safe_float_num(row_dict.get('换手率'))
+            seal_amount_yi = _to_yi(row_dict.get('封板资金'))
+            volume_ratio = _safe_float_num(
+                scan_row.get('volume_ratio')
+                if scan_row.get('volume_ratio') is not None
+                else scan_row.get('volumeRatio')
+            )
+            first_seal_int = _clock_to_int(row_dict.get('首次封板时间'))
+            first_seal = _format_clock_hhmm(row_dict.get('首次封板时间'))
+            last_seal = _format_clock_hhmm(row_dict.get('最后封板时间') or row_dict.get('首次封板时间'))
+            broken_count = _safe_int_num(row_dict.get('炸板次数'))
+            consecutive_days = _safe_int_num(row_dict.get('连板数') or yesterday_row.get('昨日连板数') or 1)
+            board_type = _classify_beijing_board_type(row_dict, yesterday_row)
+
+            have_resonance = resonance_count >= 3
+            have_liquidity = 20 <= mkt_cap_yi <= 200 and turnover_yi >= 5
+            have_timing = bool(first_seal_int and first_seal_int <= 103000 and (volume_ratio >= 3 or turnover_rate >= 3))
+            passed = []
+            if have_resonance:
+                passed.append('板块共振')
+            if have_liquidity:
+                passed.append('市值流动性')
+            if have_timing:
+                passed.append('量价时间')
+            pass_count = len(passed)
+            selection_type, recognition_reason, front_row = _beijing_selection_type(
+                board_type=board_type,
+                resonance_count=resonance_count,
+                first_seal_int=first_seal_int,
+                mkt_cap_yi=mkt_cap_yi,
+                turnover_yi=turnover_yi,
+                turnover_rate=turnover_rate,
+                seal_amount_yi=seal_amount_yi,
+                scan_row=scan_row,
+                consecutive_days=consecutive_days,
+            )
+
+            if board_type == '回封板':
+                classification_reason = f'炸板 {broken_count} 次后回封，空头二次释放。'
+            elif board_type == '换手板':
+                classification_reason = f'首封 {first_seal}，换手率 {turnover_rate:.1f}%，更偏换手确认。'
+            elif board_type == '秒拉板':
+                classification_reason = f'首封 {first_seal} 较早，快速上板，需板块共振确认。'
+            elif board_type == '连板':
+                classification_reason = f'当前连板 {consecutive_days}，前排强度明确。'
+            elif board_type == '一字板':
+                classification_reason = '竞价或开盘即一字封死，仅看不追。'
+            else:
+                classification_reason = f'末封 {last_seal} 偏晚，尾盘博弈属性重。'
+
+            score = int(
+                scan_row.get('score')
+                or scan_row.get('total_score')
+                or min(99, 56 + pass_count * 10 + board_priority.get(board_type, 0) * 4 + (8 if scan_row else 0))
+            )
+            grade = str(scan_row.get('grade') or ('S' if pass_count == 3 else 'A' if pass_count == 2 else 'B'))
+
+            meta_parts = [
+                f'首封 {first_seal}',
+                f'末封 {last_seal}',
+                f'炸板 {broken_count} 次',
+                f'封板资金 {seal_amount_yi:.2f} 亿' if seal_amount_yi > 0 else '封板资金 待观察',
+                f'流通市值 {mkt_cap_yi:.1f} 亿' if mkt_cap_yi > 0 else '流通市值 待观察',
+            ]
+            if volume_ratio > 0:
+                meta_parts.append(f'量比 {volume_ratio:.2f}')
+            elif turnover_rate > 0:
+                meta_parts.append(f'换手率 {turnover_rate:.2f}%')
+
+            board_candidates.append({
+                'code': code,
+                'name': str(row_dict.get('名称') or scan_row.get('name') or code),
+                'sector': sector or str(scan_row.get('sector') or ''),
+                'price': round(_safe_float_num(row_dict.get('最新价')), 2),
+                'changePct': round(_safe_float_num(row_dict.get('涨跌幅')), 2),
+                'score': score,
+                'grade': grade,
+                'boardType': board_type,
+                'threeHaveSummary': f'{pass_count}/3通过' + (f'（{" + ".join(passed)}）' if passed else '（待补验证）'),
+                'threeHavePassed': passed,
+                'passCount': pass_count,
+                'firstSealTime': first_seal,
+                'lastSealTime': last_seal,
+                'firstSealInt': first_seal_int,
+                'lastSealInt': _clock_to_int(row_dict.get('最后封板时间') or row_dict.get('首次封板时间')),
+                'brokenBoardCount': broken_count,
+                'consecutiveLimitUpDays': consecutive_days,
+                'sealAmountYi': seal_amount_yi,
+                'turnoverYi': turnover_yi,
+                'marketCapYi': mkt_cap_yi,
+                'turnoverRate': round(turnover_rate, 2),
+                'volumeRatio': round(volume_ratio, 2) if volume_ratio > 0 else 0,
+                'resonanceCount': resonance_count,
+                'scanMatched': bool(scan_row),
+                'selectionType': selection_type,
+                'recognitionReason': recognition_reason,
+                'frontRow': front_row,
+                'isFirstBoard': consecutive_days <= 1,
+                'classificationReason': classification_reason,
+                'metaParts': meta_parts,
+            })
+
+    sector_map: Dict[str, List[Dict[str, Any]]] = {}
+    for item in board_candidates:
+        sector = str(item.get('sector') or '').strip()
+        if not sector:
+            continue
+        sector_map.setdefault(sector, []).append(item)
+
+    pre_ranked = sorted(
+        board_candidates,
+        key=lambda item: (
+            1 if item.get('frontRow') else 0,
+            1 if item.get('isFirstBoard') else 0,
+            int(item.get('passCount') or 0),
+            board_priority.get(item.get('boardType', ''), 0),
+            int(item.get('resonanceCount') or 0),
+            float(item.get('sealAmountYi') or 0),
+            float(item.get('score') or 0),
+        ),
+        reverse=True,
+    )
+    enrich_targets = pre_ranked[:10]
+    for item in enrich_targets:
+        item.update(_analyze_beijing_minute_evidence(
+            item.get('code', ''),
+            latest_price=item.get('price'),
+            change_pct=item.get('changePct'),
+            first_seal_int=int(item.get('firstSealInt') or 0),
+        ))
+        item.update(_build_beijing_peer_snapshot(item, sector_map))
+
+    qwen_inputs = []
+    for item in enrich_targets[:8]:
+        qwen_inputs.append({
+            'code': item.get('code'),
+            'name': item.get('name'),
+            'sector': item.get('sector'),
+            'boardType': item.get('boardType'),
+            'selectionType': item.get('selectionType'),
+            'firstSealTime': item.get('firstSealTime'),
+            'resonanceCount': item.get('resonanceCount'),
+            'openChangeProxy': item.get('openChangeProxy'),
+            'minuteTurnoverLabel': item.get('minuteTurnoverLabel'),
+            'minuteEvidence': item.get('minuteEvidence'),
+            'peerSummary': item.get('peerSummary'),
+        })
+    qwen_judgements = _infer_beijing_auction_teammates_with_qwen(qwen_inputs, search_data=search_data)
+
+    for item in board_candidates:
+        qwen_meta = qwen_judgements.get(item.get('code', ''), {})
+        auction_strength = qwen_meta.get('auctionStrength') or _beijing_heuristic_auction_strength(
+            open_change_proxy=item.get('openChangeProxy'),
+            board_type=item.get('boardType', ''),
+            first_seal_int=int(item.get('firstSealInt') or 0),
+        )
+        teammate_strength = qwen_meta.get('teammateStrength') or _beijing_heuristic_teammate_strength(
+            resonance_count=int(item.get('resonanceCount') or 0),
+            peer_early_count=int(item.get('peerEarlyCount') or 0),
+            peer_board_count=int(item.get('peerBoardCount') or 0),
+        )
+        auction_teammate_summary = qwen_meta.get('auctionTeammateSummary') or (
+            f'{auction_strength} / {teammate_strength}'
+            if auction_strength != '待观察' or teammate_strength != '待观察'
+            else '盘口强弱待观察'
+        )
+        item.update({
+            'auctionStrength': auction_strength,
+            'teammateStrength': teammate_strength,
+            'auctionTeammateSummary': auction_teammate_summary,
+        })
+
+    board_type_counter: Dict[str, int] = {}
+    for item in board_candidates:
+        board_type_counter[item['boardType']] = board_type_counter.get(item['boardType'], 0) + 1
+
+    scan_overlap_count = sum(1 for item in board_candidates if item.get('scanMatched'))
+    top_industries = [
+        (sector, count)
+        for sector, count in sorted(industry_counts.items(), key=lambda item: item[1], reverse=True)
+        if sector
+    ]
+    search_preview_lines: List[str] = []
+    seen_preview = set()
+    for raw_line in (search_data or '').splitlines():
+        text = str(raw_line or '').strip()
+        if not text:
+            continue
+        text = text.lstrip('-').strip()
+        if not text or text in {'---', '***'}:
+            continue
+        if len(text) > 86:
+            text = text[:86].rstrip() + '…'
+        if text in seen_preview:
+            continue
+        seen_preview.add(text)
+        search_preview_lines.append(text)
+        if len(search_preview_lines) >= 2:
+            break
+
+    today_count = len(today_df) if today_df is not None else 0
+    yesterday_count = len(yesterday_df) if yesterday_df is not None else 0
+    early_count = sum(1 for item in board_candidates if item.get('firstSealInt') and item.get('firstSealInt') <= 103000)
+    three_have_qualified = [item for item in board_candidates if item.get('passCount', 0) >= 2]
+    minute_confirmed_count = sum(1 for item in board_candidates if int(item.get('minuteLongestStreak') or 0) >= 25)
+    strong_auction_count = sum(1 for item in board_candidates if item.get('auctionStrength') in {'竞价涨停', '竞价强势', '高开强势'})
+    strong_teammate_count = sum(1 for item in board_candidates if item.get('teammateStrength') == '队友强')
+    market_gate = _build_beijing_market_gate(
+        overview_text,
+        search_data,
+        today_count=today_count,
+        qualified_count=len(three_have_qualified),
+        early_count=early_count,
+        top_industries=top_industries,
+    )
+    time_anchor = _build_beijing_time_anchor()
+
+    scan_sector_counts: Dict[str, int] = {}
+    scan_sector_members: Dict[str, List[Dict[str, Any]]] = {}
+    for item in scan_candidates:
+        sector = str(item.get('sector') or item.get('sector_name') or '').strip()
+        if sector:
+            scan_sector_counts[sector] = scan_sector_counts.get(sector, 0) + 1
+            scan_sector_members.setdefault(sector, []).append(item)
+
+    scan_sector_rank_map: Dict[str, int] = {}
+    for sector, members in scan_sector_members.items():
+        ranked = sorted(
+            members,
+            key=lambda one: (
+                _normalize_scan_pct_change(one.get('pct_change')),
+                _safe_float_num(one.get('total_score') or one.get('score') or 0),
+                _safe_float_num(one.get('volume_ratio') if one.get('volume_ratio') is not None else one.get('volumeRatio')),
+            ),
+            reverse=True,
+        )
+        for idx, one in enumerate(ranked, 1):
+            code = _normalize_code6(one.get('code'))
+            if code:
+                scan_sector_rank_map[code] = idx
+
+    actionable_candidates: List[Dict[str, Any]] = []
+    seen_actionable = set()
+    gate_status = market_gate.get('status', '轻仓试错')
+    action_priority = {
+        '可半路': 5,
+        '可低吸': 4,
+        '可埋伏': 3,
+        '竞价确认': 2,
+        '仅观察': 0,
+    }
+    for scan_row in scan_candidates:
+        code = _normalize_code6(scan_row.get('code'))
+        if not code or code in seen_actionable:
+            continue
+
+        pct_change = _normalize_scan_pct_change(scan_row.get('pct_change'))
+        score = int(scan_row.get('total_score') or scan_row.get('score') or 0)
+        volume_ratio = _safe_float_num(
+            scan_row.get('volume_ratio') if scan_row.get('volume_ratio') is not None else scan_row.get('volumeRatio')
+        )
+        market_cap_yi = _to_yi(scan_row.get('market_cap') or scan_row.get('marketCap') or 0)
+        sector = str(scan_row.get('sector') or scan_row.get('sector_name') or '').strip()
+        sector_heat = max(industry_counts.get(sector, 0), scan_sector_counts.get(sector, 0))
+        sector_rank = int(scan_sector_rank_map.get(code, 999))
+
+        if pct_change >= 9.4 or pct_change <= -3:
+            continue
+        if score < 68:
+            continue
+        if volume_ratio < 1.1 and pct_change < 1:
+            continue
+        if sector_heat < 2 and score < 78:
+            continue
+
+        selection_type = _beijing_scan_selection_type(
+            sector_heat=sector_heat,
+            pct_change=pct_change,
+            score=score,
+            market_cap_yi=market_cap_yi,
+            sector_rank=sector_rank,
+        )
+        setup = _beijing_actionable_setup(
+            pct_change=pct_change,
+            volume_ratio=volume_ratio,
+            gate_status=gate_status,
+            time_anchor=time_anchor,
+            sector_heat=sector_heat,
+            score=score,
+        )
+        trade_status = setup['tradeStatus']
+        if trade_status == '仅观察':
+            continue
+
+        position_ratio = _beijing_actionable_position_ratio(
+            code=code,
+            trade_status=trade_status,
+            gate_status=gate_status,
+            score=score,
+            sector_heat=sector_heat,
+        )
+        labels = _beijing_actionable_labels(
+            selection_type=selection_type,
+            trade_status=trade_status,
+            sector_heat=sector_heat,
+            volume_ratio=volume_ratio,
+            score=score,
+        )
+        name = str(scan_row.get('name') or code)
+        grade = str(scan_row.get('grade') or ('S' if score >= 80 else 'A' if score >= 70 else 'B'))
+        actionable_now = trade_status in {'可半路', '可低吸', '可埋伏'} and time_anchor.get('phaseCode') not in {
+            'preopen', 'auction', 'lunch', 'tail_avoid', 'after_close',
+        }
+        classification_reason = (
+            f"{time_anchor.get('phase', '当前时段')}优先做{setup['entryPlan']}，"
+            f"当前涨幅 {pct_change:+.2f}%，量比 {volume_ratio:.2f}。"
+        )
+        reason = (
+            f"{selection_type}｜{time_anchor.get('phase', '当前时段')}｜{trade_status}｜"
+            f"板块热度 {sector_heat}，板块排序 #{sector_rank}，评分 {score}，更适合 {setup['entryPlan']}。"
+        )
+        actionable_candidates.append({
+            'code': code,
+            'name': name,
+            'sector': sector,
+            'price': round(_safe_float_num(scan_row.get('close') or scan_row.get('price')), 2),
+            'changePct': round(pct_change, 2),
+            'score': score,
+            'grade': grade,
+            'adviseType': '游资打板',
+            'boardType': '未上板',
+            'selectionType': selection_type,
+            'tradeStatus': trade_status,
+            'buyMethod': setup['buyMethod'],
+            'entryPlan': setup['entryPlan'],
+            'entryModel': setup.get('entryModel', ''),
+            'entryTrigger': setup['entryTrigger'],
+            'labels': labels,
+            'threeHaveSummary': f'扫描评分 {score} / 量比 {volume_ratio:.2f} / 板块热度 {sector_heat}',
+            'signal': f"{selection_type}/{trade_status}/{setup['buyMethod']}",
+            'positionRatio': position_ratio,
+            'holdPeriod': '盘中跟随为主，不强求封板，次日先看冲高兑现',
+            'buyRange': '围绕分时均线、前高或回封确认分批跟随',
+            'stopLoss': '分时转弱、跌破承接位或板块掉队就撤',
+            'nextDaySellPlan': '若当天未顺利转强，次日冲高先兑现；走弱直接撤。',
+            'targetPrice': '先看分时前高，再看是否有试板动作',
+            'riskLevel': '中' if pct_change >= 3 else '低',
+            'reason': reason,
+            'classificationReason': classification_reason,
+            'meta': (
+                f"当前涨幅 {pct_change:+.2f}%｜量比 {volume_ratio:.2f}｜评分 {score}｜"
+                f"板块热度 {sector_heat}｜时段 {time_anchor.get('phase', '待观察')}"
+            ),
+            'actionableNow': actionable_now,
+            'actionSource': 'scan',
+            'sectorHeat': sector_heat,
+            'sectorRank': sector_rank,
+            'marketCapYi': market_cap_yi,
+            'volumeRatio': round(volume_ratio, 2) if volume_ratio > 0 else 0,
+            'timeAnchorPhase': time_anchor.get('phase', ''),
+            'timeAnchorWindow': time_anchor.get('window', ''),
+        })
+        seen_actionable.add(code)
+
+    actionable_candidates.sort(
+        key=lambda item: (
+            1 if item.get('actionableNow') else 0,
+            action_priority.get(str(item.get('tradeStatus') or ''), 0),
+            -int(item.get('sectorRank') or 999),
+            1 if item.get('selectionType') == '板块前排预备' else 0,
+            float(item.get('sectorHeat') or 0),
+            float(item.get('score') or 0),
+            float(item.get('changePct') or 0),
+        ),
+        reverse=True,
+    )
+    actionable_candidates = _beijing_refresh_actionable_candidates(
+        actionable_candidates,
+        market_gate=market_gate,
+        time_anchor=time_anchor,
+    )
+
+    for item in board_candidates:
+        board_type = item.get('boardType', '')
+        pass_count = int(item.get('passCount') or 0)
+        front_row = bool(item.get('frontRow'))
+        gate_status = market_gate.get('status', '轻仓试错')
+        recommendable = (
+            gate_status != '空仓等待'
+            and pass_count >= 2
+            and board_type not in ('一字板', '尾盘板')
+            and (
+                item.get('isFirstBoard')
+                or (
+                    board_type == '连板'
+                    and int(item.get('consecutiveLimitUpDays') or 0) <= 2
+                    and int(item.get('firstSealInt') or 0) <= 103000
+                )
+            )
+        )
+        if board_type == '秒拉板' and int(item.get('resonanceCount') or 0) < 3:
+            recommendable = False
+        if gate_status == '轻仓试错' and board_type == '秒拉板':
+            recommendable = False
+
+        buy_method = _beijing_buy_method(board_type, front_row=front_row, pass_count=pass_count)
+        position_ratio = _beijing_position_ratio(
+            item.get('code', ''),
+            board_type,
+            pass_count,
+            gate_status=gate_status,
+            front_row=front_row,
+        )
+        hold_period = _beijing_hold_period(board_type, front_row=front_row)
+        buy_range = _beijing_buy_range(board_type, front_row=front_row)
+        stop_loss = _beijing_stop_loss(board_type)
+        next_day_sell_plan = _beijing_next_day_sell_plan(board_type, front_row=front_row)
+        risk_level = '高' if board_type in ('秒拉板', '连板') else '中' if board_type in ('换手板', '回封板') else '低'
+        meta = '｜'.join(item.get('metaParts') or [])
+        labels = _beijing_method_labels(
+            board_type=board_type,
+            selection_type=item.get('selectionType', ''),
+            gate_status=gate_status,
+            first_seal_int=int(item.get('firstSealInt') or 0),
+            last_seal_int=int(item.get('lastSealInt') or 0),
+            broken_count=int(item.get('brokenBoardCount') or 0),
+            resonance_count=int(item.get('resonanceCount') or 0),
+            turnover_rate=float(item.get('turnoverRate') or 0),
+            turnover_yi=float(item.get('turnoverYi') or 0),
+            mkt_cap_yi=float(item.get('marketCapYi') or 0),
+            front_row=front_row,
+            minute_turnover_label=str(item.get('minuteTurnoverLabel') or ''),
+            minute_longest_streak=int(item.get('minuteLongestStreak') or 0),
+            auction_strength=str(item.get('auctionStrength') or ''),
+            teammate_strength=str(item.get('teammateStrength') or ''),
+        )
+        reason = (
+            f"{item.get('selectionType', '待观察')}｜{item.get('classificationReason', '')}｜"
+            f"{item.get('recognitionReason', '')}｜{item.get('minuteEvidence', '分钟级证据待观察')}｜"
+            f"{item.get('auctionTeammateSummary', '盘口强弱待观察')}｜次日策略：{next_day_sell_plan}"
+        )
+        entry_model = _beijing_entry_model_for_board(
+            board_type=board_type,
+            minute_turnover_label=str(item.get('minuteTurnoverLabel') or ''),
+            broken_count=int(item.get('brokenBoardCount') or 0),
+            front_row=front_row,
+        )
+        if item.get('minuteTurnoverLabel') and item.get('minuteTurnoverLabel') != '待观察':
+            meta = f"{meta}｜{item.get('minuteTurnoverLabel')}"
+        if item.get('auctionStrength'):
+            meta = f"{meta}｜竞价 {item.get('auctionStrength')}"
+        if item.get('teammateStrength'):
+            meta = f"{meta}｜队友 {item.get('teammateStrength')}"
+
+        item.update({
+            'buyMethod': buy_method,
+            'positionRatio': position_ratio,
+            'holdPeriod': hold_period,
+            'buyRange': buy_range,
+            'stopLoss': stop_loss,
+            'nextDaySellPlan': next_day_sell_plan,
+            'recommendable': recommendable,
+            'marketGateStatus': gate_status,
+            'riskLevel': risk_level,
+            'reason': reason,
+            'labels': labels,
+            'signal': f"{item.get('selectionType', '待观察')}/{board_type}/{buy_method}",
+            'entryPlan': buy_method,
+            'entryModel': entry_model,
+            'entryTrigger': buy_range,
+            'meta': meta,
+            'sortKey': (
+                1 if recommendable else 0,
+                1 if front_row else 0,
+                1 if item.get('isFirstBoard') else 0,
+                pass_count,
+                board_priority.get(board_type, 0),
+                int(item.get('resonanceCount') or 0),
+                item.get('sealAmountYi') or 0,
+                item.get('score') or 0,
+            ),
+        })
+
+    board_candidates.sort(key=lambda item: item.get('sortKey', (0, 0, 0, 0, 0, 0, 0, 0)), reverse=True)
+    for item in board_candidates:
+        item.pop('sortKey', None)
+        item.pop('metaParts', None)
+        item['matchedRules'] = _beijing_matched_rules(
+            item,
+            market_gate=market_gate,
+            time_anchor=time_anchor,
+            is_actionable=False,
+        )
+
+    for item in actionable_candidates:
+        item['matchedRules'] = _beijing_matched_rules(
+            item,
+            market_gate=market_gate,
+            time_anchor=time_anchor,
+            is_actionable=True,
+        )
+
+    qualified = [item for item in board_candidates if item.get('recommendable')]
+    recommended = []
+    recommended_source = actionable_candidates[:3] if actionable_candidates else qualified[:3]
+    for item in recommended_source:
+        recommended.append({
+            'code': item['code'],
+            'name': item['name'],
+            'sector': item.get('sector', ''),
+            'price': item.get('price', ''),
+            'changePct': item.get('changePct', 0),
+            'score': item.get('score', 0),
+            'grade': item.get('grade', ''),
+            'adviseType': item.get('adviseType', '游资打板'),
+            'boardType': item.get('boardType', ''),
+            'selectionType': item.get('selectionType', ''),
+            'buyMethod': item.get('buyMethod', '观察'),
+            'tradeStatus': item.get('tradeStatus', ''),
+            'entryPlan': item.get('entryPlan', ''),
+            'entryModel': item.get('entryModel', ''),
+            'entryTrigger': item.get('entryTrigger', ''),
+            'actionableNow': bool(item.get('actionableNow')),
+            'labels': item.get('labels', []),
+            'matchedRules': item.get('matchedRules', []),
+            'threeHaveSummary': item.get('threeHaveSummary', ''),
+            'firstSealTime': item.get('firstSealTime', ''),
+            'lastSealTime': item.get('lastSealTime', ''),
+            'brokenBoardCount': item.get('brokenBoardCount', 0),
+            'minuteTurnoverLabel': item.get('minuteTurnoverLabel', ''),
+            'minuteEvidence': item.get('minuteEvidence', ''),
+            'minuteLongestStreak': item.get('minuteLongestStreak', 0),
+            'auctionStrength': item.get('auctionStrength', ''),
+            'teammateStrength': item.get('teammateStrength', ''),
+            'auctionTeammateSummary': item.get('auctionTeammateSummary', ''),
+            'signal': item.get('signal', ''),
+            'positionRatio': item.get('positionRatio', ''),
+            'holdPeriod': item.get('holdPeriod', ''),
+            'buyRange': item.get('buyRange', ''),
+            'stopLoss': item.get('stopLoss', ''),
+            'nextDaySellPlan': item.get('nextDaySellPlan', ''),
+            'targetPrice': item.get('targetPrice', '次日冲高兑现'),
+            'riskLevel': item.get('riskLevel', ''),
+            'meta': item.get('meta', ''),
+            'classificationReason': item.get('classificationReason', ''),
+            'reason': item.get('reason', ''),
+            'timeAnchorPhase': item.get('timeAnchorPhase', time_anchor.get('phase', '')),
+            'timeAnchorWindow': item.get('timeAnchorWindow', time_anchor.get('window', '')),
+        })
+
+    market_commentary = (
+        f"{time_anchor.get('phase','当前时段')}，闸门{market_gate.get('status','待观察')}，盘中可买{len(actionable_candidates)}只。"
+        if today_count or actionable_candidates else
+        '共享事实不足，先保守观察，避免主观打板。'
+    )
+    if market_gate.get('status') == '放行':
+        position_advice = (
+            f"{time_anchor.get('phase','当前时段')}优先{time_anchor.get('executionFocus','前排强板')}，"
+            f"仓位上限{market_gate.get('positionCap')}。"
+        )
+    elif market_gate.get('status') == '轻仓试错':
+        position_advice = (
+            f"{time_anchor.get('phase','当前时段')}轻仓试错，只做{time_anchor.get('executionFocus','换手回封')}。"
+        )
+    else:
+        position_advice = (
+            f"{time_anchor.get('phase','当前时段')}不主动进攻，首板模式空仓等待或极轻仓观察。"
+        )
+    risk_warning = (
+        '退潮时强行打板最伤，一字板、尾盘板、高位秒拉都是陷阱。'
+        if market_gate.get('status') != '放行'
+        else '高位秒拉、尾盘偷板、一字接力依旧是大面源头。'
+    )
+
+    step_outputs = [
+        {
+            'step': 1,
+            'title': '市场闸门',
+            'summary': (
+                f"{time_anchor.get('phase','当前时段')}｜闸门{market_gate.get('status','待观察')}："
+                f"{market_gate.get('action','等待更多信号')}"
+            ),
+            'frameworkLines': [
+                '闸门只分三档：放行 / 轻仓试错 / 空仓等待。',
+                '核心先看指数情绪、涨停溢价、主线题材是否有联动。',
+                '退潮或分歧大时，宁愿空仓，也不强行打首板。',
+                '点开分析的当下时间，也会改变执行方式：早盘抢先手，10点后更重视换手与回封确认。',
+            ],
+            'lines': (
+                [f"时间锚点：{time_anchor.get('window', '待观察')}"]
+                + list(market_gate.get('reasons') or [])[:3]
+                + [f'联网补充：{line}' for line in search_preview_lines[:1]]
+            )[:4] or ['先看指数、情绪、涨停溢价，再决定是否允许首板模式出手。'],
+        },
+        {
+            'step': 2,
+            'title': '题材与首板池',
+            'summary': (
+                f"三有候选 {len(three_have_qualified)} 只，可买预备池 {len(actionable_candidates)} 只，"
+                f"优先前排，错过再做辨识度后排。"
+            ),
+            'frameworkLines': [
+                '选股类型：板块前排首板 / 后排辨识度首板 / 换手连板 / 独立图形票。',
+                '盘中可买池：板块前排预备 / 后排辨识度预备 / 独立图形票，不必非等封死涨停才动手。',
+                '判断依据：板块共振数量、首封时间、流通市值、成交额、封板资金、换手率、扫描命中。',
+                '队友强时，自己的票竞价一般也可能被带起来；独苗票则更谨慎。',
+            ],
+            'lines': [
+                (
+                    f"{item['name']}({item['code']})｜{item['selectionType']}｜{item.get('tradeStatus', item['threeHaveSummary'])}｜"
+                    f"{item.get('entryModel', item.get('entryPlan', item.get('threeHaveSummary', '待观察')))}｜"
+                    f"竞价 {item.get('auctionStrength','待观察')}｜队友 {item.get('teammateStrength','待观察')}"
+                )
+                for item in (actionable_candidates[:4] or board_candidates[:4])
+            ] or ['当前没有同时满足题材、辨识度与三有过滤的候选，先空仓等待。'],
+        },
+        {
+            'step': 3,
+            'title': '板型与成交方式',
+            'summary': (
+                (' / '.join(f"{k}{v}只" for k, v in list(board_type_counter.items())[:5]) or '暂无可分类样本')
+                + f"｜横盘半小时 {minute_confirmed_count} 只"
+            ),
+            'frameworkLines': [
+                '支持板型：秒拉板 / 换手板 / 回封板 / 连板 / 一字板 / 尾盘板。',
+                '换手板：5-8个点震荡较久、上板后抛压小，横半小时通常更值得直接扫。',
+                '回封板：炸板后回封代表空头释放，早回封优于尾盘勉强回封。',
+                '秒拉板：默认仅排不扫，强板块时更像先锋，独苗秒板炸板风险高。',
+                '尾盘板：2点后少打，2点半以后偏投机，封不住就是最高点接盘。',
+            ],
+            'lines': [
+                f"{item['name']}({item['code']})｜{item['boardType']}｜{item['buyMethod']}｜{item.get('minuteTurnoverLabel','待观察')}｜{item['classificationReason']}"
+                for item in board_candidates[:4]
+            ] or ['涨停池样本不足，待下一轮板池刷新后再分类。'],
+        },
+        {
+            'step': 4,
+            'title': '仓位与执行',
+            'summary': (
+                f"{time_anchor.get('phase','当前时段')}优先{time_anchor.get('executionFocus','前排强板')}，"
+                f"执行上限 {market_gate.get('positionCap','待观察')}；竞价偏强 {strong_auction_count} 只，队友强 {strong_teammate_count} 只。"
+            ),
+            'frameworkLines': [
+                '仓位模板：主板默认 1/8，20cm 默认 1/16，把握度高的大票可提到 1/6。',
+                '执行倾向：前排强板、回封确认、换手充分偏扫板；容量大或把握度低偏排板。',
+                '方法论标签会显式输出：换手板优先、回封更稳、秒板新手回避、尾盘慎打等。',
+                '当前时间窗会改变执行偏好：早盘偏先手，10点后偏换手回封，午后偏回流低吸，尾盘偏观察。',
+            ],
+            'lines': [
+                f"{item['name']}({item['code']})｜{item['positionRatio']}｜{item.get('tradeStatus', item['buyMethod'])}｜"
+                f"{item.get('entryModel', item.get('entryPlan', item['buyMethod']))}｜{item.get('entryTrigger', item['buyRange'])}"
+                for item in recommended[:3]
+            ] or ['闸门未放行或候选不够强，只保留现金与观察仓。'],
+        },
+        {
+            'step': 5,
+            'title': '次日卖出计划',
+            'summary': '高开低走、低开低走反抽、跌停必走；多数票在首小时完成处理。',
+            'frameworkLines': [
+                '卖法铁律：高开低走卖，低开低走反抽无力卖，跌停或明显走弱必走。',
+                '多数票在首小时处理，不研究花哨卖点，只追求执行一致性。',
+            ],
+            'lines': [
+                f"{item['name']}({item['code']})｜{item['nextDaySellPlan']}｜{item['stopLoss']}"
+                for item in recommended[:3]
+            ] or ['没有足够确定性的隔夜计划时，不勉强持股过夜。'],
+        },
+    ]
+
+    selection_path_defs = {
+        '板块前排首板': '谁先板干谁，优先题材前排与先手。',
+        '后排辨识度首板': '错过前排后，改做容量、逻辑、图形更强的辨识度后排。',
+        '换手连板': '只做有板块效应、10:30前换手完成的强连板。',
+        '独立图形票': '没有板块时，只做看得懂的独立强图形。',
+        '板块前排预备': '还没封板但已具备前排先手特征，可做盘中预备池。',
+        '后排辨识度预备': '错过前排后，优先保留可买的辨识度后排预备池。',
+    }
+    selection_path_counts: Dict[str, int] = {key: 0 for key in selection_path_defs}
+    for item in list(board_candidates) + list(actionable_candidates):
+        selection_type = str(item.get('selectionType') or '').strip()
+        if selection_type in selection_path_counts:
+            selection_path_counts[selection_type] += 1
+
+    selection_path = [
+        {
+            'type': key,
+            'count': selection_path_counts.get(key, 0),
+            'description': desc,
+        }
+        for key, desc in selection_path_defs.items()
+    ]
+
+    board_playbook_defs = [
+        ('秒拉板', '默认谨慎，偏排不偏扫；板块强时更像先锋。'),
+        ('换手板', '5-8个点震荡换手后上板，是北京炒家核心审美。'),
+        ('回封板', '炸板后回封代表空头释放，早回封更优。'),
+        ('连板', '只做有板块效应、强更强的换手连板。'),
+        ('一字板', '一字不追，只看T字回封确认。'),
+        ('尾盘板', '2点后少打，2点半以后更偏投机。'),
+    ]
+    board_playbook = [
+        {
+            'type': board_type,
+            'count': board_type_counter.get(board_type, 0),
+            'description': desc,
+        }
+        for board_type, desc in board_playbook_defs
+    ]
+
+    label_counts: Dict[str, int] = {}
+    for item in list(board_candidates) + list(actionable_candidates):
+        for label in item.get('labels') or []:
+            text = str(label or '').strip()
+            if not text:
+                continue
+            label_counts[text] = label_counts.get(text, 0) + 1
+    label_hits = [
+        {'label': label, 'count': count}
+        for label, count in sorted(label_counts.items(), key=lambda one: (one[1], one[0]), reverse=True)[:12]
+    ]
+
+    front_row_count = (
+        sum(1 for item in board_candidates if item.get('frontRow'))
+        + sum(1 for item in actionable_candidates if item.get('selectionType') == '板块前排预备')
+    )
+    rearfocus_count = (
+        sum(1 for item in board_candidates if item.get('selectionType') == '后排辨识度首板')
+        + sum(1 for item in actionable_candidates if item.get('selectionType') == '后排辨识度预备')
+    )
+    reboard_count = board_type_counter.get('回封板', 0)
+    spike_count = board_type_counter.get('秒拉板', 0)
+    tail_count = board_type_counter.get('尾盘板', 0)
+    actionable_now_count = sum(1 for item in actionable_candidates if item.get('actionableNow'))
+    daily_rule_hits = [
+        {
+            'title': '时间锚点',
+            'status': time_anchor.get('phase', '待观察'),
+            'detail': time_anchor.get('summary', '按当前时段切换执行风格。'),
+        },
+        {
+            'title': '市场闸门',
+            'status': market_gate.get('status', '待观察'),
+            'detail': market_gate.get('action', '等待更多信号'),
+        },
+        {
+            'title': '盘中可买',
+            'status': f'{actionable_now_count}只命中',
+            'detail': '优先推荐尚未封死、当前仍有执行空间的候选，而不是只报已涨停个股。',
+        },
+        {
+            'title': '前排优先',
+            'status': f'{front_row_count}只命中',
+            'detail': '题材前排首板是首选路径，谁先板干谁。',
+        },
+        {
+            'title': '后排辨识度',
+            'status': f'{rearfocus_count}只命中',
+            'detail': '错过前排后，再做容量、图形、逻辑更强的辨识度后排。',
+        },
+        {
+            'title': '横盘半小时',
+            'status': f'{minute_confirmed_count}只命中',
+            'detail': '分钟级 6%-8% 横盘越久，越接近理想换手板。',
+        },
+        {
+            'title': '回封更稳',
+            'status': f'{reboard_count}只命中',
+            'detail': '炸板后回封代表空头释放，早回封优于尾盘勉强回封。',
+        },
+        {
+            'title': '秒板谨慎',
+            'status': f'{spike_count}只样本',
+            'detail': '默认仅排不扫，独苗秒板炸板风险更高。',
+        },
+        {
+            'title': '尾盘回避',
+            'status': f'{tail_count}只样本',
+            'detail': '2点后少打，2点半以后更偏投机。',
+        },
+        {
+            'title': '竞价偏强',
+            'status': f'{strong_auction_count}只命中',
+            'detail': '竞价涨停 / 竞价强势 / 高开强势是优先观察对象。',
+        },
+        {
+            'title': '队友带动',
+            'status': f'{strong_teammate_count}只命中',
+            'detail': '队友强时，自己的票竞价一般也可能被板块带起来。',
+        },
+    ]
+    actionable_pool = [
+        {
+            'code': item.get('code', ''),
+            'name': item.get('name', ''),
+            'selectionType': item.get('selectionType', ''),
+            'tradeStatus': item.get('tradeStatus', ''),
+            'entryPlan': item.get('entryPlan', ''),
+            'entryModel': item.get('entryModel', ''),
+            'entryTrigger': item.get('entryTrigger', ''),
+            'score': item.get('score', 0),
+            'changePct': item.get('changePct', 0),
+            'matchedRules': item.get('matchedRules', []),
+        }
+        for item in actionable_candidates[:6]
+    ]
+
+    return {
+        'kind': 'beijing',
+        'version': 'v3',
+        'generatedAt': datetime.now().isoformat(),
+        'todayDate': today,
+        'yesterdayDate': yesterday_date,
+        'stats': {
+            'todayLimitUps': today_count,
+            'yesterdayLimitUps': yesterday_count,
+            'scanOverlapCount': scan_overlap_count,
+            'qualifiedCount': len(three_have_qualified),
+            'recommendedCount': len(recommended),
+            'actionableCount': len(actionable_candidates),
+            'earlyBoardCount': early_count,
+            'minuteConfirmedCount': minute_confirmed_count,
+            'strongAuctionCount': strong_auction_count,
+            'strongTeammateCount': strong_teammate_count,
+            'marketGateStatus': market_gate.get('status'),
+        },
+        'marketGate': market_gate,
+        'timeAnchor': time_anchor,
+        'strategyPanels': {
+            'timeAnchor': time_anchor,
+            'selectionPath': selection_path,
+            'boardPlaybook': board_playbook,
+            'labelHits': label_hits,
+            'dailyRuleHits': daily_rule_hits,
+            'actionablePool': actionable_pool,
+        },
+        'boardTypeSummary': [
+            {'type': board_type, 'count': count}
+            for board_type, count in sorted(board_type_counter.items(), key=lambda item: item[1], reverse=True)
+        ],
+        'boardCandidates': board_candidates[:8],
+        'actionableCandidates': actionable_candidates[:8],
+        'recommendedStocks': recommended,
+        'stepOutputs': step_outputs,
+        'marketCommentary': market_commentary,
+        'positionAdvice': position_advice,
+        'riskWarning': risk_warning,
+        'searchDataPreview': (search_data or '')[:1200],
+    }
+
+
+def _build_beijing_execution_context_text(artifacts: Dict[str, Any]) -> str:
+    if not artifacts:
+        return '【暂无北京炒家执行工件】'
+
+    stats = artifacts.get('stats', {})
+    market_gate = artifacts.get('marketGate', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    lines = [
+        '## 北京炒家执行工件（系统预处理）',
+        f"- 时间锚点：{time_anchor.get('phase', '待观察')}｜{time_anchor.get('window', '等待更多信号')}",
+        f"- 市场闸门：{market_gate.get('status', '待观察')}｜{market_gate.get('action', '等待更多信号')}",
+        f"- 今日涨停池：{stats.get('todayLimitUps', 0)} 只",
+        f"- 昨日涨停池：{stats.get('yesterdayLimitUps', 0)} 只",
+        f"- 三有达标：{stats.get('qualifiedCount', 0)} 只",
+        f"- 盘中可买：{stats.get('actionableCount', 0)} 只",
+        f"- 推荐候选：{stats.get('recommendedCount', 0)} 只",
+        '',
+        '### 板型分布',
+    ]
+    for item in artifacts.get('boardTypeSummary', [])[:6]:
+        lines.append(f"- {item.get('type', '待观察')}：{item.get('count', 0)} 只")
+
+    lines.append('')
+    lines.append('### 盘中可买候选（优先使用这些结构化结果）')
+    for item in artifacts.get('actionableCandidates', [])[:6]:
+        lines.append(
+            f"- {item.get('name','')}({item.get('code','')})｜{item.get('selectionType','待观察')}｜"
+            f"{item.get('tradeStatus','待观察')}｜{item.get('entryModel') or item.get('entryPlan','待观察')}｜"
+            f"{item.get('entryTrigger','待观察')}｜"
+            f"{' / '.join((item.get('labels') or [])[:3])}"
+        )
+    if not artifacts.get('actionableCandidates'):
+        for item in artifacts.get('boardCandidates', [])[:4]:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('boardType','待观察')}｜"
+                f"{item.get('selectionType','待观察')}｜{item.get('threeHaveSummary','待观察')}｜"
+                f"{item.get('entryModel') or item.get('buyMethod','观察')}｜{item.get('minuteTurnoverLabel','待观察')}｜"
+                f"{item.get('auctionStrength','待观察')}｜{item.get('teammateStrength','待观察')}｜"
+                f"{item.get('nextDaySellPlan','待观察')}｜"
+                f"{' / '.join((item.get('labels') or [])[:3])}"
+            )
+
+    return '\n'.join(lines)
+
+
+def _build_beijing_fallback_structured(artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    recommended = list(artifacts.get('recommendedStocks') or [])
+    return {
+        'agentId': 'beijing',
+        'agentName': '北京炒家',
+        'stance': 'bull' if recommended else 'neutral',
+        'confidence': 78 if recommended else 52,
+        'marketCommentary': artifacts.get('marketCommentary', ''),
+        'positionAdvice': artifacts.get('positionAdvice', ''),
+        'riskWarning': artifacts.get('riskWarning', ''),
+        'recommendedStocks': recommended,
+    }
+
+
+def _merge_beijing_structured(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(structured or {})
+    recommended = list(merged.get('recommendedStocks') or [])
+    candidate_sources = (
+        list(artifacts.get('recommendedStocks') or [])
+        + list(artifacts.get('actionableCandidates') or [])
+        + list(artifacts.get('boardCandidates') or [])
+    )
+    candidates_by_code = {
+        _normalize_code6(item.get('code')): item
+        for item in candidate_sources
+        if _normalize_code6(item.get('code'))
+    }
+
+    merged_recs = []
+    for item in recommended:
+        code = _normalize_code6(item.get('code'))
+        candidate = candidates_by_code.get(code, {})
+        one = dict(candidate) if candidate else {}
+        one.update(item)
+        for key, value in candidate.items():
+            one.setdefault(key, value)
+        if code:
+            one['code'] = code
+        merged_recs.append(one)
+
+    artifact_recommended = list(artifacts.get('recommendedStocks') or [])
+    if artifact_recommended:
+        merged['recommendedStocks'] = artifact_recommended[:3]
+    else:
+        merged['recommendedStocks'] = merged_recs[:3]
+    merged['personaExecution'] = {
+        'kind': 'beijing',
+        'version': artifacts.get('version', 'v1'),
+        'coreObjective': '临盘只做看得懂的强势首板，先判市场闸门，再做前排与辨识度后排',
+        'stats': artifacts.get('stats', {}),
+        'marketGate': artifacts.get('marketGate', {}),
+        'timeAnchor': artifacts.get('timeAnchor', {}),
+        'strategyPanels': artifacts.get('strategyPanels', {}),
+        'boardTypeSummary': artifacts.get('boardTypeSummary', []),
+        'boardCandidates': artifacts.get('boardCandidates', []),
+        'actionableCandidates': artifacts.get('actionableCandidates', []),
+        'stepOutputs': artifacts.get('stepOutputs', []),
+    }
+
+    if not str(merged.get('marketCommentary') or '').strip():
+        merged['marketCommentary'] = artifacts.get('marketCommentary', '')
+    if not str(merged.get('positionAdvice') or '').strip():
+        merged['positionAdvice'] = artifacts.get('positionAdvice', '')
+    if not str(merged.get('riskWarning') or '').strip():
+        merged['riskWarning'] = artifacts.get('riskWarning', '')
+
+    return merged
+
+
+def _build_beijing_markdown_summary(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> str:
+    market_gate = artifacts.get('marketGate', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    lines = [
+        f"【时间锚点】{time_anchor.get('phase','待观察')}｜{time_anchor.get('window','等待更多信号')}",
+        f"【市场闸门】{market_gate.get('status','待观察')}｜{market_gate.get('action','等待更多信号')}",
+        f"【市场解读】{structured.get('marketCommentary') or artifacts.get('marketCommentary') or '暂无明确板池结论'}",
+        f"【仓位建议】{structured.get('positionAdvice') or artifacts.get('positionAdvice') or '控制仓位，优先前排'}",
+        f"【风险提示】{structured.get('riskWarning') or artifacts.get('riskWarning') or '一字板不追，尾盘板不碰'}",
+    ]
+    recs = (structured.get('recommendedStocks') or [])[:3]
+    if recs:
+        lines.append('【重点候选】')
+        for item in recs:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('boardType','待观察')}｜"
+                f"{item.get('selectionType','待观察')}｜{item.get('entryModel') or item.get('tradeStatus') or item.get('buyMethod','观察')}｜"
+                f"{item.get('nextDaySellPlan') or item.get('reason') or item.get('meta') or ''}｜"
+                f"{' / '.join((item.get('labels') or [])[:3])}"
+            )
+    else:
+        lines.append('【重点候选】当前无三有与板型同时达标的隔夜标的，维持观察仓。')
+    return '\n'.join(lines)
+
+
+def _build_qiao_time_anchor(now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or datetime.now()
+    hhmm = now.hour * 100 + now.minute
+    label = now.strftime('%H:%M')
+
+    if hhmm < 925:
+        return {
+            'phaseCode': 'preopen',
+            'phase': '盘前预案',
+            'window': f'{label}｜先做主线预案，不抢主观先手',
+            'summary': '盘前只锁定主线、龙头和预备池，不做脱离市场的预判式交易。',
+            'executionFocus': '锁定主线与龙头预备池',
+            'positionBias': '不开新仓，最多观察仓',
+            'rules': [
+                '先看主线，再看龙头，再看是否存在可低吸的转折位。',
+                '盘前不做意淫式埋伏，真正的机会等竞价与开盘确认。',
+                '优先保留 3-5 只大众情人，避免信息过载。',
+            ],
+        }
+    if hhmm < 930:
+        return {
+            'phaseCode': 'auction',
+            'phase': '竞价验证',
+            'window': f'{label}｜看竞价、看队友、看龙头是否继续强势',
+            'summary': '竞价阶段重点验证龙头强弱、板块队友表现与当日主线是否延续。',
+            'executionFocus': '竞价确认，不提前重仓',
+            'positionBias': '小仓确认，拒绝竞价主观梭哈',
+            'rules': [
+                '队友强时，龙头竞价一般弱一点也有机会被带起来。',
+                '独苗高开更危险，要防一致转分歧。',
+                '竞价只做方向确认，不把竞价当全部结论。',
+            ],
+        }
+    if hhmm < 1030:
+        return {
+            'phaseCode': 'morning_leader',
+            'phase': '早盘龙头确认',
+            'window': f'{label}｜只看主线最强，不在杂毛里找机会',
+            'summary': '早盘是确认总龙头、板块龙头与大众情人的关键窗口。',
+            'executionFocus': '总龙头 / 板块龙头 / 最强跟随',
+            'positionBias': '主升放行，退潮克制',
+            'rules': [
+                '早盘优先确认谁是总龙头，而不是猜谁会成龙。',
+                '主线不清晰时宁可慢，不急着出手。',
+                '不做弱票补涨臆测，只做市场已经给出合力的票。',
+            ],
+        }
+    if hhmm < 1400:
+        return {
+            'phaseCode': 'dip_reflow',
+            'phase': '分歧低吸',
+            'window': f'{label}｜优先看 5/10 日线低吸与分歧回流',
+            'summary': '午前至午后早段更适合做主升龙头的分歧低吸与均线承接。',
+            'executionFocus': '5日线低吸 / 10日线低吸 / 分歧回流',
+            'positionBias': '围绕承接位分批试错',
+            'rules': [
+                '低吸只吸强势龙头，不吸冷门弱票。',
+                '分歧不是风险本身，关键看是否能放量转强。',
+                '回踩均线不破、分时重新走强时更接近买点。',
+            ],
+        }
+    if hhmm < 1450:
+        return {
+            'phaseCode': 'afternoon_board',
+            'phase': '下午换手板',
+            'window': f'{label}｜偏爱充分换手后的下午板',
+            'summary': '下午更看重充分换手后的确定性打板，而不是无脑追秒板。',
+            'executionFocus': '下午换手板 / 主升打板 / 回封确认',
+            'positionBias': '只做确定性，不追最后一脚',
+            'rules': [
+                '换手决定高度，充分换手后的板更有确定性。',
+                '主升中的下午换手板，往往比早盘一致性板更好接。',
+                '炸板回封要看队友是否掉队，不做孤勇者。',
+            ],
+        }
+    if hhmm < 1500:
+        return {
+            'phaseCode': 'tail_review',
+            'phase': '尾盘观察',
+            'window': f'{label}｜尾盘更偏复核，不追情绪末端',
+            'summary': '尾盘一致性过强时更容易转次日兑现，优先做明天的预案而不是今天的冲动单。',
+            'executionFocus': '观察次日预备池',
+            'positionBias': '不追尾盘一致，不补情绪末端',
+            'rules': [
+                '尾盘的意义更多是复核强弱，而不是强行找买点。',
+                '没有足够把握时，把机会留给次日竞价确认。',
+                '尾盘乱点火最容易变成第二天的兑现盘。',
+            ],
+        }
+    return {
+        'phaseCode': 'after_close',
+        'phase': '收盘复核',
+        'window': f'{label}｜只做次日计划，不虚构盘中执行',
+        'summary': '收盘后重点是复核主线、龙头、阶段与次日竞价预案，不假装还能盘中追单。',
+        'executionFocus': '次日竞价确认 / 次日分歧计划',
+        'positionBias': '收盘后不给盘中追价建议',
+        'rules': [
+            '收盘后的推荐应优先输出次日可确认机会，而不是已经买不到的涨停板。',
+            '次日关注龙头竞价、队友强弱与是否延续主升。',
+            '如果阶段转差，预案的核心是降低仓位而不是找借口上仓。',
+        ],
+    }
+
+
+def _build_qiao_market_gate(
+    overview_text: str,
+    search_data: str,
+    *,
+    today_count: int,
+    leader_height: int,
+    main_theme_count: int,
+) -> Dict[str, Any]:
+    overview_metrics = _parse_market_overview_metrics(overview_text)
+    text = f'{overview_text}\n{search_data}'
+    positive_hits = sum(
+        1 for kw in ('主线明确', '赚钱效应强', '强修复', '情绪回暖', '放量', '强势')
+        if kw in text
+    )
+    negative_hits = sum(
+        1 for kw in ('退潮', '高位补跌', '亏钱效应扩散', '弱势', '恐慌', '冰点')
+        if kw in text
+    )
+
+    score = 0
+    score += 2 if today_count >= 40 else 1 if today_count >= 25 else -1
+    score += 2 if leader_height >= 4 else 1 if leader_height >= 3 else -1
+    score += 2 if main_theme_count >= 4 else 1 if main_theme_count >= 2 else -1
+    score += 1 if overview_metrics['positiveCount'] > overview_metrics['negativeCount'] else -1 if overview_metrics['negativeCount'] > overview_metrics['positiveCount'] else 0
+    score += min(2, positive_hits)
+    score -= min(2, negative_hits)
+
+    if negative_hits >= 2 and today_count < 25:
+        stage = '退潮'
+    elif today_count >= 55 and leader_height >= 4 and main_theme_count >= 5:
+        stage = '高潮'
+    elif today_count >= 32 and leader_height >= 3 and main_theme_count >= 3:
+        stage = '主升'
+    elif today_count >= 20 and main_theme_count >= 2:
+        stage = '发酵'
+    else:
+        stage = '启动'
+
+    if stage == '退潮' or score <= 0:
+        status = '空仓等待'
+        action = '退潮优先休息，只留极轻观察仓，拒绝主观抄底。'
+        position_cap = '0-1/16观察'
+    elif stage == '主升' and score >= 4:
+        status = '放行'
+        action = '主升浪允许进攻，优先龙头低吸、分歧回流与下午换手板。'
+        position_cap = '2/8-4/8'
+    else:
+        status = '轻仓试错'
+        action = '只做最强龙头与可验证分歧，放弃模式外一致性追涨。'
+        position_cap = '1/8-2/8'
+
+    reasons = []
+    if overview_metrics['metrics']:
+        reasons.append(
+            '指数概况：' + ' / '.join(
+                f"{item['name']}{item['pct']:+.2f}%"
+                for item in overview_metrics['metrics'][:4]
+            )
+        )
+    reasons.append(f'涨停池 {today_count} 只，空间板 {leader_height} 连板，主线联动 {main_theme_count} 只')
+    reasons.append(f'阶段判断：{stage}')
+    reasons.append(f'执行结论：{action}')
+
+    return {
+        'stage': stage,
+        'status': status,
+        'action': action,
+        'positionCap': position_cap,
+        'score': score,
+        'reasons': reasons,
+    }
+
+
+def _qiao_fetch_ma_snapshot(code: str, latest_price: Any = 0) -> Dict[str, Any]:
+    snapshot = {
+        'ma5': 0.0,
+        'ma10': 0.0,
+        'ma20': 0.0,
+        'distToMa5Pct': 0.0,
+        'distToMa10Pct': 0.0,
+        'nearMa5': False,
+        'nearMa10': False,
+        'trendBias': '待观察',
+        'maSupportSummary': '均线关系待观察',
+    }
+    try:
+        from utils.ths_crawler import get_stock_kline_sina
+
+        df = get_stock_kline_sina(code, days=40)
+        if df is None or df.empty or 'close' not in df.columns:
+            return snapshot
+        close = _pd.to_numeric(df['close'], errors='coerce').dropna()
+        if len(close) < 12:
+            return snapshot
+
+        latest = _safe_float_num(latest_price)
+        if latest <= 0:
+            latest = float(close.iloc[-1])
+        ma5 = float(close.tail(5).mean())
+        ma10 = float(close.tail(10).mean())
+        ma20 = float(close.tail(min(20, len(close))).mean())
+        prev_close = close.iloc[:-1] if len(close) > 1 else close
+        prev_ma5 = float(prev_close.tail(5).mean()) if len(prev_close) >= 5 else ma5
+        prev_ma10 = float(prev_close.tail(10).mean()) if len(prev_close) >= 10 else ma10
+
+        dist5 = ((latest - ma5) / ma5 * 100.0) if ma5 else 0.0
+        dist10 = ((latest - ma10) / ma10 * 100.0) if ma10 else 0.0
+        near_ma5 = abs(dist5) <= 1.8
+        near_ma10 = abs(dist10) <= 2.8
+
+        if latest >= ma5 >= ma10 and ma5 >= prev_ma5 and ma10 >= prev_ma10:
+            trend_bias = '主升'
+        elif latest >= ma10 and ma10 >= prev_ma10:
+            trend_bias = '偏强'
+        elif latest >= ma20:
+            trend_bias = '震荡'
+        else:
+            trend_bias = '调整'
+
+        if near_ma5:
+            summary = f'贴近 5 日线 {dist5:+.2f}%'
+        elif near_ma10:
+            summary = f'贴近 10 日线 {dist10:+.2f}%'
+        else:
+            summary = f'距 5 日线 {dist5:+.2f}% / 距 10 日线 {dist10:+.2f}%'
+
+        snapshot.update({
+            'ma5': round(ma5, 2),
+            'ma10': round(ma10, 2),
+            'ma20': round(ma20, 2),
+            'distToMa5Pct': round(dist5, 2),
+            'distToMa10Pct': round(dist10, 2),
+            'nearMa5': near_ma5,
+            'nearMa10': near_ma10,
+            'trendBias': trend_bias,
+            'maSupportSummary': summary,
+        })
+        return snapshot
+    except Exception as exc:
+        logger.debug('[Qiao] 均线快照获取失败 %s: %s', code, exc)
+        return snapshot
+
+
+def _qiao_entry_plan_from_model(entry_model: str, phase_code: str, gate_status: str) -> Dict[str, str]:
+    closed_phase = phase_code in {'preopen', 'auction', 'tail_review', 'after_close'}
+    if gate_status == '空仓等待':
+        return {
+            'tradeStatus': '观察',
+            'entryPlan': '退潮回避',
+            'entryTrigger': '等待主线重新明确',
+        }
+
+    mapping = {
+        '5日线低吸': ('可低吸', '围绕 5 日线低吸确认', '回踩 5 日线不破并重新翻红'),
+        '10日线低吸': ('可低吸', '围绕 10 日线分歧低吸', '回踩 10 日线止跌，分时重新走强'),
+        '分歧回流': ('可低吸', '分歧后只做回流确认', '早盘分歧后重新放量翻红'),
+        '下午换手板': ('可半路', '等待下午充分换手后再打板', '13:30 后换手充分再试板'),
+        '主升打板': ('可半路', '只打主升最强突破', '主线龙头放量突破分时前高'),
+        '回封确认': ('可半路', '炸板后只做强回封', '开板后再度回封且队友不掉队'),
+        '竞价确认': ('竞价确认', '次日竞价确认', '竞价高开 2%-5% 且队友不弱'),
+        '观察': ('观察', '等待更强信号', '等待龙头与主线重新共振'),
+    }
+    trade_status, entry_plan, entry_trigger = mapping.get(entry_model, mapping['观察'])
+    if closed_phase and trade_status in {'可低吸', '可半路'}:
+        trade_status = '竞价确认'
+    return {
+        'tradeStatus': trade_status,
+        'entryPlan': entry_plan if trade_status != '竞价确认' else '次日竞价确认',
+        'entryTrigger': entry_trigger,
+    }
+
+
+def _qiao_position_ratio(
+    *,
+    code: str,
+    gate_status: str,
+    leader_type: str,
+    entry_model: str,
+    market_cap_yi: float,
+) -> str:
+    if gate_status == '空仓等待':
+        return '0-1/16观察'
+
+    high_volatility = code.startswith(('30', '68', '8', '9'))
+    if high_volatility:
+        return '1/16'
+
+    if leader_type == '总龙头' and entry_model in {'下午换手板', '主升打板', '回封确认'} and market_cap_yi >= 80:
+        return '1/6'
+    if entry_model in {'5日线低吸', '10日线低吸', '分歧回流'}:
+        return '1/8'
+    return '1/8'
+
+
+def _qiao_labels(
+    *,
+    leader_type: str,
+    selection_type: str,
+    entry_model: str,
+    stage: str,
+    volume_ratio: float,
+    sector_rank: int,
+    gate_status: str,
+) -> List[str]:
+    labels: List[str] = []
+    if leader_type in {'总龙头', '板块龙头'}:
+        labels.append('只做龙头')
+    else:
+        labels.append('只做最强')
+
+    if stage == '主升':
+        labels.append('主升浪')
+    if entry_model == '5日线低吸':
+        labels.extend(['龙头低吸', '5日线低吸'])
+    elif entry_model == '10日线低吸':
+        labels.extend(['龙头低吸', '10日线低吸'])
+    elif entry_model == '分歧回流':
+        labels.append('分歧回流')
+    elif entry_model == '下午换手板':
+        labels.append('下午换手板')
+    elif entry_model == '主升打板':
+        labels.append('量能放大')
+    elif entry_model == '回封确认':
+        labels.append('回封确认')
+
+    labels.append('次日必卖')
+    labels.append('跟随不预判')
+    if gate_status == '空仓等待':
+        labels.append('退潮回避')
+    if sector_rank <= 2:
+        labels.append('大众情人')
+    if volume_ratio >= 1.8:
+        labels.append('有量才安全')
+    if selection_type == '切换预备':
+        labels.append('切换预备')
+
+    seen = set()
+    deduped = []
+    for label in labels:
+        text = str(label or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped[:7]
+
+
+def _qiao_matched_rules(item: Dict[str, Any]) -> List[Dict[str, str]]:
+    rules = [
+        {
+            'title': '时间锚定',
+            'detail': f"{item.get('timeAnchorPhase', '当前时段')}｜{item.get('timeAnchorWindow', '等待更强信号')}",
+        },
+        {
+            'title': '龙头路径',
+            'detail': f"{item.get('selectionType', '待观察')}｜{item.get('leaderType', '待观察')}｜{item.get('sector', '待观察')}",
+        },
+        {
+            'title': '入场模型',
+            'detail': f"{item.get('entryModel', '待观察')}｜{item.get('entryTrigger', '等待触发')}",
+        },
+        {
+            'title': '均线/量能',
+            'detail': f"{item.get('maSupportSummary', '均线待观察')}｜量比 {float(item.get('volumeRatio') or 0):.2f}",
+        },
+        {
+            'title': '次日纪律',
+            'detail': item.get('nextDaySellPlan', '买完第二天除非涨停，必卖。'),
+        },
+    ]
+    return [rule for rule in rules if rule.get('title') and rule.get('detail')]
+
+
+def _build_qiao_execution_artifacts(search_data: str = '', overview_text: str = '') -> Dict[str, Any]:
+    from market_data import _ak_eastmoney_direct, _get_ak
+
+    today = datetime.now().strftime('%Y%m%d')
+    today_df = _pd.DataFrame()
+
+    try:
+        with _ak_eastmoney_direct():
+            today_df = _get_ak().stock_zt_pool_em(date=today)
+    except Exception as exc:
+        logger.warning('[Qiao] 今日涨停池获取失败: %s', exc)
+
+    scan_candidates = _collect_latest_scan_candidates()
+    scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
+
+    today_sector_counts: Dict[str, int] = {}
+    sector_leader_rows: Dict[str, List[Dict[str, Any]]] = {}
+    leader_height = 0
+    board_candidates: List[Dict[str, Any]] = []
+
+    if today_df is not None and not today_df.empty:
+        for _, row in today_df.iterrows():
+            row_dict = row.to_dict()
+            code = _normalize_code6(row_dict.get('代码'))
+            if not code:
+                continue
+            scan_row = scan_map.get(code, {})
+            sector = str(row_dict.get('所属行业') or scan_row.get('sector') or '').strip()
+            if sector:
+                today_sector_counts[sector] = today_sector_counts.get(sector, 0) + 1
+            consecutive_days = _safe_int_num(row_dict.get('连板数') or 1)
+            leader_height = max(leader_height, consecutive_days)
+            item = {
+                'code': code,
+                'name': str(row_dict.get('名称') or scan_row.get('name') or code),
+                'sector': sector,
+                'price': round(_safe_float_num(row_dict.get('最新价')), 2),
+                'changePct': round(_safe_float_num(row_dict.get('涨跌幅')), 2),
+                'score': int(scan_row.get('total_score') or scan_row.get('score') or min(99, 68 + consecutive_days * 5 + today_sector_counts.get(sector, 0) * 2)),
+                'grade': str(scan_row.get('grade') or ('S' if consecutive_days >= 3 else 'A' if consecutive_days >= 2 else 'B')),
+                'consecutiveDays': consecutive_days,
+                'firstSealTime': _format_clock_hhmm(row_dict.get('首次封板时间')),
+                'firstSealInt': _clock_to_int(row_dict.get('首次封板时间')),
+                'lastSealTime': _format_clock_hhmm(row_dict.get('最后封板时间') or row_dict.get('首次封板时间')),
+                'lastSealInt': _clock_to_int(row_dict.get('最后封板时间') or row_dict.get('首次封板时间')),
+                'brokenBoardCount': _safe_int_num(row_dict.get('炸板次数')),
+                'turnoverRate': round(_safe_float_num(row_dict.get('换手率')), 2),
+                'sealAmountYi': _to_yi(row_dict.get('封板资金')),
+                'marketCapYi': _to_yi(row_dict.get('流通市值')),
+                'volumeRatio': round(_safe_float_num(scan_row.get('volume_ratio') if scan_row.get('volume_ratio') is not None else scan_row.get('volumeRatio')), 2),
+            }
+            board_candidates.append(item)
+            sector_leader_rows.setdefault(sector, []).append(item)
+
+    scan_sector_counts: Dict[str, int] = {}
+    scan_sector_scores: Dict[str, float] = {}
+    scan_sector_rank_map: Dict[str, int] = {}
+    scan_sector_members: Dict[str, List[Dict[str, Any]]] = {}
+    for scan_row in scan_candidates:
+        sector = str(scan_row.get('sector') or scan_row.get('sector_name') or '').strip()
+        code = _normalize_code6(scan_row.get('code'))
+        if not sector or not code:
+            continue
+        scan_sector_counts[sector] = scan_sector_counts.get(sector, 0) + 1
+        scan_sector_scores[sector] = scan_sector_scores.get(sector, 0.0) + _safe_float_num(scan_row.get('total_score') or scan_row.get('score'))
+        scan_sector_members.setdefault(sector, []).append(scan_row)
+
+    for sector, members in scan_sector_members.items():
+        ranked = sorted(
+            members,
+            key=lambda one: (
+                _normalize_scan_pct_change(one.get('pct_change')),
+                _safe_float_num(one.get('total_score') or one.get('score')),
+                _safe_float_num(one.get('volume_ratio') if one.get('volume_ratio') is not None else one.get('volumeRatio')),
+            ),
+            reverse=True,
+        )
+        for idx, one in enumerate(ranked, 1):
+            code = _normalize_code6(one.get('code'))
+            if code:
+                scan_sector_rank_map[code] = idx
+
+    theme_scores: List[Dict[str, Any]] = []
+    for sector in sorted(set(list(today_sector_counts.keys()) + list(scan_sector_counts.keys()))):
+        score = today_sector_counts.get(sector, 0) * 3 + scan_sector_counts.get(sector, 0)
+        score += min(3.0, scan_sector_scores.get(sector, 0.0) / 180.0)
+        theme_scores.append({
+            'name': sector,
+            'score': round(score, 2),
+            'limitUps': today_sector_counts.get(sector, 0),
+            'scanCount': scan_sector_counts.get(sector, 0),
+        })
+    theme_scores.sort(key=lambda item: (item['score'], item['limitUps'], item['scanCount']), reverse=True)
+
+    main_theme = theme_scores[0] if theme_scores else {'name': '待观察', 'score': 0, 'limitUps': 0, 'scanCount': 0}
+    backup_theme = theme_scores[1] if len(theme_scores) > 1 else {'name': '待观察', 'score': 0, 'limitUps': 0, 'scanCount': 0}
+
+    market_gate = _build_qiao_market_gate(
+        overview_text,
+        search_data,
+        today_count=len(today_df) if today_df is not None else 0,
+        leader_height=leader_height,
+        main_theme_count=int(main_theme.get('limitUps') or 0),
+    )
+    time_anchor = _build_qiao_time_anchor()
+    main_stage = str(market_gate.get('stage') or '待观察')
+
+    board_by_code: Dict[str, Dict[str, Any]] = {}
+    for item in board_candidates:
+        sector = str(item.get('sector') or '').strip()
+        sector_rank = 1
+        if sector:
+            ranked_rows = sorted(
+                sector_leader_rows.get(sector, []),
+                key=lambda one: (
+                    int(one.get('consecutiveDays') or 0),
+                    float(one.get('sealAmountYi') or 0),
+                    float(one.get('score') or 0),
+                ),
+                reverse=True,
+            )
+            for idx, row in enumerate(ranked_rows, 1):
+                if row.get('code') == item.get('code'):
+                    sector_rank = idx
+                    break
+        item['sectorRank'] = sector_rank
+        if sector == main_theme.get('name') and sector_rank == 1 and int(item.get('consecutiveDays') or 0) == leader_height and leader_height >= 2:
+            leader_type = '总龙头'
+            selection_type = '主线龙头'
+        elif sector == main_theme.get('name') and sector_rank == 1:
+            leader_type = '板块龙头'
+            selection_type = '主线龙头'
+        elif sector == backup_theme.get('name') and sector_rank == 1:
+            leader_type = '切换预备龙头'
+            selection_type = '切换预备'
+        else:
+            leader_type = '高辨识度跟随'
+            selection_type = '高辨识度跟随'
+
+        if item.get('brokenBoardCount'):
+            entry_model = '回封确认'
+        elif int(item.get('firstSealInt') or 0) >= 133000 and float(item.get('turnoverRate') or 0) >= 5:
+            entry_model = '下午换手板'
+        else:
+            entry_model = '主升打板'
+
+        item.update({
+            'leaderType': leader_type,
+            'selectionType': selection_type,
+            'stage': main_stage,
+            'entryModel': entry_model,
+            'tradeStatus': '龙头样本',
+            'entryPlan': '龙头样本观察',
+            'entryTrigger': '仅作主线强度样本',
+            'timeAnchorPhase': time_anchor.get('phase', ''),
+            'timeAnchorWindow': time_anchor.get('window', ''),
+            'nextDaySellPlan': '买完第二天除非涨停，必卖；若转弱更要先走。',
+            'maSupportSummary': '涨停样本，均线低吸意义较弱',
+            'classificationReason': (
+                f"{sector or '待观察'}｜{leader_type}｜连板 {int(item.get('consecutiveDays') or 0)}｜"
+                f"首封 {item.get('firstSealTime', '待观察')}"
+            ),
+            'reason': (
+                f"{selection_type}｜{leader_type}｜当前阶段 {main_stage}｜"
+                f"更适合作为主线强度样本与次日预案锚点。"
+            ),
+            'matchedRules': [],
+        })
+        item['labels'] = _qiao_labels(
+            leader_type=leader_type,
+            selection_type=selection_type,
+            entry_model=entry_model,
+            stage=main_stage,
+            volume_ratio=float(item.get('volumeRatio') or 0),
+            sector_rank=int(item.get('sectorRank') or 99),
+            gate_status=market_gate.get('status', '轻仓试错'),
+        )
+        item['matchedRules'] = _qiao_matched_rules(item)
+        board_by_code[item['code']] = item
+
+    leader_candidates = sorted(
+        board_candidates,
+        key=lambda item: (
+            1 if item.get('leaderType') == '总龙头' else 0,
+            1 if item.get('leaderType') == '板块龙头' else 0,
+            int(item.get('consecutiveDays') or 0),
+            float(item.get('score') or 0),
+        ),
+        reverse=True,
+    )[:8]
+
+    main_leader = leader_candidates[0] if leader_candidates else {
+        'code': '',
+        'name': '待观察',
+        'leaderType': '待观察',
+    }
+
+    actionable_candidates: List[Dict[str, Any]] = []
+    for scan_row in scan_candidates:
+        code = _normalize_code6(scan_row.get('code'))
+        if not code:
+            continue
+        sector = str(scan_row.get('sector') or scan_row.get('sector_name') or '').strip()
+        score = int(scan_row.get('total_score') or scan_row.get('score') or 0)
+        pct_change = _normalize_scan_pct_change(scan_row.get('pct_change'))
+        volume_ratio = _safe_float_num(scan_row.get('volume_ratio') if scan_row.get('volume_ratio') is not None else scan_row.get('volumeRatio'))
+        market_cap_yi = _to_yi(scan_row.get('market_cap') or scan_row.get('marketCap') or 0)
+        sector_rank = int(scan_sector_rank_map.get(code, 999))
+        if pct_change <= -6 or pct_change >= 9.8:
+            continue
+        if score < 70:
+            continue
+        if sector not in {main_theme.get('name'), backup_theme.get('name')} and score < 82:
+            continue
+
+        board_sample = board_by_code.get(code, {})
+        ma_snapshot = _qiao_fetch_ma_snapshot(
+            code,
+            latest_price=scan_row.get('close') or scan_row.get('price'),
+        )
+
+        if code == main_leader.get('code'):
+            leader_type = '总龙头' if main_leader.get('leaderType') == '总龙头' else '板块龙头'
+            selection_type = '主线龙头'
+        elif sector == main_theme.get('name') and sector_rank == 1:
+            leader_type = '板块龙头'
+            selection_type = '主线龙头'
+        elif sector == backup_theme.get('name') and sector_rank <= 2:
+            leader_type = '切换预备龙头'
+            selection_type = '切换预备'
+        else:
+            leader_type = '高辨识度跟随'
+            selection_type = '高辨识度跟随'
+
+        if board_sample.get('entryModel') == '回封确认':
+            entry_model = '回封确认'
+        elif ma_snapshot.get('nearMa5') and main_stage in {'发酵', '主升'} and -3.5 <= pct_change <= 4.5:
+            entry_model = '5日线低吸'
+        elif ma_snapshot.get('nearMa10') and main_stage in {'启动', '发酵', '主升'} and -5.5 <= pct_change <= 2.5:
+            entry_model = '10日线低吸'
+        elif time_anchor.get('phaseCode') == 'dip_reflow' and volume_ratio >= 1.2 and -2.5 <= pct_change <= 5.0:
+            entry_model = '分歧回流'
+        elif time_anchor.get('phaseCode') == 'afternoon_board' and 4.5 <= pct_change <= 9.5 and volume_ratio >= 1.4:
+            entry_model = '下午换手板'
+        elif pct_change >= 6.5 and volume_ratio >= 1.6:
+            entry_model = '主升打板'
+        elif time_anchor.get('phaseCode') in {'after_close', 'preopen', 'auction', 'tail_review'}:
+            entry_model = '竞价确认'
+        else:
+            entry_model = '观察'
+
+        plan = _qiao_entry_plan_from_model(
+            entry_model,
+            phase_code=time_anchor.get('phaseCode', ''),
+            gate_status=market_gate.get('status', '轻仓试错'),
+        )
+        position_ratio = _qiao_position_ratio(
+            code=code,
+            gate_status=market_gate.get('status', '轻仓试错'),
+            leader_type=leader_type,
+            entry_model=entry_model,
+            market_cap_yi=market_cap_yi,
+        )
+        next_day_sell_plan = (
+            '买完第二天除非继续涨停，否则优先冲高兑现；弱开弱走直接撤。'
+            if entry_model in {'下午换手板', '主升打板', '回封确认'}
+            else '买完第二天除非涨停必卖，分时走弱不格局。'
+        )
+        labels = _qiao_labels(
+            leader_type=leader_type,
+            selection_type=selection_type,
+            entry_model=entry_model,
+            stage=main_stage,
+            volume_ratio=volume_ratio,
+            sector_rank=sector_rank,
+            gate_status=market_gate.get('status', '轻仓试错'),
+        )
+
+        classification_reason = (
+            f"{sector or '待观察'}｜{leader_type}｜{ma_snapshot.get('maSupportSummary', '均线待观察')}｜"
+            f"量比 {volume_ratio:.2f}｜评分 {score}"
+        )
+        reason = (
+            f"{selection_type}｜{leader_type}｜当前阶段 {main_stage}｜"
+            f"{entry_model}｜{classification_reason}｜"
+            f"{'主线题材优先' if sector == main_theme.get('name') else '作为切换预备保留'}。"
+        )
+        item = {
+            'code': code,
+            'name': str(scan_row.get('name') or code),
+            'sector': sector,
+            'price': round(_safe_float_num(scan_row.get('close') or scan_row.get('price')), 2),
+            'changePct': round(pct_change, 2),
+            'score': score,
+            'grade': str(scan_row.get('grade') or ('S' if score >= 82 else 'A' if score >= 74 else 'B')),
+            'adviseType': '龙头主升',
+            'leaderType': leader_type,
+            'selectionType': selection_type,
+            'stage': main_stage,
+            'tradeStatus': plan['tradeStatus'],
+            'entryPlan': plan['entryPlan'],
+            'entryModel': entry_model,
+            'entryTrigger': plan['entryTrigger'],
+            'positionRatio': position_ratio,
+            'holdPeriod': '1-2 天超短，次日不涨停优先兑现',
+            'buyRange': (
+                '围绕 5/10 日线、分时均线或分歧回流点分批介入'
+                if entry_model in {'5日线低吸', '10日线低吸', '分歧回流'}
+                else '只在回封、分时前高突破或换手充分后跟随'
+            ),
+            'stopLoss': '跌破承接位、均线失守或主线掉队就撤',
+            'nextDaySellPlan': next_day_sell_plan,
+            'targetPrice': '次日优先看冲高兑现与是否继续涨停',
+            'riskLevel': '低' if entry_model in {'5日线低吸', '10日线低吸'} else '中',
+            'signal': f'{selection_type}/{entry_model}/{plan["tradeStatus"]}',
+            'reason': reason,
+            'classificationReason': classification_reason,
+            'meta': (
+                f"评分 {score}｜量比 {volume_ratio:.2f}｜板块热度 {int(main_theme.get('score') or 0)}｜"
+                f"{ma_snapshot.get('maSupportSummary', '均线待观察')}"
+            ),
+            'labels': labels,
+            'matchedRules': [],
+            'ma5': ma_snapshot.get('ma5', 0),
+            'ma10': ma_snapshot.get('ma10', 0),
+            'ma20': ma_snapshot.get('ma20', 0),
+            'maSupportSummary': ma_snapshot.get('maSupportSummary', ''),
+            'volumeRatio': round(volume_ratio, 2),
+            'marketCapYi': market_cap_yi,
+            'timeAnchorPhase': time_anchor.get('phase', ''),
+            'timeAnchorWindow': time_anchor.get('window', ''),
+            'actionableNow': plan['tradeStatus'] in {'可低吸', '可半路'} and market_gate.get('status') != '空仓等待',
+        }
+        item['matchedRules'] = _qiao_matched_rules(item)
+        actionable_candidates.append(item)
+
+    actionable_candidates.sort(
+        key=lambda item: (
+            1 if item.get('actionableNow') else 0,
+            1 if item.get('selectionType') == '主线龙头' else 0,
+            1 if item.get('leaderType') in {'总龙头', '板块龙头'} else 0,
+            float(item.get('score') or 0),
+            float(item.get('volumeRatio') or 0),
+            float(item.get('changePct') or 0),
+        ),
+        reverse=True,
+    )
+
+    recommended = [item for item in actionable_candidates if item.get('tradeStatus') != '观察'][:3]
+    if not recommended:
+        recommended = actionable_candidates[:3]
+
+    entry_model_counts: Dict[str, int] = {}
+    leader_type_counts: Dict[str, int] = {}
+    label_counts: Dict[str, int] = {}
+    for item in actionable_candidates:
+        entry_model = str(item.get('entryModel') or '').strip()
+        leader_type = str(item.get('leaderType') or '').strip()
+        if entry_model:
+            entry_model_counts[entry_model] = entry_model_counts.get(entry_model, 0) + 1
+        if leader_type:
+            leader_type_counts[leader_type] = leader_type_counts.get(leader_type, 0) + 1
+        for label in item.get('labels') or []:
+            text = str(label or '').strip()
+            if text:
+                label_counts[text] = label_counts.get(text, 0) + 1
+
+    entry_playbook_defs = [
+        ('5日线低吸', '强势龙头回踩 5 日线时低吸，买在转折。'),
+        ('10日线低吸', '更深一层的分歧吸，要求主升未坏。'),
+        ('分歧回流', '早盘分歧后重新放量转强，回流才出手。'),
+        ('下午换手板', '偏爱充分换手后的下午板，抛压更小。'),
+        ('主升打板', '只打主升最强，不打模式外杂毛板。'),
+        ('回封确认', '炸板后回封更看承接与队友。'),
+    ]
+    entry_playbook = [
+        {
+            'type': name,
+            'count': entry_model_counts.get(name, 0),
+            'description': desc,
+        }
+        for name, desc in entry_playbook_defs
+    ]
+
+    leader_paths_defs = [
+        ('总龙头', '市场总辨识度最高，主线最强承载。'),
+        ('板块龙头', '所属主线板块的第一强票。'),
+        ('高辨识度跟随', '不是绝对龙头，但市场认知度高。'),
+        ('切换预备龙头', '次主线里可能走出来的预备选手。'),
+    ]
+    leader_paths = [
+        {
+            'type': name,
+            'count': leader_type_counts.get(name, 0),
+            'description': desc,
+        }
+        for name, desc in leader_paths_defs
+    ]
+
+    cycle_map = [
+        {'stage': '启动', 'count': 1 if main_stage == '启动' else 0, 'description': '题材刚异动，先轻仓试错。'},
+        {'stage': '发酵', 'count': 1 if main_stage == '发酵' else 0, 'description': '联动增强，可逐步聚焦龙头。'},
+        {'stage': '主升', 'count': 1 if main_stage == '主升' else 0, 'description': '龙头最具盈亏比，分歧转强优先。'},
+        {'stage': '高潮', 'count': 1 if main_stage == '高潮' else 0, 'description': '一致性过强，更多偏兑现。'},
+        {'stage': '退潮', 'count': 1 if main_stage == '退潮' else 0, 'description': '高位风险释放，优先休息。'},
+    ]
+
+    label_hits = [
+        {'label': label, 'count': count}
+        for label, count in sorted(label_counts.items(), key=lambda one: (one[1], one[0]), reverse=True)[:12]
+    ]
+
+    daily_rule_hits = [
+        {
+            'title': '主线优先',
+            'status': main_theme.get('name', '待观察'),
+            'detail': f"当前主线优先看 {main_theme.get('name', '待观察')}，只在主线里找最强。",
+        },
+        {
+            'title': '只做主升',
+            'status': main_stage,
+            'detail': '调整段不硬做，退潮期宁可降低出手频率。',
+        },
+        {
+            'title': '只做龙头',
+            'status': main_leader.get('name', '待观察'),
+            'detail': f"{main_leader.get('leaderType', '待观察')}：{main_leader.get('name', '待观察')}({main_leader.get('code', '')})",
+        },
+        {
+            'title': '5/10 日线低吸',
+            'status': f"{entry_model_counts.get('5日线低吸', 0) + entry_model_counts.get('10日线低吸', 0)}只命中",
+            'detail': '只吸强势龙头，不吸冷门弱票。',
+        },
+        {
+            'title': '分歧回流',
+            'status': f"{entry_model_counts.get('分歧回流', 0)}只命中",
+            'detail': '分歧后能重新放量转强，才配叫买点。',
+        },
+        {
+            'title': '下午换手板',
+            'status': f"{entry_model_counts.get('下午换手板', 0)}只命中",
+            'detail': '偏爱充分换手后的下午板，追求更高确定性。',
+        },
+        {
+            'title': '次日必卖',
+            'status': '纪律常驻',
+            'detail': '买完第二天除非涨停，必卖。',
+        },
+        {
+            'title': '跟随不预判',
+            'status': market_gate.get('status', '待观察'),
+            'detail': market_gate.get('action', '等待更多市场确认'),
+        },
+    ]
+
+    main_judgement = {
+        'mainTheme': main_theme.get('name', '待观察'),
+        'backupTheme': backup_theme.get('name', '待观察'),
+        'stage': main_stage,
+        'leader': main_leader.get('name', '待观察'),
+        'leaderCode': main_leader.get('code', ''),
+        'summary': (
+            f"{main_theme.get('name', '待观察')} 当前更像主线，阶段偏 {main_stage}，"
+            f"优先看 {main_leader.get('name', '待观察')} 这一条龙头路径。"
+        ),
+        'reasons': [
+            f"主线强度：涨停 {int(main_theme.get('limitUps') or 0)} 只，扫描命中 {int(main_theme.get('scanCount') or 0)} 只",
+            f"次主线：{backup_theme.get('name', '待观察')}",
+            f"空间板：{leader_height} 连板",
+        ],
+    }
+
+    step_outputs = [
+        {
+            'step': 1,
+            'title': '主线识别',
+            'summary': f"当前主线更偏 {main_theme.get('name', '待观察')}，次主线看 {backup_theme.get('name', '待观察')}。",
+            'frameworkLines': [
+                '先找市场主线，再谈个股，不先看题材就不谈买点。',
+                '主线判断优先看涨停家数、板块联动、辨识度与市场关注度。',
+                '不能只说热门板块，必须明确谁是龙头、谁只是跟随。',
+            ],
+            'lines': [
+                main_judgement.get('summary', ''),
+                *main_judgement.get('reasons', [])[:2],
+            ],
+        },
+        {
+            'step': 2,
+            'title': '情绪阶段',
+            'summary': f"当前更偏 {main_stage}，市场闸门 {market_gate.get('status', '待观察')}。",
+            'frameworkLines': [
+                '启动 / 发酵 / 主升 / 高潮 / 退潮决定了能不能做、该怎么做。',
+                '主升阶段优先参与，高潮更重兑现，退潮优先休息。',
+                '行情好，多做；行情不好，多休息。',
+            ],
+            'lines': list(market_gate.get('reasons') or [])[:3],
+        },
+        {
+            'step': 3,
+            'title': '龙头路径',
+            'summary': f"总龙头看 {main_leader.get('name', '待观察')}，只做龙头或最强跟随。",
+            'frameworkLines': [
+                '龙头是走出来的，不是预判出来的。',
+                '只做总龙头、板块龙头、高辨识度跟随与切换预备龙头。',
+                '模式外的弱票不参与，避免浪费仓位与注意力。',
+            ],
+            'lines': [
+                f"{item.get('name','')}({item.get('code','')})｜{item.get('leaderType','待观察')}｜{item.get('selectionType','待观察')}｜{item.get('sector','待观察')}"
+                for item in leader_candidates[:4]
+            ] or ['暂无清晰龙头路径，优先等待主线明确。'],
+        },
+        {
+            'step': 4,
+            'title': '入场模型',
+            'summary': f"优先 {time_anchor.get('executionFocus', '待观察')}，当前可买 {len(actionable_candidates)} 只。",
+            'frameworkLines': [
+                '核心模型只有 5日线低吸 / 10日线低吸 / 分歧回流 / 下午换手板 / 主升打板 / 回封确认。',
+                '低吸是买在转折，打板是买在确认，二者都服务于主升龙头。',
+                '有量才安全，无量不上，无量不追。',
+            ],
+            'lines': [
+                f"{item.get('name','')}({item.get('code','')})｜{item.get('entryModel','待观察')}｜{item.get('tradeStatus','待观察')}｜{item.get('maSupportSummary','均线待观察')}"
+                for item in actionable_candidates[:4]
+            ] or ['当前没有可执行的主线龙头模型，继续等待。'],
+        },
+        {
+            'step': 5,
+            'title': '次日卖出',
+            'summary': '买完第二天除非涨停，必卖；走弱就卖，不格局。',
+            'frameworkLines': [
+                '超短的核心不是恋战，而是次日纪律极强。',
+                '不及预期就走，弱开弱走更要快。',
+                '跑得快，是杜绝大亏的前提。',
+            ],
+            'lines': [
+                f"{item.get('name','')}({item.get('code','')})｜{item.get('nextDaySellPlan','待观察')}"
+                for item in recommended[:3]
+            ] or ['没有进入执行模式的个股时，不提前编造卖点。'],
+        },
+    ]
+
+    market_commentary = (
+        f"主线偏 {main_theme.get('name','待观察')}，阶段 {main_stage}，龙头看 {main_leader.get('name','待观察')}。"
+        if main_theme.get('name') and main_theme.get('name') != '待观察'
+        else '主线尚不清晰，先等最强方向自己走出来。'
+    )
+    if market_gate.get('status') == '放行':
+        position_advice = f"{time_anchor.get('phase','当前时段')}可重点参与，优先龙头低吸与下午换手板。"
+    elif market_gate.get('status') == '轻仓试错':
+        position_advice = f"{time_anchor.get('phase','当前时段')}轻仓试错，只做最强龙头与分歧转强。"
+    else:
+        position_advice = f"{time_anchor.get('phase','当前时段')}以等待为主，不做主观抄底。"
+    risk_warning = '退潮期硬做、预判式买入、模式外弱票，是回撤的主要来源。'
+
+    return {
+        'kind': 'qiao',
+        'version': 'v1',
+        'generatedAt': datetime.now().isoformat(),
+        'stats': {
+            'todayLimitUps': len(today_df) if today_df is not None else 0,
+            'leaderCount': len(leader_candidates),
+            'actionableCount': len(actionable_candidates),
+            'lowAbsorbCount': entry_model_counts.get('5日线低吸', 0) + entry_model_counts.get('10日线低吸', 0),
+            'boardModelCount': entry_model_counts.get('下午换手板', 0) + entry_model_counts.get('主升打板', 0) + entry_model_counts.get('回封确认', 0),
+            'marketGateStatus': market_gate.get('status'),
+        },
+        'marketGate': market_gate,
+        'timeAnchor': time_anchor,
+        'mainTheme': {
+            'name': main_theme.get('name', '待观察'),
+            'stage': main_stage,
+            'strength': '强' if market_gate.get('status') == '放行' else '中' if market_gate.get('status') == '轻仓试错' else '弱',
+        },
+        'backupTheme': {
+            'name': backup_theme.get('name', '待观察'),
+            'reason': f"当前次主线更偏 {backup_theme.get('name', '待观察')}，可作为切换预备。",
+        },
+        'mainLeader': {
+            'code': main_leader.get('code', ''),
+            'name': main_leader.get('name', '待观察'),
+            'leaderType': main_leader.get('leaderType', '待观察'),
+        },
+        'entryStyle': time_anchor.get('executionFocus', ''),
+        'sellDiscipline': '买完第二天除非涨停，必卖',
+        'strategyPanels': {
+            'timeAnchor': time_anchor,
+            'mainJudgement': main_judgement,
+            'cycleMap': cycle_map,
+            'leaderPaths': leader_paths,
+            'entryPlaybook': entry_playbook,
+            'labelHits': label_hits,
+            'dailyRuleHits': daily_rule_hits,
+        },
+        'leaderCandidates': leader_candidates,
+        'actionableCandidates': actionable_candidates[:8],
+        'recommendedStocks': recommended,
+        'stepOutputs': step_outputs,
+        'marketCommentary': market_commentary,
+        'positionAdvice': position_advice,
+        'riskWarning': risk_warning,
+        'searchDataPreview': (search_data or '')[:1200],
+    }
+
+
+def _build_qiao_execution_context_text(artifacts: Dict[str, Any]) -> str:
+    if not artifacts:
+        return '【暂无乔帮主执行工件】'
+
+    stats = artifacts.get('stats', {})
+    market_gate = artifacts.get('marketGate', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    main_theme = artifacts.get('mainTheme', {})
+    backup_theme = artifacts.get('backupTheme', {})
+    main_leader = artifacts.get('mainLeader', {})
+    lines = [
+        '## 乔帮主执行工件（系统预处理）',
+        f"- 时间锚点：{time_anchor.get('phase', '待观察')}｜{time_anchor.get('window', '等待更多信号')}",
+        f"- 市场闸门：{market_gate.get('status', '待观察')}｜{market_gate.get('action', '等待更多信号')}",
+        f"- 当前主线：{main_theme.get('name', '待观察')}｜阶段 {main_theme.get('stage', '待观察')}",
+        f"- 次主线：{backup_theme.get('name', '待观察')}",
+        f"- 当前龙头：{main_leader.get('name', '待观察')}({main_leader.get('code', '')})｜{main_leader.get('leaderType', '待观察')}",
+        f"- 主线样本：{stats.get('leaderCount', 0)} 只",
+        f"- 可买候选：{stats.get('actionableCount', 0)} 只",
+        '',
+        '### 乔帮主当前偏好的可买候选',
+    ]
+    for item in artifacts.get('actionableCandidates', [])[:6]:
+        lines.append(
+            f"- {item.get('name','')}({item.get('code','')})｜{item.get('selectionType','待观察')}｜"
+            f"{item.get('leaderType','待观察')}｜{item.get('entryModel','待观察')}｜"
+            f"{item.get('tradeStatus','待观察')}｜{item.get('maSupportSummary','均线待观察')}｜"
+            f"{' / '.join((item.get('labels') or [])[:3])}"
+        )
+    if not artifacts.get('actionableCandidates'):
+        for item in artifacts.get('leaderCandidates', [])[:4]:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('leaderType','待观察')}｜"
+                f"{item.get('selectionType','待观察')}｜{item.get('entryModel','待观察')}｜"
+                f"{item.get('nextDaySellPlan','待观察')}"
+            )
+    return '\n'.join(lines)
+
+
+def _build_qiao_fallback_structured(artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    recommended = list(artifacts.get('recommendedStocks') or [])
+    return {
+        'agentId': 'qiao',
+        'agentName': '乔帮主',
+        'stance': 'bull' if recommended else 'neutral',
+        'confidence': 80 if recommended else 54,
+        'marketCommentary': artifacts.get('marketCommentary', ''),
+        'positionAdvice': artifacts.get('positionAdvice', ''),
+        'riskWarning': artifacts.get('riskWarning', ''),
+        'mainTheme': artifacts.get('mainTheme', {}),
+        'backupTheme': artifacts.get('backupTheme', {}),
+        'mainLeader': artifacts.get('mainLeader', {}),
+        'entryStyle': artifacts.get('entryStyle', ''),
+        'sellDiscipline': artifacts.get('sellDiscipline', ''),
+        'recommendedStocks': recommended,
+    }
+
+
+def _merge_qiao_structured(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(structured or {})
+    recommended = list(merged.get('recommendedStocks') or [])
+    candidate_sources = (
+        list(artifacts.get('recommendedStocks') or [])
+        + list(artifacts.get('actionableCandidates') or [])
+        + list(artifacts.get('leaderCandidates') or [])
+    )
+    candidates_by_code = {
+        _normalize_code6(item.get('code')): item
+        for item in candidate_sources
+        if _normalize_code6(item.get('code'))
+    }
+
+    merged_recs = []
+    for item in recommended:
+        code = _normalize_code6(item.get('code'))
+        candidate = candidates_by_code.get(code, {})
+        one = dict(candidate) if candidate else {}
+        one.update(item)
+        for key, value in candidate.items():
+            one.setdefault(key, value)
+        if code:
+            one['code'] = code
+        merged_recs.append(one)
+
+    artifact_recommended = list(artifacts.get('recommendedStocks') or [])
+    merged['recommendedStocks'] = artifact_recommended[:3] if artifact_recommended else merged_recs[:3]
+    merged['mainTheme'] = merged.get('mainTheme') or artifacts.get('mainTheme', {})
+    merged['backupTheme'] = merged.get('backupTheme') or artifacts.get('backupTheme', {})
+    merged['mainLeader'] = merged.get('mainLeader') or artifacts.get('mainLeader', {})
+    merged['entryStyle'] = merged.get('entryStyle') or artifacts.get('entryStyle', '')
+    merged['sellDiscipline'] = merged.get('sellDiscipline') or artifacts.get('sellDiscipline', '')
+    merged['personaExecution'] = {
+        'kind': 'qiao',
+        'version': artifacts.get('version', 'v1'),
+        'coreObjective': '只做主线龙头与主升机会，在分歧转强处低吸或打板，次日严格兑现',
+        'stats': artifacts.get('stats', {}),
+        'marketGate': artifacts.get('marketGate', {}),
+        'timeAnchor': artifacts.get('timeAnchor', {}),
+        'mainTheme': artifacts.get('mainTheme', {}),
+        'backupTheme': artifacts.get('backupTheme', {}),
+        'mainLeader': artifacts.get('mainLeader', {}),
+        'entryStyle': artifacts.get('entryStyle', ''),
+        'sellDiscipline': artifacts.get('sellDiscipline', ''),
+        'strategyPanels': artifacts.get('strategyPanels', {}),
+        'leaderCandidates': artifacts.get('leaderCandidates', []),
+        'actionableCandidates': artifacts.get('actionableCandidates', []),
+        'stepOutputs': artifacts.get('stepOutputs', []),
+    }
+
+    if not str(merged.get('marketCommentary') or '').strip():
+        merged['marketCommentary'] = artifacts.get('marketCommentary', '')
+    if not str(merged.get('positionAdvice') or '').strip():
+        merged['positionAdvice'] = artifacts.get('positionAdvice', '')
+    if not str(merged.get('riskWarning') or '').strip():
+        merged['riskWarning'] = artifacts.get('riskWarning', '')
+
+    return merged
+
+
+def _build_qiao_markdown_summary(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> str:
+    market_gate = artifacts.get('marketGate', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    main_theme = artifacts.get('mainTheme', {})
+    main_leader = artifacts.get('mainLeader', {})
+    lines = [
+        f"【时间锚点】{time_anchor.get('phase','待观察')}｜{time_anchor.get('window','等待更多信号')}",
+        f"【市场闸门】{market_gate.get('status','待观察')}｜{market_gate.get('action','等待更多信号')}",
+        f"【主线判断】{main_theme.get('name','待观察')}｜阶段 {main_theme.get('stage','待观察')}｜龙头 {main_leader.get('name','待观察')}",
+        f"【市场解读】{structured.get('marketCommentary') or artifacts.get('marketCommentary') or '主线尚未完全明确'}",
+        f"【仓位建议】{structured.get('positionAdvice') or artifacts.get('positionAdvice') or '轻仓试错，优先主线龙头'}",
+        f"【风险提示】{structured.get('riskWarning') or artifacts.get('riskWarning') or '预判式买入和退潮硬做最伤'}",
+    ]
+    recs = (structured.get('recommendedStocks') or [])[:3]
+    if recs:
+        lines.append('【重点候选】')
+        for item in recs:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('selectionType','待观察')}｜"
+                f"{item.get('leaderType','待观察')}｜{item.get('entryModel') or item.get('entryPlan','观察')}｜"
+                f"{item.get('nextDaySellPlan') or item.get('reason') or item.get('meta') or ''}｜"
+                f"{' / '.join((item.get('labels') or [])[:3])}"
+            )
+    return '\n'.join(lines)
+
+
+def _build_jia_time_anchor(now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or datetime.now()
+    hhmm = now.hour * 100 + now.minute
+    label = now.strftime('%H:%M')
+
+    if hhmm < 925:
+        return {
+            'phaseCode': 'preopen',
+            'phase': '盘前情绪预案',
+            'window': f'{label}｜先定情绪，再定龙头，不做脱离周期的预判',
+            'summary': '盘前先锁定情绪阶段、主流题材和龙头结构，原则上不提前抢主观先手。',
+            'executionFocus': '情绪定档与龙头预备',
+            'positionBias': '不开新仓，最多保留观察仓',
+            'rules': [
+                '先看赚钱效应，再谈交易机会。',
+                '盘前只做预案，不做脱离市场的信仰单。',
+                '先列主线、龙头、切换候选，再等竞价确认。',
+            ],
+        }
+    if hhmm < 930:
+        return {
+            'phaseCode': 'auction',
+            'phase': '竞价定强弱',
+            'window': f'{label}｜看龙头竞价、看队友强弱、看是否延续赚钱效应',
+            'summary': '竞价阶段重点验证主流题材是否延续，龙头与队友是否继续占据资金焦点。',
+            'executionFocus': '竞价确认，不做竞价梭哈',
+            'positionBias': '轻仓确认，等盘面自己说话',
+            'rules': [
+                '竞价强不等于全天强，但竞价弱往往意味着先别急。',
+                '队友强，龙头一般竞价也不会太差。',
+                '竞价只做方向确认，不把竞价当全部答案。',
+            ],
+        }
+    if hhmm < 1030:
+        return {
+            'phaseCode': 'morning_anchor',
+            'phase': '早盘龙头定锚',
+            'window': f'{label}｜优先确认谁是最强，谁只是跟风',
+            'summary': '早盘是给情绪定档、给龙头定锚的关键窗口，弱票与伪强应尽早剔除。',
+            'executionFocus': '龙头定锚与强弱切割',
+            'positionBias': '只做最强，不在杂毛里找补涨',
+            'rules': [
+                '只围绕主流题材里的最强龙头展开。',
+                '跟风再好看，也不如龙头抗分歧。',
+                '退潮感增强时，宁可放弃也不硬做。',
+            ],
+        }
+    if hhmm < 1400:
+        return {
+            'phaseCode': 'divergence_buy',
+            'phase': '分歧试错',
+            'window': f'{label}｜只在分歧低吸、真回封与反包确认里找机会',
+            'summary': '午前到午后早段更适合做分歧低吸、真回封打板与反包确认，不追一致性末端。',
+            'executionFocus': '分歧低吸 / 真回封 / 反包确认',
+            'positionBias': '围绕最强龙头试错，不做补涨',
+            'rules': [
+                '龙头未死且承接在，分歧才是买点。',
+                '回封要快、要放量、要封单稳定，假回封不碰。',
+                '反包只能做龙头重夺主动权的确认，不做弱修复。',
+            ],
+        }
+    if hhmm < 1450:
+        return {
+            'phaseCode': 'rebound_board',
+            'phase': '回封与反包',
+            'window': f'{label}｜重点看真假回封与是否出现龙头切换',
+            'summary': '午后更适合验证真回封、辨别假回封，并观察是否出现新龙头切换信号。',
+            'executionFocus': '真回封 / 反包确认 / 龙头切换',
+            'positionBias': '只做能重新聚拢情绪的强者',
+            'rules': [
+                '真回封能重新聚拢合力，假回封常常只是拖时间。',
+                '旧龙头掉队时，先看新龙头是否真的带动板块。',
+                '只做最抗分歧的票，不给弱票第二次机会。',
+            ],
+        }
+    if hhmm < 1500:
+        return {
+            'phaseCode': 'tail_caution',
+            'phase': '尾盘谨慎',
+            'window': f'{label}｜尾盘更重复核与次日预案，不追情绪末端',
+            'summary': '尾盘一致性过强更像次日兑现盘，优先做次日预案，而不是今天最后一脚。',
+            'executionFocus': '次日预备池',
+            'positionBias': '不追尾盘强行一致',
+            'rules': [
+                '尾盘买点必须比早盘更谨慎。',
+                '没有明显真回封和龙头修复时，不为尾盘点火买单。',
+                '尾盘更重要的是确认强弱与切换，而不是情绪冲动。',
+            ],
+        }
+    return {
+        'phaseCode': 'after_close',
+        'phase': '收盘复核',
+        'window': f'{label}｜只做次日计划，不虚构盘中执行',
+        'summary': '收盘后重点复核情绪阶段、主流题材、龙头结构与次日竞价预案，不假装还能盘中买入。',
+        'executionFocus': '次日竞价确认 / 次日分歧预案',
+        'positionBias': '收盘后不提供盘中追价建议',
+        'rules': [
+            '收盘后的推荐优先输出次日可确认机会。',
+            '若情绪转退潮，核心是降低仓位而不是硬找买点。',
+            '次日重点看竞价强弱、队友表现和龙头是否继续最强。',
+        ],
+    }
+
+
+def _jia_fetch_strength_snapshot(code: str, latest_price: Any = 0) -> Dict[str, Any]:
+    snapshot = _qiao_fetch_ma_snapshot(code, latest_price)
+    support_summary = '均线承接待观察'
+    if snapshot.get('nearMa5'):
+        support_summary = '贴近 5 日线，具备分歧低吸观察位'
+    elif snapshot.get('nearMa10'):
+        support_summary = '贴近 10 日线，具备更深分歧承接位'
+    elif snapshot.get('trendBias') == '主升':
+        support_summary = '主升结构仍在，但更适合等分歧后承接'
+    elif snapshot.get('trendBias') == '调整':
+        support_summary = '结构偏调整，除非反包确认否则谨慎'
+    snapshot['supportSummary'] = support_summary
+    return snapshot
+
+
+def _build_jia_emotion_cycle(
+    overview_text: str,
+    search_data: str,
+    *,
+    today_count: int,
+    leader_height: int,
+    main_theme_count: int,
+    board_candidates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    overview_metrics = _parse_market_overview_metrics(overview_text)
+    text = f'{overview_text}\n{search_data}'
+    positive_hits = sum(
+        1 for kw in ('回暖', '修复', '赚钱效应', '主线明确', '爆发', '连板', '放量', '强势')
+        if kw in text
+    )
+    negative_hits = sum(
+        1 for kw in ('退潮', '亏钱效应', '跌停', '恐慌', '扩散', '补跌', '无人接力', '炸板增多')
+        if kw in text
+    )
+    broken_count = sum(1 for item in board_candidates if int(item.get('brokenBoardCount') or 0) > 0)
+    broken_ratio = (broken_count / max(len(board_candidates), 1)) if board_candidates else 0.0
+
+    if ('龙头跌停' in text or '亏钱效应扩散' in text or '退潮' in text) and (negative_hits >= 2 or today_count < 28):
+        stage = '退潮'
+    elif today_count <= 12 and leader_height <= 2 and negative_hits >= positive_hits:
+        stage = '冰点'
+    elif today_count >= 35 and leader_height >= 4 and main_theme_count >= 3 and positive_hits >= negative_hits:
+        stage = '主升'
+    elif broken_ratio >= 0.35 and today_count >= 18 and leader_height >= 3:
+        stage = '分歧'
+    elif today_count >= 18 and leader_height >= 2 and positive_hits + overview_metrics['positiveCount'] >= negative_hits:
+        stage = '回暖'
+    else:
+        stage = '分歧' if today_count >= 18 else '冰点'
+
+    mapping = {
+        '冰点': {
+            'status': '冰点试错',
+            'tradeable': False,
+            'action': '空仓或极轻仓试错，只保留观察仓。',
+            'positionCap': '0-20%',
+        },
+        '回暖': {
+            'status': '轻仓试错',
+            'tradeable': True,
+            'action': '轻仓试错，只做主流题材里的最强龙头。',
+            'positionCap': '30-50%',
+        },
+        '主升': {
+            'status': '重仓进攻',
+            'tradeable': True,
+            'action': '主升阶段重点进攻，优先龙头分歧低吸、真回封与反包确认。',
+            'positionCap': '70-100%',
+        },
+        '分歧': {
+            'status': '只做强者',
+            'tradeable': True,
+            'action': '分歧期只做最抗分歧的龙头，拒绝补涨和跟风。',
+            'positionCap': '30-50%',
+        },
+        '退潮': {
+            'status': '空仓',
+            'tradeable': False,
+            'action': '退潮优先空仓，等待新周期龙头和赚钱效应重新出现。',
+            'positionCap': '0%',
+        },
+    }
+    current = mapping[stage]
+    reasons = []
+    if overview_metrics['metrics']:
+        reasons.append(
+            '指数概况：' + ' / '.join(
+                f"{item['name']}{item['pct']:+.2f}%"
+                for item in overview_metrics['metrics'][:4]
+            )
+        )
+    reasons.append(f'涨停池 {today_count} 只，空间板 {leader_height} 连板，主线联动 {main_theme_count} 只')
+    reasons.append(f'炸板样本 {broken_count} 只，占比 {broken_ratio * 100:.0f}%')
+    reasons.append(f'情绪判断：{stage}')
+    reasons.append(f'执行结论：{current["action"]}')
+
+    summary = {
+        '冰点': '亏钱效应占优，原则上空仓或极轻仓试错。',
+        '回暖': '赚钱效应恢复，可轻仓围绕龙头试错。',
+        '主升': '连板高度与板块爆发同步抬升，适合围绕最强龙头进攻。',
+        '分歧': '分化加大，但强者仍强，只做最抗分歧的龙头。',
+        '退潮': '高位风险释放，优先休息，等待新龙头出现。',
+    }[stage]
+
+    return {
+        'stage': stage,
+        'status': current['status'],
+        'tradeable': current['tradeable'],
+        'action': current['action'],
+        'positionCap': current['positionCap'],
+        'brokenRatio': round(broken_ratio * 100, 2),
+        'summary': summary,
+        'reasons': reasons,
+    }
+
+
+def _jia_rebound_seal_verdict(
+    *,
+    broken_board_count: Any,
+    last_seal_int: int,
+    turnover_rate: Any,
+    seal_amount_yi: Any,
+) -> Dict[str, str]:
+    broken = _safe_int_num(broken_board_count)
+    turnover = _safe_float_num(turnover_rate)
+    seal_amount = _safe_float_num(seal_amount_yi)
+
+    if broken <= 0:
+        return {
+            'reboundSealVerdict': '待观察',
+            'sealVerdictSummary': '暂无回封结构，更多看分歧低吸或反包确认。',
+        }
+    if broken == 1 and last_seal_int and last_seal_int <= 110000 and turnover >= 5 and seal_amount >= 0.05:
+        return {
+            'reboundSealVerdict': '真回封',
+            'sealVerdictSummary': '回封较快、放量且封单稳定，接近可参与的真回封。',
+        }
+    if broken >= 3 or (last_seal_int and last_seal_int >= 143000):
+        return {
+            'reboundSealVerdict': '假回封',
+            'sealVerdictSummary': '回封偏慢或反复炸板，更像假回封，原则上回避。',
+        }
+    return {
+        'reboundSealVerdict': '待观察',
+        'sealVerdictSummary': '存在回封迹象，但真假仍需继续观察。',
+    }
+
+
+def _jia_entry_plan(
+    buy_point_type: str,
+    *,
+    phase_code: str,
+    emotion_stage: str,
+    tradeable: bool,
+) -> Dict[str, str]:
+    if not tradeable:
+        return {
+            'tradeStatus': '空仓',
+            'entryPlan': '等待下一轮赚钱效应',
+            'entryTrigger': '情绪从冰点/退潮重新回暖后再考虑出手',
+        }
+
+    closed_phase = phase_code in {'preopen', 'auction', 'tail_caution', 'after_close'}
+    mapping = {
+        '分歧低吸': ('可交易', '围绕龙头分歧承接位低吸', '龙头未死、分歧后承接在，重新翻红或站回承接位'),
+        '回封打板': ('回封关注', '只做真回封，不扫假回封', '涨停被砸后快速回封，放量且封单稳定增加'),
+        '反包确认': ('可交易', '反包重新走强后再跟随', '前一日分歧后重新转强，确认重夺主动权'),
+        '待观察': ('观察', '等待更清晰的龙头信号', '等待最强龙头或真回封自己走出来'),
+    }
+    trade_status, entry_plan, entry_trigger = mapping.get(buy_point_type, mapping['待观察'])
+    if closed_phase and trade_status in {'可交易', '回封关注'}:
+        trade_status = '竞价确认'
+        entry_plan = '次日竞价确认'
+    if emotion_stage == '冰点' and trade_status in {'可交易', '回封关注'}:
+        trade_status = '试错仓'
+    return {
+        'tradeStatus': trade_status,
+        'entryPlan': entry_plan,
+        'entryTrigger': entry_trigger,
+    }
+
+
+def _jia_position_ratio(
+    *,
+    emotion_stage: str,
+    leader_type: str,
+    buy_point_type: str,
+) -> str:
+    if emotion_stage == '退潮':
+        return '总仓 0%，空仓'
+    if emotion_stage == '冰点':
+        return '总仓 0-20%，单票试错 1/10-1/8'
+    if emotion_stage == '回暖':
+        return '总仓 30-50%，单票 1/6-1/4'
+    if emotion_stage == '分歧':
+        return '总仓 30-50%，只做最强，单票 1/6-1/4'
+    if leader_type in {'总龙头', '板块龙头'} and buy_point_type in {'回封打板', '反包确认'}:
+        return '总仓 70-100%，单票 1/3-1/2'
+    return '总仓 70-100%，单票 1/4-1/3'
+
+
+def _jia_labels(
+    *,
+    emotion_stage: str,
+    leader_type: str,
+    buy_point_type: str,
+    rebound_seal_verdict: str,
+    theme_role: str,
+    trade_status: str,
+) -> List[str]:
+    labels: List[str] = ['情绪优先']
+    if leader_type in {'总龙头', '板块龙头', '次龙头'}:
+        labels.append('只做龙头')
+    else:
+        labels.append('只做强者')
+
+    stage_map = {
+        '冰点': '冰点试错',
+        '回暖': '回暖试错',
+        '主升': '主升进攻',
+        '分歧': '分歧只做强者',
+        '退潮': '退潮空仓',
+    }
+    labels.append(stage_map.get(emotion_stage, emotion_stage))
+    if theme_role == '切换候选':
+        labels.append('龙头切换')
+    if buy_point_type == '分歧低吸':
+        labels.append('分歧低吸')
+    elif buy_point_type == '回封打板':
+        labels.append('回封打板')
+    elif buy_point_type == '反包确认':
+        labels.append('反包确认')
+    if rebound_seal_verdict == '真回封':
+        labels.append('真回封')
+    elif rebound_seal_verdict == '假回封':
+        labels.append('假回封回避')
+    if trade_status == '空仓':
+        labels.append('空仓')
+
+    seen = set()
+    deduped: List[str] = []
+    for label in labels:
+        text = str(label or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped[:7]
+
+
+def _jia_matched_rules(item: Dict[str, Any]) -> List[Dict[str, str]]:
+    rules = [
+        {
+            'title': '情绪阶段',
+            'detail': f"{item.get('emotionStage', '待观察')}｜{item.get('emotionFit', '等待更清晰的赚钱效应')}",
+        },
+        {
+            'title': '主流与龙头',
+            'detail': f"{item.get('selectionType', '待观察')}｜{item.get('leaderType', '待观察')}｜{item.get('sector', '待观察')}",
+        },
+        {
+            'title': '买点模型',
+            'detail': f"{item.get('buyPointType', '待观察')}｜{item.get('entryTrigger', '等待触发')}",
+        },
+        {
+            'title': '回封真假',
+            'detail': f"{item.get('reboundSealVerdict', '待观察')}｜{item.get('sealVerdictSummary', '暂无回封判断')}",
+        },
+        {
+            'title': '卖点与切换',
+            'detail': f"{item.get('exitTrigger', '龙头强转弱就走')}｜{item.get('rotationSignal', '暂未出现明确切换')}",
+        },
+    ]
+    return [rule for rule in rules if rule.get('title') and rule.get('detail')]
+
+
+def _build_jia_execution_artifacts(search_data: str = '', overview_text: str = '') -> Dict[str, Any]:
+    from market_data import _ak_eastmoney_direct, _get_ak
+
+    today = datetime.now().strftime('%Y%m%d')
+    today_df = _pd.DataFrame()
+
+    try:
+        with _ak_eastmoney_direct():
+            today_df = _get_ak().stock_zt_pool_em(date=today)
+    except Exception as exc:
+        logger.warning('[Jia] 今日涨停池获取失败: %s', exc)
+
+    scan_candidates = _collect_latest_scan_candidates()
+    scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
+
+    today_sector_counts: Dict[str, int] = {}
+    sector_board_rows: Dict[str, List[Dict[str, Any]]] = {}
+    leader_height = 0
+    board_candidates: List[Dict[str, Any]] = []
+
+    if today_df is not None and not today_df.empty:
+        for _, row in today_df.iterrows():
+            row_dict = row.to_dict()
+            code = _normalize_code6(row_dict.get('代码'))
+            if not code:
+                continue
+            scan_row = scan_map.get(code, {})
+            sector = str(row_dict.get('所属行业') or scan_row.get('sector') or '').strip()
+            if sector:
+                today_sector_counts[sector] = today_sector_counts.get(sector, 0) + 1
+            consecutive_days = _safe_int_num(row_dict.get('连板数') or 1)
+            leader_height = max(leader_height, consecutive_days)
+            item = {
+                'code': code,
+                'name': str(row_dict.get('名称') or scan_row.get('name') or code),
+                'sector': sector,
+                'price': round(_safe_float_num(row_dict.get('最新价')), 2),
+                'changePct': round(_safe_float_num(row_dict.get('涨跌幅')), 2),
+                'score': int(scan_row.get('total_score') or scan_row.get('score') or min(99, 66 + consecutive_days * 5 + today_sector_counts.get(sector, 0) * 2)),
+                'grade': str(scan_row.get('grade') or ('S' if consecutive_days >= 3 else 'A' if consecutive_days >= 2 else 'B')),
+                'consecutiveDays': consecutive_days,
+                'firstSealTime': _format_clock_hhmm(row_dict.get('首次封板时间')),
+                'firstSealInt': _clock_to_int(row_dict.get('首次封板时间')),
+                'lastSealTime': _format_clock_hhmm(row_dict.get('最后封板时间') or row_dict.get('首次封板时间')),
+                'lastSealInt': _clock_to_int(row_dict.get('最后封板时间') or row_dict.get('首次封板时间')),
+                'brokenBoardCount': _safe_int_num(row_dict.get('炸板次数')),
+                'turnoverRate': round(_safe_float_num(row_dict.get('换手率')), 2),
+                'sealAmountYi': _to_yi(row_dict.get('封板资金')),
+                'marketCapYi': _to_yi(row_dict.get('流通市值')),
+                'volumeRatio': round(_safe_float_num(scan_row.get('volume_ratio') if scan_row.get('volume_ratio') is not None else scan_row.get('volumeRatio')), 2),
+            }
+            board_candidates.append(item)
+            sector_board_rows.setdefault(sector, []).append(item)
+
+    scan_sector_counts: Dict[str, int] = {}
+    scan_sector_scores: Dict[str, float] = {}
+    scan_sector_members: Dict[str, List[Dict[str, Any]]] = {}
+    scan_sector_rank_map: Dict[str, int] = {}
+    for scan_row in scan_candidates:
+        sector = str(scan_row.get('sector') or scan_row.get('sector_name') or '').strip()
+        code = _normalize_code6(scan_row.get('code'))
+        if not sector or not code:
+            continue
+        scan_sector_counts[sector] = scan_sector_counts.get(sector, 0) + 1
+        scan_sector_scores[sector] = scan_sector_scores.get(sector, 0.0) + _safe_float_num(scan_row.get('total_score') or scan_row.get('score'))
+        scan_sector_members.setdefault(sector, []).append(scan_row)
+
+    for sector, members in scan_sector_members.items():
+        ranked = sorted(
+            members,
+            key=lambda one: (
+                _normalize_scan_pct_change(one.get('pct_change')),
+                _safe_float_num(one.get('total_score') or one.get('score')),
+                _safe_float_num(one.get('volume_ratio') if one.get('volume_ratio') is not None else one.get('volumeRatio')),
+            ),
+            reverse=True,
+        )
+        for idx, one in enumerate(ranked, 1):
+            code = _normalize_code6(one.get('code'))
+            if code:
+                scan_sector_rank_map[code] = idx
+
+    theme_scores: List[Dict[str, Any]] = []
+    for sector in sorted(set(list(today_sector_counts.keys()) + list(scan_sector_counts.keys()))):
+        score = today_sector_counts.get(sector, 0) * 3 + scan_sector_counts.get(sector, 0)
+        score += min(3.0, scan_sector_scores.get(sector, 0.0) / 180.0)
+        theme_scores.append({
+            'name': sector,
+            'score': round(score, 2),
+            'limitUps': today_sector_counts.get(sector, 0),
+            'scanCount': scan_sector_counts.get(sector, 0),
+        })
+    theme_scores.sort(key=lambda item: (item['score'], item['limitUps'], item['scanCount']), reverse=True)
+
+    main_theme = theme_scores[0] if theme_scores else {'name': '待观察', 'score': 0, 'limitUps': 0, 'scanCount': 0}
+    backup_theme = theme_scores[1] if len(theme_scores) > 1 else {'name': '待观察', 'score': 0, 'limitUps': 0, 'scanCount': 0}
+
+    emotion_cycle = _build_jia_emotion_cycle(
+        overview_text,
+        search_data,
+        today_count=len(today_df) if today_df is not None else 0,
+        leader_height=leader_height,
+        main_theme_count=int(main_theme.get('limitUps') or 0),
+        board_candidates=board_candidates,
+    )
+    emotion_stage = str(emotion_cycle.get('stage') or '待观察')
+    time_anchor = _build_jia_time_anchor()
+    after_hours_like = time_anchor.get('phaseCode') in {'preopen', 'auction', 'tail_caution', 'after_close'}
+
+    def _leader_type_for(sector: str, sector_rank: int, consecutive_days: int) -> Tuple[str, str, str]:
+        if sector == main_theme.get('name') and sector_rank == 1 and consecutive_days == leader_height and leader_height >= 2:
+            return '总龙头', '主线核心', '主线总龙头'
+        if sector == main_theme.get('name') and sector_rank == 1:
+            return '板块龙头', '主线核心', '主线板块龙头'
+        if sector == main_theme.get('name') and sector_rank <= 2:
+            return '次龙头', '主线次强', '主线次龙头'
+        if sector == backup_theme.get('name') and sector_rank == 1:
+            return '切换候选', '切换候选', '切换候选'
+        return '补涨', '跟风补涨', '补涨观察'
+
+    board_by_code: Dict[str, Dict[str, Any]] = {}
+    leader_candidates: List[Dict[str, Any]] = []
+    leader_priority = {'总龙头': 4, '板块龙头': 3, '次龙头': 2, '切换候选': 1, '补涨': 0}
+
+    for item in board_candidates:
+        sector = str(item.get('sector') or '').strip()
+        sector_rank = 1
+        if sector:
+            ranked_rows = sorted(
+                sector_board_rows.get(sector, []),
+                key=lambda one: (
+                    int(one.get('consecutiveDays') or 0),
+                    float(one.get('sealAmountYi') or 0),
+                    float(one.get('score') or 0),
+                ),
+                reverse=True,
+            )
+            for idx, row in enumerate(ranked_rows, 1):
+                if row.get('code') == item.get('code'):
+                    sector_rank = idx
+                    break
+        leader_type, theme_role, selection_type = _leader_type_for(
+            sector,
+            sector_rank,
+            int(item.get('consecutiveDays') or 0),
+        )
+        rebound_info = _jia_rebound_seal_verdict(
+            broken_board_count=item.get('brokenBoardCount'),
+            last_seal_int=int(item.get('lastSealInt') or 0),
+            turnover_rate=item.get('turnoverRate'),
+            seal_amount_yi=item.get('sealAmountYi'),
+        )
+        item.update({
+            'sectorRank': sector_rank,
+            'leaderType': leader_type,
+            'themeRole': theme_role,
+            'selectionType': selection_type,
+            'emotionStage': emotion_stage,
+            'buyPointType': '回封打板' if rebound_info.get('reboundSealVerdict') == '真回封' else '待观察',
+            'tradeStatus': '龙头样本',
+            'entryPlan': '龙头强度样本',
+            'entryTrigger': '仅作主线与龙头结构样本',
+            'positionRatio': _jia_position_ratio(
+                emotion_stage=emotion_stage,
+                leader_type=leader_type,
+                buy_point_type='回封打板' if rebound_info.get('reboundSealVerdict') == '真回封' else '待观察',
+            ),
+            'holdPeriod': '1-2 天游资超短',
+            'exitTrigger': '龙头强转弱、放量滞涨、无人接力或情绪退潮',
+            'reboundSealVerdict': rebound_info.get('reboundSealVerdict', '待观察'),
+            'sealVerdictSummary': rebound_info.get('sealVerdictSummary', '待观察'),
+            'emotionFit': f'{emotion_stage}阶段下优先观察其是否继续最抗分歧。',
+            'rotationSignal': '若旧龙头继续掉队，需观察次主线是否接棒。',
+            'boardType': '回封板' if int(item.get('brokenBoardCount') or 0) > 0 else ('连板' if int(item.get('consecutiveDays') or 0) >= 2 else '首板'),
+            'reason': (
+                f"{selection_type}｜{leader_type}｜{emotion_stage}阶段下更适合作为龙头结构样本，"
+                f"看它是否继续带板块与承接分歧。"
+            ),
+        })
+        item['labels'] = _jia_labels(
+            emotion_stage=emotion_stage,
+            leader_type=leader_type,
+            buy_point_type=item.get('buyPointType', '待观察'),
+            rebound_seal_verdict=item.get('reboundSealVerdict', '待观察'),
+            theme_role=theme_role,
+            trade_status=item.get('tradeStatus', ''),
+        )
+        item['matchedRules'] = _jia_matched_rules(item)
+        board_by_code[item.get('code')] = item
+        if leader_priority.get(leader_type, 0) > 0:
+            leader_candidates.append(item)
+
+    if not leader_candidates:
+        for scan_row in scan_candidates[:5]:
+            code = _normalize_code6(scan_row.get('code'))
+            sector = str(scan_row.get('sector') or '').strip()
+            if not code or not sector:
+                continue
+            sector_rank = scan_sector_rank_map.get(code, 99)
+            leader_type, theme_role, selection_type = _leader_type_for(sector, sector_rank, 1)
+            if leader_priority.get(leader_type, 0) <= 0:
+                continue
+            leader_candidates.append({
+                'code': code,
+                'name': str(scan_row.get('name') or code),
+                'sector': sector,
+                'leaderType': leader_type,
+                'themeRole': theme_role,
+                'selectionType': selection_type,
+                'score': int(scan_row.get('total_score') or scan_row.get('score') or 0),
+                'consecutiveDays': 1,
+                'reboundSealVerdict': '待观察',
+                'sealVerdictSummary': '未进入涨停样本，回封结构待观察。',
+            })
+
+    leader_candidates.sort(
+        key=lambda item: (
+            leader_priority.get(str(item.get('leaderType') or ''), 0),
+            int(item.get('consecutiveDays') or 0),
+            float(item.get('score') or 0),
+            float(item.get('sealAmountYi') or 0),
+        ),
+        reverse=True,
+    )
+    leader_candidates = leader_candidates[:6]
+    main_leader = leader_candidates[0] if leader_candidates else {
+        'code': '',
+        'name': '待观察',
+        'leaderType': '待观察',
+        'sector': main_theme.get('name', '待观察'),
+    }
+
+    if emotion_stage == '退潮':
+        rotation_signal = '旧龙头退潮，等待新周期龙头与赚钱效应重新出现。'
+    elif backup_theme.get('name') != '待观察' and _safe_float_num(backup_theme.get('score')) >= _safe_float_num(main_theme.get('score')) * 0.8:
+        rotation_signal = f"次主线 {backup_theme.get('name', '待观察')} 正在接近主线强度，需警惕龙头切换。"
+    else:
+        rotation_signal = '主线暂未出现明确切换，仍围绕当前最强方向。'
+
+    actionable_candidates: List[Dict[str, Any]] = []
+    scan_rows = sorted(
+        scan_candidates,
+        key=lambda one: (
+            _safe_float_num(one.get('total_score') or one.get('score')),
+            _normalize_scan_pct_change(one.get('pct_change')),
+            _safe_float_num(one.get('volume_ratio') if one.get('volume_ratio') is not None else one.get('volumeRatio')),
+        ),
+        reverse=True,
+    )
+
+    for scan_row in scan_rows[:12]:
+        code = _normalize_code6(scan_row.get('code'))
+        if not code:
+            continue
+        sector = str(scan_row.get('sector') or scan_row.get('sector_name') or '').strip()
+        sector_rank = scan_sector_rank_map.get(code, 99)
+        board_item = board_by_code.get(code, {})
+        consecutive_days = int(board_item.get('consecutiveDays') or 1)
+        leader_type, theme_role, selection_type = _leader_type_for(sector, sector_rank, consecutive_days)
+        pct_change = _normalize_scan_pct_change(scan_row.get('pct_change'))
+        latest_price = _safe_float_num(scan_row.get('close') or scan_row.get('price'))
+        volume_ratio = _safe_float_num(scan_row.get('volume_ratio') if scan_row.get('volume_ratio') is not None else scan_row.get('volumeRatio'))
+        score = int(scan_row.get('total_score') or scan_row.get('score') or 0)
+
+        # 养家只盯最强赚钱效应，不在低优先级补涨里浪费大量分时/K线取证时间
+        if leader_type == '补涨' and sector_rank > 2 and score < 72 and sector not in {main_theme.get('name'), backup_theme.get('name')}:
+            continue
+
+        if after_hours_like:
+            strength_snapshot = {
+                'ma5': 0.0,
+                'ma10': 0.0,
+                'ma20': 0.0,
+                'nearMa5': False,
+                'nearMa10': False,
+                'trendBias': '待次日确认',
+                'maSupportSummary': '当前时段以次日竞价与强弱确认替代盘中承接位',
+                'supportSummary': '收盘后不虚构盘中承接，优先次日竞价确认',
+            }
+        else:
+            strength_snapshot = _jia_fetch_strength_snapshot(code, latest_price)
+        rebound_info = {
+            'reboundSealVerdict': str(board_item.get('reboundSealVerdict') or '待观察'),
+            'sealVerdictSummary': str(board_item.get('sealVerdictSummary') or '暂无回封结构，更多看分歧低吸或反包确认。'),
+        }
+        if rebound_info['reboundSealVerdict'] == '待观察' and board_item:
+            rebound_info = _jia_rebound_seal_verdict(
+                broken_board_count=board_item.get('brokenBoardCount'),
+                last_seal_int=int(board_item.get('lastSealInt') or 0),
+                turnover_rate=board_item.get('turnoverRate'),
+                seal_amount_yi=board_item.get('sealAmountYi'),
+            )
+
+        if not emotion_cycle.get('tradeable'):
+            buy_point_type = '待观察'
+        elif rebound_info.get('reboundSealVerdict') == '真回封' and leader_type in {'总龙头', '板块龙头', '次龙头', '切换候选'}:
+            buy_point_type = '回封打板'
+        elif leader_type in {'总龙头', '板块龙头', '次龙头'} and emotion_stage in {'回暖', '主升', '分歧'} and (
+            strength_snapshot.get('nearMa5') or strength_snapshot.get('nearMa10') or -3.0 <= pct_change <= 3.5
+        ) and volume_ratio >= 0.9:
+            buy_point_type = '分歧低吸'
+        elif leader_type in {'总龙头', '板块龙头', '切换候选'} and emotion_stage in {'回暖', '主升'} and pct_change >= 2.0 and volume_ratio >= 1.4:
+            buy_point_type = '反包确认'
+        else:
+            buy_point_type = '待观察'
+
+        emotion_fit = (
+            '退潮期不匹配，应优先空仓'
+            if emotion_stage == '退潮'
+            else '冰点只允许小仓试错'
+            if emotion_stage == '冰点'
+            else '主升阶段匹配度高'
+            if emotion_stage == '主升' and buy_point_type in {'分歧低吸', '回封打板', '反包确认'}
+            else '分歧期只做最强者'
+            if emotion_stage == '分歧' and buy_point_type in {'分歧低吸', '回封打板'}
+            else '回暖阶段可轻仓试错'
+            if emotion_stage == '回暖' and buy_point_type != '待观察'
+            else '与当前阶段匹配度一般，需继续观察'
+        )
+        entry_info = _jia_entry_plan(
+            buy_point_type,
+            phase_code=time_anchor.get('phaseCode', ''),
+            emotion_stage=emotion_stage,
+            tradeable=bool(emotion_cycle.get('tradeable')),
+        )
+        position_ratio = _jia_position_ratio(
+            emotion_stage=emotion_stage,
+            leader_type=leader_type,
+            buy_point_type=buy_point_type,
+        )
+        exit_trigger = '龙头强转弱、放量滞涨、情绪退潮或无人接力时立即撤退'
+        labels = _jia_labels(
+            emotion_stage=emotion_stage,
+            leader_type=leader_type,
+            buy_point_type=buy_point_type,
+            rebound_seal_verdict=rebound_info.get('reboundSealVerdict', '待观察'),
+            theme_role=theme_role,
+            trade_status=entry_info.get('tradeStatus', ''),
+        )
+        actionable_now = (
+            entry_info.get('tradeStatus') in {'可交易', '回封关注', '试错仓'}
+            and emotion_cycle.get('tradeable')
+            and time_anchor.get('phaseCode') not in {'preopen', 'auction', 'tail_caution', 'after_close'}
+        )
+        reason = (
+            f"{selection_type}｜{leader_type}｜当前情绪 {emotion_stage}｜"
+            f"{buy_point_type}｜{strength_snapshot.get('supportSummary', '承接待观察')}｜"
+            f"{'主线优先' if sector == main_theme.get('name') else '作为切换预备保留'}。"
+        )
+
+        item = {
+            'code': code,
+            'name': str(scan_row.get('name') or code),
+            'sector': sector,
+            'price': round(latest_price, 2),
+            'changePct': round(pct_change, 2),
+            'score': score,
+            'grade': str(scan_row.get('grade') or ('S' if score >= 82 else 'A' if score >= 74 else 'B')),
+            'adviseType': '情绪龙头',
+            'leaderType': leader_type,
+            'themeRole': theme_role,
+            'selectionType': selection_type,
+            'emotionStage': emotion_stage,
+            'stage': emotion_stage,
+            'emotionFit': emotion_fit,
+            'tradeStatus': entry_info.get('tradeStatus', '观察'),
+            'buyPointType': buy_point_type,
+            'entryPlan': entry_info.get('entryPlan', '等待更清晰信号'),
+            'entryModel': buy_point_type,
+            'entryTrigger': entry_info.get('entryTrigger', '等待触发'),
+            'exitTrigger': exit_trigger,
+            'positionRatio': position_ratio,
+            'holdPeriod': '1-2 天游资超短',
+            'buyRange': '围绕龙头承接位、分时均线、回封确认位或反包突破位分批跟随',
+            'stopLoss': '龙头掉队、承接失守、回封转假或情绪退潮即撤',
+            'nextDaySellPlan': '卖在分歧，不卖在跌停；若龙头强转弱或无人接力，优先先走。',
+            'riskLevel': '低' if buy_point_type == '分歧低吸' else '中' if buy_point_type != '待观察' else '高',
+            'signal': f'{selection_type}/{buy_point_type}/{entry_info.get("tradeStatus","观察")}',
+            'reason': reason,
+            'classificationReason': (
+                f"{sector or '待观察'}｜{leader_type}｜评分 {score}｜"
+                f"量比 {volume_ratio:.2f}｜{strength_snapshot.get('supportSummary', '承接待观察')}"
+            ),
+            'meta': (
+                f"评分 {score}｜量比 {volume_ratio:.2f}｜板块热度 {int(main_theme.get('score') or 0)}｜"
+                f"{strength_snapshot.get('supportSummary', '承接待观察')}"
+            ),
+            'labels': labels,
+            'matchedRules': [],
+            'reboundSealVerdict': rebound_info.get('reboundSealVerdict', '待观察'),
+            'sealVerdictSummary': rebound_info.get('sealVerdictSummary', '待观察'),
+            'rotationSignal': rotation_signal,
+            'maSupportSummary': strength_snapshot.get('maSupportSummary', ''),
+            'supportSummary': strength_snapshot.get('supportSummary', ''),
+            'volumeRatio': round(volume_ratio, 2),
+            'marketCapYi': _safe_float_num(scan_row.get('market_cap') or scan_row.get('marketCapYi')),
+            'timeAnchorPhase': time_anchor.get('phase', ''),
+            'timeAnchorWindow': time_anchor.get('window', ''),
+            'actionableNow': actionable_now,
+        }
+        item['matchedRules'] = _jia_matched_rules(item)
+        actionable_candidates.append(item)
+
+    actionable_candidates.sort(
+        key=lambda item: (
+            1 if item.get('actionableNow') else 0,
+            1 if item.get('tradeStatus') in {'可交易', '回封关注', '试错仓'} else 0,
+            leader_priority.get(str(item.get('leaderType') or ''), 0),
+            float(item.get('score') or 0),
+            float(item.get('volumeRatio') or 0),
+            float(item.get('changePct') or 0),
+        ),
+        reverse=True,
+    )
+
+    recommended = [item for item in actionable_candidates if item.get('tradeStatus') not in {'观察', '空仓'}][:3]
+    if not recommended:
+        recommended = actionable_candidates[:3]
+
+    buy_point_counts: Dict[str, int] = {}
+    leader_type_counts: Dict[str, int] = {}
+    seal_counts: Dict[str, int] = {}
+    label_counts: Dict[str, int] = {}
+    for item in actionable_candidates:
+        buy_point = str(item.get('buyPointType') or '').strip()
+        leader_type = str(item.get('leaderType') or '').strip()
+        seal_verdict = str(item.get('reboundSealVerdict') or '').strip()
+        if buy_point:
+            buy_point_counts[buy_point] = buy_point_counts.get(buy_point, 0) + 1
+        if leader_type:
+            leader_type_counts[leader_type] = leader_type_counts.get(leader_type, 0) + 1
+        if seal_verdict:
+            seal_counts[seal_verdict] = seal_counts.get(seal_verdict, 0) + 1
+        for label in item.get('labels') or []:
+            text = str(label or '').strip()
+            if text:
+                label_counts[text] = label_counts.get(text, 0) + 1
+
+    buy_point_playbook = [
+        {'type': '分歧低吸', 'count': buy_point_counts.get('分歧低吸', 0), 'description': '龙头未死、有承接，才配低吸。'},
+        {'type': '回封打板', 'count': buy_point_counts.get('回封打板', 0), 'description': '只做回封快、放量、封单稳定的真回封。'},
+        {'type': '反包确认', 'count': buy_point_counts.get('反包确认', 0), 'description': '分歧后重新走强，确认龙头地位未丢。'},
+    ]
+    leader_structure = [
+        {'type': '总龙头', 'count': leader_type_counts.get('总龙头', 0), 'description': '市场总辨识度最高，最能聚拢赚钱效应。'},
+        {'type': '板块龙头', 'count': leader_type_counts.get('板块龙头', 0), 'description': '主流题材中最先走出来的核心票。'},
+        {'type': '次龙头', 'count': leader_type_counts.get('次龙头', 0), 'description': '主线中的次强者，只在龙头未死时观察。'},
+        {'type': '切换候选', 'count': leader_type_counts.get('切换候选', 0), 'description': '当旧龙头走弱时，次主线中的候选承接者。'},
+    ]
+    seal_verdict_hits = [
+        {'type': '真回封', 'count': seal_counts.get('真回封', 0), 'description': '回封快、放量、封单稳定增加。'},
+        {'type': '假回封', 'count': seal_counts.get('假回封', 0), 'description': '回封慢、封单不稳、反复炸板。'},
+        {'type': '待观察', 'count': seal_counts.get('待观察', 0), 'description': '回封真假暂时看不清，宁可等。'},
+    ]
+    position_rules = [
+        {'stage': '冰点', 'range': '0-20%', 'active': emotion_stage == '冰点'},
+        {'stage': '回暖', 'range': '30-50%', 'active': emotion_stage == '回暖'},
+        {'stage': '主升', 'range': '70-100%', 'active': emotion_stage == '主升'},
+        {'stage': '分歧', 'range': '30-50%', 'active': emotion_stage == '分歧'},
+        {'stage': '退潮', 'range': '0%', 'active': emotion_stage == '退潮'},
+    ]
+    label_hits = [
+        {'label': label, 'count': count}
+        for label, count in sorted(label_counts.items(), key=lambda one: (one[1], one[0]), reverse=True)[:12]
+    ]
+    daily_rule_hits = [
+        {'title': '情绪优先', 'status': emotion_stage, 'detail': emotion_cycle.get('summary', '')},
+        {'title': '主流题材', 'status': main_theme.get('name', '待观察'), 'detail': f"次主线看 {backup_theme.get('name', '待观察')}，只围绕赚钱效应最强方向。"},
+        {'title': '只做龙头', 'status': f"{main_leader.get('name', '待观察')}({main_leader.get('code', '')})", 'detail': f"{main_leader.get('leaderType', '待观察')}｜最抗分歧者优先。"},
+        {'title': '分歧低吸', 'status': f"{buy_point_counts.get('分歧低吸', 0)}只命中", 'detail': '龙头未死且有承接，才是低吸。'},
+        {'title': '回封打板', 'status': f"{buy_point_counts.get('回封打板', 0)}只命中", 'detail': '只允许参与真回封，不做假回封。'},
+        {'title': '反包确认', 'status': f"{buy_point_counts.get('反包确认', 0)}只命中", 'detail': '分歧后重新走强，才配确认。'},
+        {'title': '龙头切换', 'status': backup_theme.get('name', '待观察'), 'detail': rotation_signal},
+        {'title': '卖在分歧', 'status': '纪律常驻', 'detail': '强转弱、放量滞涨、无人接力或情绪退潮时先走。'},
+    ]
+
+    main_flow = {
+        'mainTheme': main_theme.get('name', '待观察'),
+        'backupTheme': backup_theme.get('name', '待观察'),
+        'leader': main_leader.get('name', '待观察'),
+        'leaderCode': main_leader.get('code', ''),
+        'summary': (
+            f"{main_theme.get('name', '待观察')} 当前更像主流赚钱效应集中地，"
+            f"龙头看 {main_leader.get('name', '待观察')}，次主线观察 {backup_theme.get('name', '待观察')}。"
+        ),
+        'reasons': [
+            f"主线强度：涨停 {int(main_theme.get('limitUps') or 0)} 只，扫描命中 {int(main_theme.get('scanCount') or 0)} 只",
+            f"次主线：{backup_theme.get('name', '待观察')}",
+            f"空间板：{leader_height} 连板",
+        ],
+    }
+    rotation_panel = {
+        'status': '切换预警' if '切换' in rotation_signal or '接近主线' in rotation_signal else '主线延续',
+        'summary': rotation_signal,
+        'oldLeader': f"{main_leader.get('name', '待观察')}({main_leader.get('code', '')})",
+        'newLeader': backup_theme.get('name', '待观察'),
+    }
+
+    step_outputs = [
+        {
+            'step': 1,
+            'title': '识别情绪阶段',
+            'summary': f"当前更偏 {emotion_stage}，执行状态 {emotion_cycle.get('status', '待观察')}。",
+            'frameworkLines': [
+                '市场情绪优先于技术指标，不先定情绪就不谈买卖。',
+                '冰点/回暖/主升/分歧/退潮决定仓位与出手频率。',
+                '退潮不重仓，主升才允许重点进攻。',
+            ],
+            'lines': list(emotion_cycle.get('reasons') or [])[:3],
+        },
+        {
+            'step': 2,
+            'title': '锁定主流题材',
+            'summary': f"当前主流题材更偏 {main_theme.get('name', '待观察')}，次主线看 {backup_theme.get('name', '待观察')}。",
+            'frameworkLines': [
+                '哪里赚钱效应最强，就去哪里。',
+                '主流题材优先于冷门题材，赚钱效应比题材名字更重要。',
+                '主线不清晰时，宁可等待也不硬找机会。',
+            ],
+            'lines': list(main_flow.get('reasons') or [])[:2] + [main_flow.get('summary', '')],
+        },
+        {
+            'step': 3,
+            'title': '识别龙头结构',
+            'summary': f"当前龙头看 {main_leader.get('name', '待观察')}，只做龙头与切换候选。",
+            'frameworkLines': [
+                '龙头要么高度最高，要么最抗分歧，要么最能带板块。',
+                '只做总龙头、板块龙头、次龙头与切换候选，不做杂毛。',
+                '多个候选并存时，优先最抗分歧的那个。',
+            ],
+            'lines': [
+                f"{item.get('name','')}({item.get('code','')})｜{item.get('leaderType','待观察')}｜{item.get('selectionType','待观察')}｜{item.get('sector','待观察')}"
+                for item in leader_candidates[:4]
+            ] or ['暂无清晰龙头结构，优先继续观察。'],
+        },
+        {
+            'step': 4,
+            'title': '匹配买点模型',
+            'summary': f"当前只在三类模型里出手，可交易候选 {len(actionable_candidates)} 只。",
+            'frameworkLines': [
+                '买点只允许分歧低吸、回封打板、反包确认。',
+                '真回封才配参与，假回封原则上回避。',
+                '不满足三类模型，禁止出手。',
+            ],
+            'lines': [
+                f"{item.get('name','')}({item.get('code','')})｜{item.get('buyPointType','待观察')}｜{item.get('tradeStatus','观察')}｜{item.get('sealVerdictSummary','待观察')}"
+                for item in actionable_candidates[:4]
+            ] or ['当前没有满足模式的龙头候选，继续等待。'],
+        },
+        {
+            'step': 5,
+            'title': '制定卖点与切换',
+            'summary': '龙头强转弱就走，出现新龙头就切换，卖在分歧不卖在跌停。',
+            'frameworkLines': [
+                '卖点必须比买点更机械。',
+                '强转弱、放量滞涨、无人接力、情绪退潮都应优先撤退。',
+                '旧龙头走弱时，要同步评估新题材与新龙头的接力结构。',
+            ],
+            'lines': [
+                rotation_signal,
+                *[
+                    f"{item.get('name','')}({item.get('code','')})｜{item.get('exitTrigger','待观察')}"
+                    for item in recommended[:2]
+                ],
+            ],
+        },
+    ]
+
+    market_commentary = (
+        f"当前情绪 {emotion_stage}，主流题材偏 {main_theme.get('name','待观察')}，龙头看 {main_leader.get('name','待观察')}。"
+        if main_theme.get('name') and main_theme.get('name') != '待观察'
+        else f"当前情绪 {emotion_stage}，主线仍待进一步确认。"
+    )
+    position_advice = f"{emotion_cycle.get('status','待观察')}｜总仓建议 {emotion_cycle.get('positionCap','待观察')}"
+    risk_warning = '退潮期硬做、假回封误判、补涨当龙头和无人接力，是回撤的主要来源。'
+
+    return {
+        'kind': 'jia',
+        'version': 'v1',
+        'generatedAt': datetime.now().isoformat(),
+        'stats': {
+            'todayLimitUps': len(today_df) if today_df is not None else 0,
+            'leaderCount': len(leader_candidates),
+            'actionableCount': len(actionable_candidates),
+            'trueSealCount': seal_counts.get('真回封', 0),
+            'rotationWatchCount': leader_type_counts.get('切换候选', 0),
+            'marketGateStatus': emotion_cycle.get('status'),
+        },
+        'emotionCycle': emotion_cycle,
+        'timeAnchor': time_anchor,
+        'mainTheme': {
+            'name': main_theme.get('name', '待观察'),
+            'stage': emotion_stage,
+            'strength': '强' if emotion_stage == '主升' else '中' if emotion_stage in {'回暖', '分歧'} else '弱',
+        },
+        'backupTheme': {
+            'name': backup_theme.get('name', '待观察'),
+            'reason': rotation_signal,
+        },
+        'mainLeader': {
+            'code': main_leader.get('code', ''),
+            'name': main_leader.get('name', '待观察'),
+            'leaderType': main_leader.get('leaderType', '待观察'),
+        },
+        'tradeable': bool(emotion_cycle.get('tradeable') and recommended),
+        'action': '买' if emotion_cycle.get('tradeable') and recommended else '空仓',
+        'buyPointType': recommended[0].get('buyPointType', '待观察') if recommended else '待观察',
+        'rotationSignal': rotation_signal,
+        'strategyPanels': {
+            'timeAnchor': time_anchor,
+            'emotionStage': emotion_cycle,
+            'mainFlow': main_flow,
+            'leaderStructure': leader_structure,
+            'buyPointPlaybook': buy_point_playbook,
+            'sealVerdictHits': seal_verdict_hits,
+            'positionRules': position_rules,
+            'rotationSignal': rotation_panel,
+            'labelHits': label_hits,
+            'dailyRuleHits': daily_rule_hits,
+        },
+        'leaderCandidates': leader_candidates,
+        'actionableCandidates': actionable_candidates[:8],
+        'recommendedStocks': recommended,
+        'stepOutputs': step_outputs,
+        'marketCommentary': market_commentary,
+        'positionAdvice': position_advice,
+        'riskWarning': risk_warning,
+        'searchDataPreview': (search_data or '')[:1200],
+    }
+
+
+def _build_jia_execution_context_text(artifacts: Dict[str, Any]) -> str:
+    if not artifacts:
+        return '【暂无炒股养家执行工件】'
+
+    stats = artifacts.get('stats', {})
+    emotion_cycle = artifacts.get('emotionCycle', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    main_theme = artifacts.get('mainTheme', {})
+    backup_theme = artifacts.get('backupTheme', {})
+    main_leader = artifacts.get('mainLeader', {})
+    lines = [
+        '## 炒股养家执行工件（系统预处理）',
+        f"- 时间锚点：{time_anchor.get('phase', '待观察')}｜{time_anchor.get('window', '等待更多信号')}",
+        f"- 当前情绪：{emotion_cycle.get('stage', '待观察')}｜{emotion_cycle.get('action', '等待更多确认')}",
+        f"- 主流题材：{main_theme.get('name', '待观察')}",
+        f"- 次主线：{backup_theme.get('name', '待观察')}",
+        f"- 当前龙头：{main_leader.get('name', '待观察')}({main_leader.get('code', '')})｜{main_leader.get('leaderType', '待观察')}",
+        f"- 龙头样本：{stats.get('leaderCount', 0)} 只",
+        f"- 可交易候选：{stats.get('actionableCount', 0)} 只",
+        f"- 真回封样本：{stats.get('trueSealCount', 0)} 只",
+        '',
+        '### 炒股养家当前偏好的可交易候选',
+    ]
+    for item in artifacts.get('actionableCandidates', [])[:6]:
+        lines.append(
+            f"- {item.get('name','')}({item.get('code','')})｜{item.get('selectionType','待观察')}｜"
+            f"{item.get('buyPointType','待观察')}｜{item.get('tradeStatus','观察')}｜"
+            f"{item.get('reboundSealVerdict','待观察')}｜{' / '.join((item.get('labels') or [])[:3])}"
+        )
+    if not artifacts.get('actionableCandidates'):
+        for item in artifacts.get('leaderCandidates', [])[:4]:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('leaderType','待观察')}｜"
+                f"{item.get('selectionType','待观察')}｜{item.get('reboundSealVerdict','待观察')}"
+            )
+    return '\n'.join(lines)
+
+
+def _build_jia_fallback_structured(artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    recommended = list(artifacts.get('recommendedStocks') or [])
+    return {
+        'agentId': 'jia',
+        'agentName': '炒股养家',
+        'stance': 'bull' if recommended and artifacts.get('tradeable') else 'neutral',
+        'confidence': 80 if recommended and artifacts.get('tradeable') else 56,
+        'marketCommentary': artifacts.get('marketCommentary', ''),
+        'positionAdvice': artifacts.get('positionAdvice', ''),
+        'riskWarning': artifacts.get('riskWarning', ''),
+        'emotionStage': artifacts.get('emotionCycle', {}).get('stage', ''),
+        'mainTheme': artifacts.get('mainTheme', {}),
+        'mainLeader': artifacts.get('mainLeader', {}),
+        'tradeable': artifacts.get('tradeable', False),
+        'action': artifacts.get('action', '空仓'),
+        'buyPointType': artifacts.get('buyPointType', '待观察'),
+        'rotationSignal': artifacts.get('rotationSignal', ''),
+        'recommendedStocks': recommended,
+    }
+
+
+def _merge_jia_structured(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(structured or {})
+    recommended = list(merged.get('recommendedStocks') or [])
+    candidate_sources = (
+        list(artifacts.get('recommendedStocks') or [])
+        + list(artifacts.get('actionableCandidates') or [])
+        + list(artifacts.get('leaderCandidates') or [])
+    )
+    candidates_by_code = {
+        _normalize_code6(item.get('code')): item
+        for item in candidate_sources
+        if _normalize_code6(item.get('code'))
+    }
+
+    merged_recs = []
+    for item in recommended:
+        code = _normalize_code6(item.get('code'))
+        candidate = candidates_by_code.get(code, {})
+        one = dict(candidate) if candidate else {}
+        one.update(item)
+        for key, value in candidate.items():
+            one.setdefault(key, value)
+        if code:
+            one['code'] = code
+        merged_recs.append(one)
+
+    artifact_recommended = list(artifacts.get('recommendedStocks') or [])
+    merged['recommendedStocks'] = artifact_recommended[:3] if artifact_recommended else merged_recs[:3]
+    merged['emotionStage'] = merged.get('emotionStage') or artifacts.get('emotionCycle', {}).get('stage', '')
+    merged['mainTheme'] = merged.get('mainTheme') or artifacts.get('mainTheme', {})
+    merged['mainLeader'] = merged.get('mainLeader') or artifacts.get('mainLeader', {})
+    merged['tradeable'] = merged.get('tradeable') if 'tradeable' in merged else artifacts.get('tradeable', False)
+    merged['action'] = merged.get('action') or artifacts.get('action', '空仓')
+    merged['buyPointType'] = merged.get('buyPointType') or artifacts.get('buyPointType', '待观察')
+    merged['rotationSignal'] = merged.get('rotationSignal') or artifacts.get('rotationSignal', '')
+    merged['personaExecution'] = {
+        'kind': 'jia',
+        'version': artifacts.get('version', 'v1'),
+        'coreObjective': '围绕情绪周期、主流题材与最强龙头，只在分歧低吸、回封打板、反包确认三类模型里出手',
+        'stats': artifacts.get('stats', {}),
+        'emotionCycle': artifacts.get('emotionCycle', {}),
+        'timeAnchor': artifacts.get('timeAnchor', {}),
+        'mainTheme': artifacts.get('mainTheme', {}),
+        'backupTheme': artifacts.get('backupTheme', {}),
+        'mainLeader': artifacts.get('mainLeader', {}),
+        'tradeable': artifacts.get('tradeable', False),
+        'action': artifacts.get('action', '空仓'),
+        'buyPointType': artifacts.get('buyPointType', '待观察'),
+        'rotationSignal': artifacts.get('rotationSignal', ''),
+        'strategyPanels': artifacts.get('strategyPanels', {}),
+        'leaderCandidates': artifacts.get('leaderCandidates', []),
+        'actionableCandidates': artifacts.get('actionableCandidates', []),
+        'stepOutputs': artifacts.get('stepOutputs', []),
+    }
+
+    if not str(merged.get('marketCommentary') or '').strip():
+        merged['marketCommentary'] = artifacts.get('marketCommentary', '')
+    if not str(merged.get('positionAdvice') or '').strip():
+        merged['positionAdvice'] = artifacts.get('positionAdvice', '')
+    if not str(merged.get('riskWarning') or '').strip():
+        merged['riskWarning'] = artifacts.get('riskWarning', '')
+
+    return merged
+
+
+def _build_jia_markdown_summary(structured: Dict[str, Any], artifacts: Dict[str, Any]) -> str:
+    emotion_cycle = artifacts.get('emotionCycle', {})
+    time_anchor = artifacts.get('timeAnchor', {})
+    main_theme = artifacts.get('mainTheme', {})
+    main_leader = artifacts.get('mainLeader', {})
+    lines = [
+        f"【时间锚点】{time_anchor.get('phase','待观察')}｜{time_anchor.get('window','等待更多信号')}",
+        f"【情绪阶段】{emotion_cycle.get('stage','待观察')}｜{emotion_cycle.get('action','等待更多信号')}",
+        f"【主流题材】{main_theme.get('name','待观察')}｜龙头 {main_leader.get('name','待观察')}({main_leader.get('code','')})",
+        f"【市场解读】{structured.get('marketCommentary') or artifacts.get('marketCommentary') or '赚钱效应仍待进一步确认'}",
+        f"【仓位建议】{structured.get('positionAdvice') or artifacts.get('positionAdvice') or '按情绪阶段动态调整仓位'}",
+        f"【风险提示】{structured.get('riskWarning') or artifacts.get('riskWarning') or '退潮硬做和假回封最伤'}",
+    ]
+    recs = (structured.get('recommendedStocks') or [])[:3]
+    if recs:
+        lines.append('【重点候选】')
+        for item in recs:
+            lines.append(
+                f"- {item.get('name','')}({item.get('code','')})｜{item.get('selectionType','待观察')}｜"
+                f"{item.get('buyPointType') or item.get('entryPlan','待观察')}｜{item.get('tradeStatus','观察')}｜"
+                f"{item.get('reboundSealVerdict','待观察')}｜{item.get('reason') or item.get('meta') or ''}"
+            )
+    return '\n'.join(lines)
+
+
+def _hierarchical_batch_analyze_response():
+    """
+    蓝图侧的层次化批量分析入口。
+
+    目的不是替代 app.py 中更重的兼容逻辑，而是保证当前 /api/agents/batch
+    即便命中了蓝图，也能真正走主控 -> 人格 -> 聚合这条架构链路。
+    """
+    from ai_service import fetch_market_news
+    from junge_trader import format_holdings_for_prompt, format_scan_data_for_prompt
+    from utils.llm import AgentOrchestrator
+
+    latest_scan = db.get_latest_scan()
+    if not latest_scan:
+        return jsonify({'success': False, 'error': '没有可分析的扫描数据'}), 404
+
+    results_dict = latest_scan.get('results', {}) or {}
+    all_stocks = []
+    for sector_name, sector_data in results_dict.items():
+        if not isinstance(sector_data, dict):
+            continue
+        for stock in sector_data.get('stocks', []) or []:
+            if not isinstance(stock, dict):
+                continue
+            one = dict(stock)
+            one['sector'] = sector_name
+            all_stocks.append(one)
+
+    if not all_stocks:
+        return jsonify({'success': False, 'error': '扫描结果为空'}), 422
+
+    scan_time = latest_scan.get('scan_time', '')
+    scan_date = scan_time[:10] if scan_time else datetime.now().strftime('%Y-%m-%d')
+    current_time = datetime.now().strftime('%Y年%m月%d日 %H:%M')
+
+    try:
+        scan_data_text = format_scan_data_for_prompt(all_stocks)
+    except Exception:
+        scan_data_text = ''
+
+    try:
+        news_text = _format_news_for_batch(fetch_market_news(scan_date))
+    except Exception:
+        news_text = '【暂无最新消息】'
+
+    try:
+        holdings_text = format_holdings_for_prompt(db.get_all_holdings())
+    except Exception:
+        holdings_text = '【暂无历史持仓数据】'
+
+    registry = get_agent_registry()
+    client = get_client()
+    orchestrator = AgentOrchestrator(client, registry)
+    options = CallOptions(temperature=0.2, max_tokens=2400)
+    result = orchestrator.analyze_hierarchical(
+        scan_data=scan_data_text,
+        news_data=news_text,
+        holdings_data=holdings_text,
+        current_time=current_time,
+        scan_date=scan_date,
+        options=options,
+    )
+
+    agent_results = []
+    for agent_id, task_result in result.agent_results.items():
+        agent_config = registry.get(agent_id) or {}
+        if isinstance(task_result, dict):
+            task_success = bool(task_result.get('success'))
+            task_status = str(task_result.get('status', 'completed' if task_success else 'failed'))
+            task_error = task_result.get('error', '')
+            task_raw_response = task_result.get('analysis', '')
+            task_thinking = task_result.get('thinking', '')
+            task_tokens = task_result.get('tokens_used', 0)
+            task_execution_time = task_result.get('execution_time_ms', 0)
+            task_retry_count = task_result.get('retry_count', 0)
+            structured = task_result.get('structured')
+        else:
+            task_success = bool(getattr(task_result, 'success', False))
+            task_status_obj = getattr(task_result, 'status', '')
+            task_status = getattr(task_status_obj, 'value', task_status_obj) or ('completed' if task_success else 'failed')
+            task_error = getattr(task_result, 'error', '')
+            task_raw_response = getattr(task_result, 'raw_response', '')
+            task_thinking = getattr(task_result, 'thinking', '')
+            task_tokens = getattr(task_result, 'tokens_used', 0)
+            task_execution_time = getattr(task_result, 'execution_time_ms', 0)
+            task_retry_count = getattr(task_result, 'retry_count', 0)
+            structured = getattr(task_result, 'result', None)
+
+        structured = structured or {
+            'agentId': agent_id,
+            'agentName': agent_config.get('name', agent_id),
+            'stance': 'neutral',
+            'confidence': 50,
+            'marketCommentary': task_error or '分析未完成',
+            'positionAdvice': '当前结果不足以给出仓位建议',
+            'riskWarning': '请结合共享事实层补充验证',
+            'recommendedStocks': [],
+        }
+        structured = registry.sanitize(
+            structured,
+            all_stocks,
+            default_advise_type=agent_config.get('adviseType', '波段') if agent_config else '波段',
+        )
+        _enrich_stocks_realtime(structured)
+
+        agent_results.append({
+            'agent_id': agent_id,
+            'agent_name': agent_config.get('name', agent_id),
+            'success': task_success,
+            'status': task_status,
+            'structured': structured,
+            'analysis': task_raw_response,
+            'thinking': task_thinking,
+            'tokens_used': task_tokens,
+            'execution_time_ms': task_execution_time,
+            'retry_count': task_retry_count,
+        })
+
+    return jsonify({
+        'success': True,
+        'scan_time': scan_time or datetime.now().isoformat(),
+        'mode': 'hierarchical',
+        'master': {
+            'marketCoreIntent': result.master.market_core_intent if result.master else '',
+            'marketPhase': result.master.market_phase if result.master else '',
+            'riskAppetite': result.master.risk_appetite if result.master else '',
+            'agentPriority': result.master.agent_priority if result.master else [],
+            'keyTheme': result.master.key_theme if result.master else '',
+            'riskFactors': result.master.risk_factors if result.master else [],
+            'coordinationNotes': result.master.coordination_notes if result.master else '',
+        } if result.master else None,
+        'consensus': result.consensus,
+        'agentResults': agent_results,
+        'consensusOpportunities': result.top_opportunities,
+        'synthesis': result.synthesis,
+        'execution_log': result.execution_log,
+        'task_decomposition': result.task_decomposition,
+        'lastUpdated': current_time,
+    })
+
+
 @strategy_bp.route('/api/agents/batch', methods=['POST'])
 def batch_analyze_agents():
     """
-    批量分析全部 6 个 Agent，并计算共识结果。
-    并行调用，超时保护。
+    批量分析智能体。
+    - parallel: 并行批量
+    - hierarchical: 主控 -> 人格 -> 聚合
     """
+    data = request.get_json(silent=True) or {}
+    mode = str(data.get('mode', 'parallel') or 'parallel').strip().lower()
+
+    if mode == 'hierarchical':
+        return _hierarchical_batch_analyze_response()
+
     registry = get_agent_registry()
     agent_ids = [a['id'] for a in registry.list_agents()]
 
@@ -3582,6 +9073,7 @@ def batch_analyze_agents():
     return jsonify({
         'success': True,
         'scan_time': datetime.now().isoformat(),
+        'mode': 'parallel',
         'consensus': {
             'consensusPct': consensus_pct,
             'bullCount': bull_count,
