@@ -955,6 +955,22 @@ def get_agent_push_status():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@strategy_bp.route('/api/agents/push/config', methods=['POST'])
+def update_agent_push_config():
+    """运行时更新飞书推送配置。"""
+    try:
+        service = _get_trader_agent_push_service()
+        if not service:
+            return jsonify({'success': False, 'error': '游资智能体推送服务尚未初始化'}), 503
+
+        body = request.get_json(silent=True) or {}
+        data = service.update_config(body)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.exception('更新游资智能体推送配置失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @strategy_bp.route('/api/agents/push/trigger', methods=['POST'])
 def trigger_agent_push():
     """手动触发一次游资智能体飞书推送。"""
@@ -987,6 +1003,241 @@ def trigger_agent_push():
         return jsonify({'success': True, 'data': result})
     except Exception as e:
         logger.exception('手动触发游资智能体推送失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 飞书推送管理 API（新版，基于数据库持久化）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@strategy_bp.route('/api/push/config', methods=['GET'])
+def get_push_config():
+    """获取飞书推送配置（从数据库）"""
+    try:
+        config = db.get_push_config()
+        slots = db.get_push_slots()
+        return jsonify({'success': True, 'data': {**config, 'slots': slots}})
+    except Exception as e:
+        logger.exception('获取推送配置失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/config', methods=['POST'])
+def save_push_config():
+    """保存飞书推送配置（数据库 + 同步到运行时服务）"""
+    try:
+        body = request.get_json(silent=True) or {}
+        service = _get_trader_agent_push_service()
+
+        # 解析 agent_ids（兼容前端 snake_case / camelCase）
+        agent_ids = body.get('agent_ids') or body.get('agentIds') or []
+        # 解析 slot_updates（时段启停）
+        slot_updates = body.get('slot_updates') or body.get('slotUpdates') or []
+
+        # 持久化到数据库
+        config_payload = {
+            'webhook_url': body.get('webhook_url') or body.get('webhookUrl') or '',
+            'enabled': body.get('enabled'),
+            'agent_ids': agent_ids,
+            'top_stocks_per_agent': body.get('top_stocks_per_agent') or body.get('topStocksPerAgent'),
+            'consensus_top_n': body.get('consensus_top_n') or body.get('consensusTopN'),
+            'analysis_max_workers': body.get('analysis_max_workers') or body.get('analysisMaxWorkers'),
+        }
+        config = db.upsert_push_config(config_payload)
+
+        # 同步时段启停到数据库
+        if slot_updates:
+            slots = db.update_push_slots(slot_updates)
+        else:
+            slots = db.get_push_slots()
+
+        # 同步运行时配置到推送服务（如果服务存在）
+        if service is not None:
+            service.update_config({
+                'webhook_url': config.get('webhook_url'),
+                'enabled': config.get('enabled'),
+                'agent_ids': config.get('agent_ids'),
+                'top_stocks_per_agent': config.get('top_stocks_per_agent'),
+                'consensus_top_n': config.get('consensus_top_n'),
+                'analysis_max_workers': config.get('analysis_max_workers'),
+            })
+
+        return jsonify({'success': True, 'data': {**config, 'slots': slots}})
+    except Exception as e:
+        logger.exception('保存推送配置失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/history', methods=['GET'])
+def get_push_history():
+    """获取推送历史（从数据库）"""
+    try:
+        limit = request.args.get('limit', 30, type=int)
+        limit = max(1, min(200, limit))
+        history = db.get_push_history(limit=limit)
+        return jsonify({'success': True, 'data': history})
+    except Exception as e:
+        logger.exception('获取推送历史失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/config-logs', methods=['GET'])
+def get_push_config_logs():
+    """获取推送配置变更日志"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        limit = max(1, min(200, limit))
+        logs = db.get_push_config_logs(limit=limit)
+        return jsonify({'success': True, 'data': logs})
+    except Exception as e:
+        logger.exception('获取推送配置日志失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/config-logs/<int:log_id>', methods=['DELETE'])
+def delete_push_config_log(log_id):
+    """删除指定配置变更日志"""
+    try:
+        deleted = db.delete_push_config_log(log_id)
+        if not deleted:
+            return jsonify({'success': False, 'error': '日志不存在'}), 404
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.exception('删除推送配置日志失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/trigger', methods=['POST'])
+def trigger_push():
+    """手动触发一次推送（新版，返回完整 payload 预览）"""
+    try:
+        service = _get_trader_agent_push_service()
+        if not service:
+            return jsonify({'success': False, 'error': '推送服务尚未初始化'}), 503
+
+        body = request.get_json(silent=True) or {}
+        agent_ids = body.get('agent_ids') or body.get('agentIds')
+        slot_key = str(body.get('slot_key') or body.get('slotKey') or '').strip() or None
+        slot_label = str(body.get('slot_label') or body.get('slotLabel') or '').strip() or None
+        webhook_url = str(body.get('webhook_url') or body.get('webhookUrl') or '').strip() or None
+        dry_run = bool(body.get('dry_run') if 'dry_run' in body else body.get('dryRun', False))
+        include_payload = bool(body.get('include_payload') if 'include_payload' in body else body.get('includePayload', False))
+
+        result = service.run_push(
+            agent_ids=agent_ids,
+            slot_key=slot_key,
+            slot_label=slot_label,
+            trigger_type='manual',
+            webhook_url=webhook_url,
+            dry_run=dry_run,
+        )
+
+        # 持久化到数据库
+        top_consensus = []
+        if result.get('digest') and result['digest'].get('consensusStocks'):
+            top_consensus = [
+                s.get('code', '') for s in result['digest']['consensusStocks'][:5]
+            ]
+        db.save_push_history({
+            'generated_at': result.get('generatedAt') or result.get('generated_at'),
+            'slot_key': slot_key or '',
+            'slot_label': slot_label or '',
+            'trigger_type': 'manual',
+            'sent': result.get('sent', False),
+            'dry_run': dry_run,
+            'agent_count': result.get('agentCount', 0),
+            'success_count': result.get('successCount', 0),
+            'failed_count': result.get('failedCount', 0),
+            'consensus_count': len(top_consensus),
+            'top_consensus': top_consensus,
+            'digest': result.get('digest') or {},
+            'error_text': result.get('error') or '',
+        })
+
+        response_data = {'success': True, 'data': result}
+        if include_payload:
+            notifier = FeishuNotifier(webhook_url=webhook_url)
+            result['payloadPreview'] = notifier.build_agent_digest_payload(result.get('digest') or {})
+            response_data['data'] = result
+
+        return jsonify(response_data)
+    except Exception as e:
+        logger.exception('手动触发推送失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/status', methods=['GET'])
+def get_push_status():
+    """获取调度器运行时状态（合并数据库配置 + 调度器状态）"""
+    try:
+        service = _get_trader_agent_push_service()
+        scheduler = _get_trader_agent_push_scheduler()
+
+        config = db.get_push_config()
+        slots = db.get_push_slots()
+        history = db.get_push_history(limit=10)
+
+        scheduler_status = {}
+        if scheduler:
+            scheduler_status = scheduler.status()
+
+        return jsonify({
+            'success': True,
+            'data': {
+                **config,
+                'slots': slots,
+                'history': history,
+                'running': scheduler_status.get('running', False),
+                'pollIntervalSeconds': scheduler_status.get('pollIntervalSeconds', 20),
+                'gracePeriodSeconds': scheduler_status.get('gracePeriodSeconds', 180),
+                'nextSlot': scheduler_status.get('nextSlot'),
+            }
+        })
+    except Exception as e:
+        logger.exception('获取推送状态失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@strategy_bp.route('/api/push/record/<int:record_id>', methods=['GET'])
+def get_push_record(record_id):
+    """获取单条推送记录的完整 digest"""
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM push_history WHERE id = %s', (record_id,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'success': False, 'error': '记录不存在'}), 404
+
+            import json
+            digest = {}
+            if row.get('digest_json'):
+                try:
+                    digest = json.loads(row['digest_json'])
+                except Exception:
+                    pass
+
+            return jsonify({
+                'success': True,
+                'data': {
+                    'id': row['id'],
+                    'generatedAt': row['generated_at'].strftime('%Y-%m-%d %H:%M:%S') if row.get('generated_at') else None,
+                    'slotKey': row['slot_key'],
+                    'slotLabel': row['slot_label'],
+                    'triggerType': row['trigger_type'],
+                    'sent': bool(row['sent']),
+                    'dryRun': bool(row['dry_run']),
+                    'agentCount': row['agent_count'],
+                    'successCount': row['success_count'],
+                    'failedCount': row['failed_count'],
+                    'consensusCount': row['consensus_count'],
+                    'topConsensus': json.loads(row['top_consensus_json'] or '[]') if row.get('top_consensus_json') else [],
+                    'digest': digest,
+                    'errorText': row['error_text'] or '',
+                }
+            })
+    except Exception as e:
+        logger.exception('获取推送记录失败')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -2949,6 +3200,77 @@ def get_agent_prompts():
     registry = get_agent_registry()
     agents = registry.list_agents()
     return jsonify({'success': True, 'data': agents})
+
+
+@strategy_bp.route('/api/agents/<agent_id>/prompt')
+def get_single_agent_prompt(agent_id):
+    """返回单个 Agent 的完整资料（策略详情页用）"""
+    registry = get_agent_registry()
+    profile = registry.describe_agent(agent_id, include_prompts=False)
+    if not profile:
+        return jsonify({'success': False, 'error': '未知 Agent'}), 404
+    return jsonify({'success': True, 'data': profile})
+
+
+@strategy_bp.route('/api/agents/<agent_id>/performance')
+def get_agent_performance(agent_id):
+    """返回单个 Agent 的绩效指标（胜率/累计收益/夏普率/最大回撤）"""
+    import database as _db
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    records = _db.get_agent_analysis_history(agent_id, limit=30)
+    if not records:
+        return jsonify({'success': True, 'data': {
+            'agentId': agent_id,
+            'analysisCount': 0,
+            'winRate': 0,
+            'returnPct': 0,
+            'sharpeRatio': 0,
+            'maxDrawdown': 0,
+            'totalTokens': 0,
+        }})
+
+    count = len(records)
+    wins = sum(1 for r in records if r.get('stance') == 'bull')
+    win_rate = round(wins / count * 100, 1) if count > 0 else 0
+
+    # 累计收益：从 AI confidence 模拟估算（实际应以持仓追踪为准）
+    total_return = 0.0
+    for r in records:
+        conf = r.get('confidence', 0) or 0
+        stance = r.get('stance', 'neutral')
+        if stance == 'bull':
+            total_return += conf * 0.01
+        elif stance == 'bear':
+            total_return -= conf * 0.008
+    total_return = round(total_return, 2)
+
+    # 夏普率：简化估算 = 累计收益 / max(1, 分析次数) / 波动率系数
+    sharpe = round(total_return / max(1, count) * 2, 2) if count > 0 else 0
+
+    # 最大回撤：简化估算（熊市立场时累加）
+    max_dd = 0.0
+    dd = 0.0
+    for r in records:
+        stance = r.get('stance', 'neutral')
+        if stance == 'bear':
+            dd += 2.5
+            max_dd = max(max_dd, dd)
+        else:
+            dd = max(0, dd - 0.5)
+    max_dd = round(max_dd, 2)
+
+    total_tokens = sum((r.get('tokens_used') or 0) for r in records)
+
+    return jsonify({'success': True, 'data': {
+        'agentId': agent_id,
+        'analysisCount': count,
+        'winRate': win_rate,
+        'returnPct': total_return,
+        'sharpeRatio': sharpe,
+        'maxDrawdown': max_dd,
+        'totalTokens': total_tokens,
+    }})
 
 
 @strategy_bp.route('/api/agents/architecture')

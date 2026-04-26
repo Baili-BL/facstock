@@ -18,11 +18,18 @@ import BollingerAlertList from './views/BollingerAlertList.vue'
 import BollingerAlertEdit from './views/BollingerAlertEdit.vue'
 import AIStrategy from './views/AIStrategy.vue'
 import MacroFlashReport from './views/MacroFlashReport.vue'
+import TodayThemeDetail from './views/TodayThemeDetail.vue'
 import AISummaryDetail from './views/AISummaryDetail.vue'
 import StrategyAgents from './views/StrategyAgents.vue'
+import StrategyAgentsIntro from './views/StrategyAgentsIntro.vue'
+import StrategyAgentsIntroPrinciples from './views/StrategyAgentsIntroPrinciples.vue'
+import YouziAgents from './views/YouziAgents.vue'
 import AgentHoldings from './views/AgentHoldings.vue'
 import AgentAnalysis from './views/AgentAnalysis.vue'
 import AgentDetailSummary from './views/AgentDetailSummary.vue'
+import FeishuPush from './views/FeishuPush.vue'
+import FeishuPushHistory from './views/FeishuPushHistory.vue'
+import FeishuPushLogs from './views/FeishuPushLogs.vue'
 import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
@@ -50,10 +57,26 @@ const routes = [
   { path: '/strategy/ai/macro-summary', component: AISummaryDetail },
   { path: '/strategy/ai', component: AIStrategy },
   { path: '/strategy/macro', component: MacroFlashReport },
+  { path: '/strategy/today-theme', component: TodayThemeDetail },
   { path: '/strategy/agents', component: StrategyAgents },
+  { path: '/strategy/youzi_agents', component: YouziAgents },
+  { path: '/strategy/agents/intro', component: StrategyAgentsIntro },
+  { path: '/strategy/agents/intro/principles', component: StrategyAgentsIntroPrinciples },
   { path: '/strategy/agents/:id', component: AgentHoldings },
   { path: '/strategy/agents/:id/analysis', component: AgentAnalysis },
   { path: '/strategy/agents/:id/summary', component: AgentDetailSummary },
+  { path: '/strategy/agents/feishu', component: FeishuPushLogs },
+  { path: '/strategy/agents/feishu/edit', component: FeishuPush },
+  { path: '/strategy/agents/feishu/history', component: FeishuPushHistory },
+  // youzi_agents 子路由（与上方 agents 子路由共用相同组件，URL 统一使用 youzi_agents 前缀）
+  { path: '/strategy/youzi_agents/intro', component: StrategyAgentsIntro },
+  { path: '/strategy/youzi_agents/intro/principles', component: StrategyAgentsIntroPrinciples },
+  { path: '/strategy/youzi_agents/:id', component: AgentHoldings },
+  { path: '/strategy/youzi_agents/:id/analysis', component: AgentAnalysis },
+  { path: '/strategy/youzi_agents/:id/summary', component: AgentDetailSummary },
+  { path: '/strategy/youzi_agents/feishu', component: FeishuPushLogs },
+  { path: '/strategy/youzi_agents/feishu/edit', component: FeishuPush },
+  { path: '/strategy/youzi_agents/feishu/history', component: FeishuPushHistory },
   { path: '/strategy/backtest', component: Backtest },
   { path: '/strategy/factor-prompt', component: FactorPrompt },
   { path: '/ticai', component: Ticai },

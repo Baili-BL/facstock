@@ -397,3 +397,147 @@ export async function fetchAgentInfo(agentId) {
   const json = await apiGet(`${BASE}/agents/${agentId}/prompt`)
   return json.data || {}
 }
+
+/**
+ * 获取单个 Agent 完整资料（策略详情页用）
+ * @param {string} agentId
+ * @returns {Promise<AgentProfile>}
+ */
+export async function fetchAgentProfile(agentId) {
+  const json = await apiGet(`${BASE}/agents/${agentId}/prompt`)
+  return json.data || {}
+}
+
+// ─── 飞书推送管理 ────────────────────────────────────────────────────────────
+
+/**
+ * 获取飞书推送状态（调度器状态 + 最近推送历史）
+ * @returns {Promise<object>}
+ */
+export async function fetchAgentPushStatus() {
+  const json = await apiGet(`${BASE}/agents/push/status`)
+  return json.data
+}
+
+/**
+ * 更新飞书推送配置
+ * @param {object} config
+ * @param {boolean} [config.enabled]
+ * @param {string}  [config.webhook_url]
+ * @param {string[]} [config.agent_ids]
+ * @param {number}   [config.top_stocks_per_agent]
+ * @param {number}   [config.consensus_top_n]
+ * @param {number}   [config.analysis_max_workers]
+ * @returns {Promise<object>}
+ */
+export async function updateAgentPushConfig(config) {
+  return apiPost(`${BASE}/agents/push/config`, config)
+}
+
+/**
+ * 手动触发一次飞书推送
+ * @param {object} opts
+ * @param {string[]} [opts.agent_ids]      — 指定 Agent，默认用配置中的
+ * @param {string}   [opts.slot_key]       — 时段 key
+ * @param {string}   [opts.slot_label]     — 时段标签
+ * @param {string}   [opts.webhook_url]    — 临时 webhook（可选）
+ * @param {boolean}  [opts.dry_run]        — 是否仅生成不发送
+ * @returns {Promise<object>}
+ */
+export async function triggerAgentPush(opts = {}) {
+  return apiPost(`${BASE}/agents/push/trigger`, opts)
+}
+
+/**
+ * 测试飞书 Webhook 连通性
+ * @param {string} webhookUrl — 可选，用当前配置的则不传
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+export async function testFeishuWebhook(webhookUrl) {
+  const body = webhookUrl ? { webhook_url: webhookUrl } : {}
+  return apiPost(`${BASE}/feishu/test`, body)
+}
+
+// ─── 飞书推送管理 API（新版，基于数据库）──────────────────────────────────────
+
+/**
+ * 获取完整推送状态（数据库配置 + 调度器状态）
+ * @returns {Promise<object>}
+ */
+export async function fetchPushStatus() {
+  const json = await apiGet(`${BASE}/push/status`)
+  return json.data
+}
+
+/**
+ * 保存推送配置（数据库 + 运行时服务）
+ * @param {object} cfg
+ * @param {string[]} [cfg.agentIds]   — 选中的 Agent ID 列表
+ * @param {string}  [cfg.webhookUrl] — Webhook URL
+ * @param {number}  [cfg.topStocksPerAgent]
+ * @param {number}  [cfg.consensusTopN]
+ * @param {number}  [cfg.analysisMaxWorkers]
+ * @param {boolean} [cfg.enabled]
+ * @param {Array}   [cfg.slotUpdates] — [{key, enabled, label, time}]
+ * @returns {Promise<object>}
+ */
+export async function savePushConfig(cfg) {
+  const json = await apiPost(`${BASE}/push/config`, cfg)
+  return json.data
+}
+
+/**
+ * 获取推送历史
+ * @param {number} limit
+ * @returns {Promise<Array>}
+ */
+export async function fetchPushHistory(limit = 30) {
+  const json = await apiGet(`${BASE}/push/history?limit=${limit}`)
+  return json.data
+}
+
+/**
+ * 获取单条推送记录详情（含完整 digest）
+ * @param {number} recordId
+ * @returns {Promise<object>}
+ */
+export async function fetchPushRecord(recordId) {
+  const json = await apiGet(`${BASE}/push/record/${recordId}`)
+  return json.data
+}
+
+/**
+ * 手动触发一次推送（新版）
+ * @param {object} opts
+ * @param {string[]} [opts.agent_ids]
+ * @param {string}   [opts.slot_key]
+ * @param {string}   [opts.slot_label]
+ * @param {string}   [opts.webhook_url]
+ * @param {boolean}  [opts.dry_run]
+ * @param {boolean}  [opts.include_payload]
+ * @returns {Promise<object>}
+ */
+export async function triggerPush(opts = {}) {
+  return apiPost(`${BASE}/push/trigger`, opts)
+}
+
+/**
+ * 获取推送配置变更日志
+ * @param {number} limit
+ * @returns {Promise<Array>}
+ */
+export async function fetchPushConfigLogs(limit = 50) {
+  const json = await apiGet(`${BASE}/push/config-logs?limit=${limit}`)
+  return json.data
+}
+
+/**
+ * 删除指定配置变更日志
+ * @param {number} logId
+ * @returns {Promise<void>}
+ */
+export async function deletePushConfigLog(logId) {
+  const res = await fetch(`${BASE}/push/config-logs/${logId}`, { method: 'DELETE' })
+  const json = await res.json()
+  if (!json.success) throw new Error(json.error || '删除失败')
+}

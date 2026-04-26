@@ -110,26 +110,17 @@
 
       <!-- 宏观同步快讯入口 -->
       <section class="hm-card hm-flash" @click="$router.push('/strategy/macro')">
-        <div v-if="loadingFlash" class="hm-flash__skel" aria-busy="true">
-          <div class="hm-flash__skel-left">
-            <div class="skeleton-line" style="width:70%;height:16px;border-radius:4px;margin-bottom:6px" />
-            <div class="skeleton-line" style="width:50%;height:12px;border-radius:4px" />
+        <div class="hm-flash__left">
+          <div class="hm-flash__badge">
+            <span class="hm-flash__dot" />
+            FLASH
           </div>
-          <div class="skeleton-line" style="width:24px;height:24px;border-radius:50%;flex-shrink:0" />
+          <h3 class="hm-flash__title">宏观同步快讯</h3>
+          <p class="hm-flash__sub">点击后再加载国际大事件、全球资产与智能体研判</p>
         </div>
-        <template v-else>
-          <div class="hm-flash__left">
-            <div class="hm-flash__badge">
-              <span class="hm-flash__dot" />
-              FLASH
-            </div>
-            <h3 class="hm-flash__title">{{ flashData?.title || 'Editorial Intelligence' }}</h3>
-            <p class="hm-flash__sub">{{ flashData?.subtitle || '实时追踪全球资本市场动态与智能体研判' }}</p>
-          </div>
-          <svg class="hm-flash__arrow" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
-          </svg>
-        </template>
+        <svg class="hm-flash__arrow" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+        </svg>
       </section>
 
       <!-- 股票排行：与板块页一致的胶囊 Tab，涨跌幅仅文字着色 -->
@@ -191,13 +182,14 @@
         </div>
       </section>
 
-      <!-- 每日宏观视角：真实数据 -->
-      <section class="hm-card hm-macro">
+      <!-- 今日炒什么：Qwen + 盘面事实 -->
+      <section class="hm-card hm-macro hm-macro--clickable" @click="$router.push('/strategy/today-theme')">
         <div class="hm-macro__hd">
           <svg class="hm-macro__ico" viewBox="0 0 24 24" aria-hidden="true">
             <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
           </svg>
-          <h3 class="hm-macro__title">每日宏观视角 <span class="hm-macro__en">(DAILY MACRO)</span></h3>
+          <h3 class="hm-macro__title">今日炒什么 <span class="hm-macro__en">(WHAT'S HOT TODAY)</span></h3>
+          <span class="hm-macro__jump">近5日 ›</span>
         </div>
         <p class="hm-macro__body">
           <span v-if="loadingMacro" class="sk-body-text" aria-busy="true">
@@ -207,6 +199,15 @@
           </span>
           <span v-else>{{ macroSummaryText }}</span>
         </p>
+        <div v-if="!loadingMacro && macroTopics.length" class="hm-macro__chips">
+          <span
+            v-for="topic in macroTopics"
+            :key="topic"
+            class="hm-macro__chip"
+          >
+            {{ topic }}
+          </span>
+        </div>
         <div v-if="loadingMacro" class="hm-macro__foot-skel" aria-busy="true">
           <div class="hm-macro__stat-skel" />
           <div class="hm-macro__divider-skel" />
@@ -214,12 +215,12 @@
         </div>
         <div v-else class="hm-macro__foot">
           <div class="hm-macro__stat-col">
-            <span class="hm-macro__stat-l">SENTIMENT SCORE</span>
+            <span class="hm-macro__stat-l">MAIN THEME HEAT</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroScore }} / 100</span>
           </div>
           <div class="hm-macro__divider" aria-hidden="true" />
           <div class="hm-macro__stat-col">
-            <span class="hm-macro__stat-l">RISK LEVEL</span>
+            <span class="hm-macro__stat-l">TRADING RHYTHM</span>
             <span class="hm-macro__stat-v" :class="macroScoreColor">{{ macroRiskLevel }}</span>
           </div>
         </div>
@@ -255,7 +256,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { market, macroSummary, macroFlashReport } from '@/api/market.js'
+import { market, todayThemeSummary } from '@/api/market.js'
 import G2SectorTreemap from '@/components/G2SectorTreemap.vue'
 
 const router = useRouter()
@@ -269,10 +270,6 @@ const loadingOverview = ref(true)
 const loadingRank     = ref(true)
 const loadingSectors  = ref(true)
 const loadingMacro    = ref(true)
-const loadingFlash    = ref(true)
-
-// 宏观快讯数据
-const flashData = ref(null)
 
 // 宏观摘要数据
 const macroRaw = ref(null)
@@ -280,7 +277,7 @@ const macroRaw = ref(null)
 // 全部骨架展示后隐藏全页 loading
 const allSkeletonsShown = computed(() =>
   loadingIndex.value || loadingTurnover.value || loadingLimit.value ||
-  loadingOverview.value || loadingRank.value || loadingSectors.value || loadingFlash.value
+  loadingOverview.value || loadingRank.value || loadingSectors.value
 )
 
 const overview = ref([])
@@ -471,12 +468,24 @@ const capPair = computed(() => {
   return { large, small, hint, largeLabel, smallLabel }
 })
 
-const macroScore = computed(() => macroRaw.value?.sentiment_score ?? 50)
-const macroRiskLevel = computed(() => macroRaw.value?.risk_level ?? 'MEDIUM')
+const macroScore = computed(() => macroRaw.value?.theme_score ?? macroRaw.value?.sentiment_score ?? 50)
+const macroRiskLevel = computed(() => macroRaw.value?.trade_bias ?? macroRaw.value?.risk_level ?? '轮动观察')
 const macroSummaryText = computed(() => {
   const t = macroRaw.value?.summary_text
   if (t != null && String(t).trim()) return String(t).trim()
   return '摘要暂不可用，请稍后重试'
+})
+const macroTopics = computed(() => {
+  const topics = macroRaw.value?.focus_topics
+  if (!Array.isArray(topics)) return []
+  return topics
+    .map(item => {
+      if (typeof item === 'string') return item.trim()
+      if (item && typeof item === 'object') return String(item.name || item.topic || item.label || '').trim()
+      return ''
+    })
+    .filter(Boolean)
+    .slice(0, 5)
 })
 const macroScoreColor = computed(() => {
   const s = macroScore.value
@@ -608,7 +617,7 @@ async function loadTurnover() {
 
 async function loadMacro() {
   try {
-    const data = await macroSummary()
+    const data = await todayThemeSummary()
     if (data && typeof data === 'object') {
       macroRaw.value = data
     }
@@ -616,19 +625,6 @@ async function loadMacro() {
     console.error('macro error', e)
   } finally {
     loadingMacro.value = false
-  }
-}
-
-async function loadFlash() {
-  try {
-    const data = await macroFlashReport()
-    if (data && typeof data === 'object') {
-      flashData.value = data
-    }
-  } catch (e) {
-    console.error('flash report error', e)
-  } finally {
-    loadingFlash.value = false
   }
 }
 
@@ -668,7 +664,6 @@ onMounted(() => {
   loadTurnover()
   loadMacro()
   loadSession()
-  loadFlash()
 
   sessionPollTimer = setInterval(() => {
     clockTick.value += 1
@@ -689,7 +684,6 @@ onMounted(() => {
     loadTurnover()
     loadMacro()
     loadSession()
-    loadFlash()
   }, 120_000)
 })
 onUnmounted(() => {
@@ -1234,6 +1228,7 @@ onUnmounted(() => {
   padding: 16px 14px 14px;
   position: relative;
   overflow: hidden;
+  cursor: pointer;
 }
 .hm-macro::before {
   content: '';
@@ -1254,6 +1249,12 @@ onUnmounted(() => {
   margin-bottom: 10px;
   position: relative;
   z-index: 1;
+}
+.hm-macro__jump {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--hm-primary);
 }
 .hm-macro__ico {
   width: 18px;
@@ -1282,6 +1283,25 @@ onUnmounted(() => {
   font-weight: 500;
   position: relative;
   z-index: 1;
+}
+.hm-macro__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -2px 0 14px;
+  position: relative;
+  z-index: 1;
+}
+.hm-macro__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 62, 199, 0.08);
+  color: var(--hm-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 .hm-macro__foot {
   display: flex;

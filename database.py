@@ -303,7 +303,94 @@ def init_db(max_retries: int = 10, retry_delay: int = 3):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
+        # 飞书推送配置表（只保留一条主配置）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS push_config (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                webhook_url VARCHAR(768) NOT NULL DEFAULT '',
+                enabled TINYINT(1) NOT NULL DEFAULT 1,
+                agent_ids_json TEXT NOT NULL COMMENT 'JSON数组 ["beijing","qiao",...]',
+                top_stocks_per_agent INT NOT NULL DEFAULT 3,
+                consensus_top_n INT NOT NULL DEFAULT 5,
+                analysis_max_workers INT NOT NULL DEFAULT 2,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 飞书推送时段表（4个固定时段，可启用/禁用）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS push_slots (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                slot_key VARCHAR(10) NOT NULL UNIQUE COMMENT '0900/1230/1430/2100',
+                time_str VARCHAR(10) NOT NULL COMMENT '09:00',
+                label VARCHAR(100) NOT NULL COMMENT '盘前策略会',
+                template VARCHAR(20) NOT NULL DEFAULT 'blue' COMMENT 'blue/orange/red/indigo',
+                enabled TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_enabled (enabled)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 飞书推送历史表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS push_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                generated_at DATETIME NOT NULL COMMENT '生成时间',
+                slot_key VARCHAR(10) DEFAULT '' COMMENT '时段key',
+                slot_label VARCHAR(100) DEFAULT '' COMMENT '时段标签',
+                trigger_type VARCHAR(20) NOT NULL DEFAULT 'scheduled' COMMENT 'scheduled/manual',
+                sent TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否发送成功',
+                dry_run TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否仅预览',
+                agent_count INT NOT NULL DEFAULT 0,
+                success_count INT NOT NULL DEFAULT 0,
+                failed_count INT NOT NULL DEFAULT 0,
+                consensus_count INT NOT NULL DEFAULT 0,
+                top_consensus_json TEXT COMMENT 'JSON数组，顶部共识股',
+                digest_json LONGTEXT COMMENT '完整digest JSON',
+                error_text TEXT COMMENT '错误信息',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_generated_at (generated_at DESC),
+                INDEX idx_slot_key (slot_key),
+                INDEX idx_sent (sent)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 初始化默认推送时段
+        _init_default_push_slots(cursor)
+
+        # 飞书推送配置变更日志表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS push_config_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                change_type VARCHAR(50) NOT NULL COMMENT 'webhook_update|agent_add|agent_remove|slot_update|param_update|enable_toggle',
+                success TINYINT(1) NOT NULL DEFAULT 1,
+                details_json TEXT COMMENT '变更详情JSON',
+                summary VARCHAR(200) NOT NULL COMMENT '摘要描述',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_changed_at (changed_at DESC),
+                INDEX idx_change_type (change_type)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
         conn.commit()
+
+
+def _init_default_push_slots(cursor):
+    """初始化默认推送时段（如不存在）"""
+    defaults = [
+        {'key': '0900', 'time': '09:00', 'label': '盘前策略会', 'template': 'blue'},
+        {'key': '1230', 'time': '12:30', 'label': '午间复盘',   'template': 'orange'},
+        {'key': '1430', 'time': '14:30', 'label': '午后决策',   'template': 'red'},
+        {'key': '2100', 'time': '21:00', 'label': '晚间复盘',   'template': 'indigo'},
+    ]
+    for d in defaults:
+        cursor.execute('''
+            INSERT IGNORE INTO push_slots (slot_key, time_str, label, template, enabled)
+            VALUES (%s, %s, %s, %s, 1)
+        ''', (d['key'], d['time'], d['label'], d['template']))
 
 
 def create_scan_record(params: Dict = None) -> int:
@@ -1695,7 +1782,7 @@ def snapshot_rows_from_db_holdings(rows: List[Dict]) -> List[Dict]:
             'stock_name': str(h.get('stock_name') or h.get('name') or ''),
             'sector': str(h.get('sector') or ''),
             'current_price': _snapshot_float(h.get('current_price') or h.get('price')),
-            'profit_loss_pct': _snapshot_float(h.get('profit_loss_pct') or h.get('changePct')),
+            'change_pct': _snapshot_float(h.get('profit_loss_pct') or h.get('changePct')),
             'source': 'holdings',
         })
     return out
@@ -1713,7 +1800,7 @@ def snapshot_rows_from_recommended_stocks(stocks: List[Dict]) -> List[Dict]:
             'stock_name': str(s.get('name') or ''),
             'sector': str(s.get('sector') or ''),
             'current_price': _snapshot_float(s.get('price')),
-            'profit_loss_pct': _snapshot_float(s.get('changePct')),
+            'change_pct': _snapshot_float(s.get('changePct')),
             'source': 'recommended',
         })
     return out
@@ -1740,33 +1827,52 @@ def save_recommended_stocks_as_holdings(
         except (TypeError, ValueError):
             return default
 
+    remark_tpl = remark_template or 'AI推荐({agent_id})'
+    remark = remark_tpl.replace('{agent_id}', agent_id)
+
     if not stocks:
         return 0
+
     count = 0
-    remark_tpl = remark_template or 'AI推荐({agent_id})'
-    for s in stocks or []:
-        code = str(s.get('code') or '').strip()
-        name = str(s.get('name') or '').strip()
-        if not code or not name:
-            continue
-        try:
-            ok = upsert_holding(
-                code=code,
-                name=name,
-                sector=str(s.get('sector') or ''),
-                avg_cost=_parse_float(s.get('price') or 0),
-                current_price=_parse_float(s.get('price') or 0),
-                position_ratio=_parse_float(s.get('positionRatio') or 0),
-                profit_loss_pct=_parse_float(s.get('changePct') or 0),
-                profit_loss_amount=0.0,
-                hold_days=0,
-                position_type='long',
-                remark=remark_tpl.replace('{agent_id}', agent_id),
-            )
-            if ok:
-                count += 1
-        except Exception:
-            pass
+    # 在同一连接+事务中完成：清理旧推荐 → 写入新推荐
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM holdings WHERE remark = %s', (remark,))
+        for s in stocks:
+            code = str(s.get('code') or '').strip()
+            name = str(s.get('name') or '').strip()
+            if not code or not name:
+                continue
+            try:
+                cursor.execute('''
+                    INSERT INTO holdings
+                        (stock_code, stock_name, sector, avg_cost, current_price,
+                         position_ratio, profit_loss_pct, profit_loss_amount,
+                         hold_days, position_type, remark)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        stock_name = VALUES(stock_name),
+                        sector = VALUES(sector),
+                        avg_cost = VALUES(avg_cost),
+                        current_price = VALUES(current_price),
+                        position_ratio = VALUES(position_ratio),
+                        profit_loss_pct = VALUES(profit_loss_pct),
+                        profit_loss_amount = VALUES(profit_loss_amount),
+                        hold_days = VALUES(hold_days),
+                        position_type = VALUES(position_type),
+                        remark = VALUES(remark)
+                ''', (
+                    code, name, str(s.get('sector') or ''),
+                    _parse_float(s.get('price') or 0),
+                    _parse_float(s.get('price') or 0),
+                    _parse_float(s.get('positionRatio') or 0),
+                    _parse_float(s.get('changePct') or 0),
+                    0.0, 0, 'long', remark,
+                ))
+                if cursor.rowcount > 0:
+                    count += 1
+            except Exception:
+                pass
     return count
 
 
@@ -2228,6 +2334,369 @@ def get_task_summary() -> Dict:
                 result[s] = c
             result['total'] += c
         return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 飞书推送配置 CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_push_config() -> Dict:
+    """获取飞书推送主配置（只读第一条记录，不存在则返回默认）"""
+    defaults = {
+        'id': 0,
+        'webhook_url': '',
+        'enabled': True,
+        'agent_ids': [],
+        'top_stocks_per_agent': 3,
+        'consensus_top_n': 5,
+        'analysis_max_workers': 2,
+    }
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM push_config ORDER BY id ASC LIMIT 1')
+        row = cursor.fetchone()
+        if not row:
+            return defaults
+        agent_ids = []
+        if row.get('agent_ids_json'):
+            try:
+                agent_ids = json.loads(row['agent_ids_json'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {
+            'id': row['id'],
+            'webhook_url': row.get('webhook_url') or '',
+            'enabled': bool(row.get('enabled', 1)),
+            'agent_ids': agent_ids,
+            'top_stocks_per_agent': int(row.get('top_stocks_per_agent', 3)),
+            'consensus_top_n': int(row.get('consensus_top_n', 5)),
+            'analysis_max_workers': int(row.get('analysis_max_workers', 2)),
+            'updated_at': _parse_datetime(row.get('updated_at')),
+        }
+
+
+def upsert_push_config(config: Dict) -> Dict:
+    """
+    创建或更新飞书推送配置。
+    config 支持: webhook_url, enabled, agent_ids, top_stocks_per_agent,
+                consensus_top_n, analysis_max_workers
+    """
+    # 先读取旧配置（用于变更对比）
+    old = get_push_config()
+    is_first_save = (old.get('id') or 0) == 0
+
+    webhook = str(config.get('webhook_url') or '').strip()[:768]
+    enabled = 1 if config.get('enabled') else 0
+    agent_ids = config.get('agent_ids') or []
+    if isinstance(agent_ids, (list, tuple)):
+        agent_ids_json = json.dumps(agent_ids, ensure_ascii=False)
+    else:
+        agent_ids_json = '[]'
+    top_stocks = max(1, min(10, int(config.get('top_stocks_per_agent', 3))))
+    consensus_n = max(1, min(20, int(config.get('consensus_top_n', 5))))
+    workers = max(1, min(8, int(config.get('analysis_max_workers', 2))))
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM push_config ORDER BY id ASC LIMIT 1 FOR UPDATE')
+        row = cursor.fetchone()
+        if row:
+            cursor.execute('''
+                UPDATE push_config
+                SET webhook_url=%s, enabled=%s, agent_ids_json=%s,
+                    top_stocks_per_agent=%s, consensus_top_n=%s, analysis_max_workers=%s
+                WHERE id=%s
+            ''', (webhook, enabled, agent_ids_json, top_stocks, consensus_n, workers, row['id']))
+        else:
+            cursor.execute('''
+                INSERT INTO push_config
+                    (webhook_url, enabled, agent_ids_json, top_stocks_per_agent, consensus_top_n, analysis_max_workers)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (webhook, enabled, agent_ids_json, top_stocks, consensus_n, workers))
+        conn.commit()
+
+    # ── 首次保存：记录初始化日志 ───────────────────────────────────────────
+    if is_first_save:
+        save_push_config_log({
+            'change_type': 'webhook_update',
+            'success': True,
+            'details': {'type': 'initial_save', 'webhook_url': webhook},
+            'summary': f'Webhook 地址已更新：由旧地址指向 {webhook[:40]}...',
+        })
+
+    # ── 记录变更日志 ──────────────────────────────────────────────────────────
+    AGENT_NAMES = {
+        'beijing': '北京炒家', 'qiao': '乔帮主', 'jia': '炒股养家',
+        'jun': '钧哥天下无双', 'speed': '极速先锋', 'trend': '趋势追随者',
+        'quant': '量化之翼', 'deepseek': '深度思考者',
+    }
+
+    # webhook 变更
+    old_webhook = old.get('webhook_url') or ''
+    if old_webhook != webhook:
+        o = old_webhook[:40] + ('...' if len(old_webhook) > 40 else '')
+        n = webhook[:40] + ('...' if len(webhook) > 40 else '')
+        save_push_config_log({
+            'change_type': 'webhook_update',
+            'success': True,
+            'details': {'old': old_webhook, 'new': webhook},
+            'summary': f'Webhook 地址已更新：由 {o} → {n}',
+        })
+
+    # enabled 变更
+    if bool(old.get('enabled')) != bool(enabled):
+        save_push_config_log({
+            'change_type': 'enable_toggle',
+            'success': True,
+            'details': {'old': bool(old.get('enabled')), 'new': bool(enabled)},
+            'summary': f'推送开关已{"启用" if enabled else "停用"}',
+        })
+
+    # agent 变更
+    old_agents = set(old.get('agent_ids') or [])
+    new_agents_set = set(agent_ids)
+    for a in (new_agents_set - old_agents):
+        save_push_config_log({
+            'change_type': 'agent_add',
+            'success': True,
+            'details': {'agent_id': a, 'agent_name': AGENT_NAMES.get(a, a)},
+            'summary': f'新增了推送角色："{AGENT_NAMES.get(a, a)}"',
+        })
+    for a in (old_agents - new_agents_set):
+        save_push_config_log({
+            'change_type': 'agent_remove',
+            'success': True,
+            'details': {'agent_id': a, 'agent_name': AGENT_NAMES.get(a, a)},
+            'summary': f'移除了推送角色："{AGENT_NAMES.get(a, a)}"',
+        })
+
+    # 并发数变更
+    if int(old.get('analysis_max_workers', 0)) != workers:
+        save_push_config_log({
+            'change_type': 'param_update',
+            'success': True,
+            'details': {'param': 'analysis_max_workers', 'old': old.get('analysis_max_workers'), 'new': workers},
+            'summary': f'修改了并发数，从 {old.get("analysis_max_workers")} 提高到 {workers}',
+        })
+
+    # 共识上限变更
+    if int(old.get('consensus_top_n', 0)) != consensus_n:
+        save_push_config_log({
+            'change_type': 'param_update',
+            'success': True,
+            'details': {'param': 'consensus_top_n', 'old': old.get('consensus_top_n'), 'new': consensus_n},
+            'summary': f'修改了共识股上限，从 {old.get("consensus_top_n")} 调整为 {consensus_n}',
+        })
+
+    # 每Agent推荐股上限变更
+    if int(old.get('top_stocks_per_agent', 0)) != top_stocks:
+        save_push_config_log({
+            'change_type': 'param_update',
+            'success': True,
+            'details': {'param': 'top_stocks_per_agent', 'old': old.get('top_stocks_per_agent'), 'new': top_stocks},
+            'summary': f'修改了每Agent推荐股，从 {old.get("top_stocks_per_agent")} 调整为 {top_stocks}',
+        })
+
+    return get_push_config()
+
+
+def get_push_slots() -> List[Dict]:
+    """获取所有推送时段配置"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM push_slots ORDER BY time_str ASC')
+        return [
+            {
+                'key': r['slot_key'],
+                'time': r['time_str'],
+                'label': r['label'],
+                'template': r['template'],
+                'enabled': bool(r['enabled']),
+            }
+            for r in cursor.fetchall()
+        ]
+
+
+def update_push_slots(slot_updates: List[Dict]) -> List[Dict]:
+    """
+    批量更新推送时段。
+    slot_updates: [{key: '0900', enabled: True/False, label: '...', time: '09:00'}, ...]
+    """
+    if not slot_updates:
+        return get_push_slots()
+
+    old_slots = {s['key']: s for s in get_push_slots()}
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for s in slot_updates:
+            k = str(s.get('key') or '').strip()
+            if not k:
+                continue
+            enabled = 1 if s.get('enabled') else 0
+            label = str(s.get('label') or '').strip()[:100]
+            time_str = str(s.get('time') or '').strip()[:10]
+            cursor.execute('''
+                UPDATE push_slots
+                SET enabled=%s, label=%s, time_str=%s
+                WHERE slot_key=%s
+            ''', (enabled, label, time_str, k))
+        conn.commit()
+
+    # 记录变更日志（新增时段 label 变更）
+    for s in slot_updates:
+        k = str(s.get('key') or '').strip()
+        if not k:
+            continue
+        old_s = old_slots.get(k, {})
+        new_label = str(s.get('label') or '').strip()
+        old_label = old_s.get('label', '')
+        new_enabled = bool(s.get('enabled'))
+        old_enabled = bool(old_s.get('enabled', False))
+        if new_label and new_label != old_label:
+            save_push_config_log({
+                'change_type': 'slot_update',
+                'success': True,
+                'details': {'slot_key': k, 'old_label': old_label, 'new_label': new_label, 'time': s.get('time', '')},
+                'summary': f'更新了定时推送时段，新增了 "{new_label}"',
+            })
+        elif new_enabled != old_enabled and new_enabled:
+            save_push_config_log({
+                'change_type': 'slot_update',
+                'success': True,
+                'details': {'slot_key': k, 'label': old_label or new_label, 'time': s.get('time', '')},
+                'summary': f'启用了定时推送时段 "{old_label or new_label}"',
+            })
+
+    return get_push_slots()
+
+
+def save_push_history(record: Dict) -> int:
+    """保存一条推送历史记录，返回新 id"""
+    import math
+    def _s(obj):
+        return json.dumps(obj, ensure_ascii=False, default=lambda v: (
+            None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
+        ))
+
+    gen_at = record.get('generated_at') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(gen_at, datetime):
+        gen_at = gen_at.strftime('%Y-%m-%d %H:%M:%S')
+
+    top_cons = record.get('top_consensus') or []
+    digest_json = _s(record.get('digest') or {})
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO push_history
+                (generated_at, slot_key, slot_label, trigger_type, sent, dry_run,
+                 agent_count, success_count, failed_count, consensus_count,
+                 top_consensus_json, digest_json, error_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            gen_at,
+            str(record.get('slot_key') or ''),
+            str(record.get('slot_label') or ''),
+            str(record.get('trigger_type') or 'scheduled'),
+            1 if record.get('sent') else 0,
+            1 if record.get('dry_run') else 0,
+            int(record.get('agent_count') or 0),
+            int(record.get('success_count') or 0),
+            int(record.get('failed_count') or 0),
+            int(record.get('consensus_count') or 0),
+            json.dumps(top_cons, ensure_ascii=False),
+            digest_json,
+            str(record.get('error_text') or ''),
+        ))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_push_history(limit: int = 30) -> List[Dict]:
+    """获取推送历史记录"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM push_history
+            ORDER BY generated_at DESC
+            LIMIT %s
+        ''', (limit,))
+        return [
+            {
+                'id': r['id'],
+                'generatedAt': _parse_datetime(r['generated_at']),
+                'slotKey': r['slot_key'],
+                'slotLabel': r['slot_label'],
+                'triggerType': r['trigger_type'],
+                'sent': bool(r['sent']),
+                'dryRun': bool(r['dry_run']),
+                'agentCount': r['agent_count'],
+                'successCount': r['success_count'],
+                'failedCount': r['failed_count'],
+                'consensusCount': r['consensus_count'],
+                'topConsensus': json.loads(r['top_consensus_json'] or '[]') if r.get('top_consensus_json') else [],
+                'errorText': r['error_text'] or '',
+            }
+            for r in cursor.fetchall()
+        ]
+
+
+def save_push_config_log(log: Dict) -> int:
+    """
+    保存一条配置变更日志，返回新 id。
+    log: {
+        change_type: str,  # webhook_update | agent_add | agent_remove | slot_update | param_update | enable_toggle
+        success: bool,
+        details: dict,     # 变更详情
+        summary: str,      # 摘要描述
+    }
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO push_config_log (change_type, success, details_json, summary)
+            VALUES (%s, %s, %s, %s)
+        ''', (
+            str(log.get('change_type') or 'unknown'),
+            1 if log.get('success') else 0,
+            json.dumps(log.get('details') or {}, ensure_ascii=False),
+            str(log.get('summary') or '')[:200],
+        ))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_push_config_logs(limit: int = 50) -> List[Dict]:
+    """获取配置变更日志，分页"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM push_config_log
+            ORDER BY changed_at DESC
+            LIMIT %s
+        ''', (limit,))
+        rows = cursor.fetchall()
+        return [
+            {
+                'id': r['id'],
+                'changedAt': _parse_datetime(r['changed_at']),
+                'changeType': r['change_type'],
+                'success': bool(r['success']),
+                'details': json.loads(r['details_json'] or '{}') if r.get('details_json') else {},
+                'summary': r['summary'] or '',
+            }
+            for r in rows
+        ]
+
+
+def delete_push_config_log(log_id: int) -> bool:
+    """删除指定日志"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM push_config_log WHERE id = %s', (log_id,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

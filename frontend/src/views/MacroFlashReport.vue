@@ -106,7 +106,7 @@
           </div>
           <div class="mfr-events-list">
             <div
-              v-for="(evt, i) in data.events"
+              v-for="(evt, i) in displayEvents"
               :key="i"
               class="mfr-event-item"
             >
@@ -241,18 +241,46 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { macroFlashReport } from '@/api/market.js'
+import { macroFlashReport, macroGlobalEvents } from '@/api/market.js'
 
 const isLoading = ref(true)
 const isRefreshing = ref(false)
 const error = ref('')
 const rawData = ref(null)
+const globalEventsRaw = ref([])
 
 async function load() {
   try {
-    const result = await macroFlashReport()
-    rawData.value = result
-    error.value = ''
+    const [reportRes, eventsRes] = await Promise.allSettled([
+      macroFlashReport(true),
+      macroGlobalEvents(true),
+    ])
+
+    if (reportRes.status === 'fulfilled') {
+      rawData.value = reportRes.value
+      error.value = ''
+    } else {
+      rawData.value = {
+        title: '宏观同步快讯',
+        subtitle: '实时追踪全球资本市场与宏观经济的微小扰动',
+        syncStatus: '部分数据加载失败',
+        international: [],
+        domestic: [],
+        domesticQuote: '主报告暂未成功返回，先展示国际大事件。',
+        events: [],
+        agentModelCount: 0,
+        agents: [],
+        sectors: [],
+        synthesis: { core: '主报告暂未成功返回，请稍后重试。', actions: ['点击右上角刷新重试'] },
+      }
+      error.value = ''
+    }
+
+    if (eventsRes.status === 'fulfilled') {
+      globalEventsRaw.value = Array.isArray(eventsRes.value?.events) ? eventsRes.value.events : []
+    } else {
+      globalEventsRaw.value = []
+    }
   } catch (e) {
     error.value = e.message || '加载失败'
   } finally {
@@ -270,6 +298,11 @@ async function refresh() {
 onMounted(load)
 
 const data = computed(() => rawData.value)
+const displayEvents = computed(() => {
+  if (Array.isArray(globalEventsRaw.value) && globalEventsRaw.value.length) return globalEventsRaw.value
+  const events = data.value?.events
+  return Array.isArray(events) ? events : []
+})
 
 function chgClass(change) {
   if (!change) return 'mfr-chg--flat'

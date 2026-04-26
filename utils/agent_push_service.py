@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -30,7 +30,7 @@ from utils.llm import get_agent_registry
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRADER_AGENT_IDS = ['beijing', 'qiao', 'jia', 'jun']
+DEFAULT_TRADER_AGENT_IDS = ['beijing', 'qiao', 'jia', 'jun', 'speed', 'trend', 'quant', 'deepseek']
 DEFAULT_SLOT_DEFINITIONS = [
     {'key': '0900', 'time': '09:00', 'label': '盘前策略会', 'template': 'blue'},
     {'key': '1230', 'time': '12:30', 'label': '午间复盘', 'template': 'orange'},
@@ -214,6 +214,39 @@ class TraderAgentPushService:
                 'lastResult': self._last_result,
                 'history': list(self._history),
             }
+
+    def update_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        运行时更新推送配置。
+
+        支持字段（均为可选）：
+        - enabled: bool          — 开启/关闭推送
+        - webhook_url: str       — 飞书 Webhook 地址
+        - agent_ids: list[str]   — 默认推送的 Agent ID 列表
+        - top_stocks_per_agent: int  — 每个 Agent 推荐股上限
+        - consensus_top_n: int    — 共识股上限
+        - analysis_max_workers: int  — 并发数
+
+        Returns 更新后的 status dict。
+        """
+        with self._state_lock:
+            if 'enabled' in config:
+                self.enabled = bool(config['enabled'])
+            if 'webhook_url' in config:
+                val = str(config['webhook_url'] or '').strip()
+                self.webhook_url = val
+                if val:
+                    os.environ['AGENT_PUSH_WEBHOOK_URL'] = val
+            if 'agent_ids' in config:
+                self.default_agent_ids = parse_agent_ids(config['agent_ids'])
+            if 'top_stocks_per_agent' in config:
+                self.top_stocks_per_agent = max(1, _safe_int(config['top_stocks_per_agent'], 2))
+            if 'consensus_top_n' in config:
+                self.consensus_top_n = max(1, _safe_int(config['consensus_top_n'], 5))
+            if 'analysis_max_workers' in config:
+                self.analysis_max_workers = max(1, _safe_int(config['analysis_max_workers'], 4))
+
+        return self.status()
 
     def _resolve_agent_ids(self, agent_ids: Optional[Sequence[str] | str]) -> List[str]:
         chosen = parse_agent_ids(agent_ids) or list(self.default_agent_ids)
@@ -401,7 +434,9 @@ class TraderAgentPushService:
         if len(selected_agent_ids) <= 1:
             for agent_id in selected_agent_ids:
                 try:
-                    raw_result = self.analyze_agent_fn(agent_id)
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(self.analyze_agent_fn, agent_id)
+                        raw_result = future.result(timeout=120)
                     normalized = self._normalize_agent_report(raw_result)
                     if normalized.get('success'):
                         agent_reports.append(normalized)
@@ -411,8 +446,15 @@ class TraderAgentPushService:
                             'agentName': normalized.get('agentName') or agent_id,
                             'error': normalized.get('error') or '分析失败',
                         })
+                except FuturesTimeoutError:
+                    logger.warning('[AgentPush] Agent 分析超时: %s', agent_id)
+                    errors.append({
+                        'agentId': agent_id,
+                        'agentName': agent_id,
+                        'error': '分析超时 (120s)',
+                    })
                 except Exception as exc:
-                    logger.exception('Agent 推送分析失败: %s', agent_id)
+                    logger.exception('[AgentPush] Agent 分析异常: %s', agent_id)
                     errors.append({
                         'agentId': agent_id,
                         'agentName': agent_id,
@@ -428,7 +470,7 @@ class TraderAgentPushService:
                 for future in as_completed(future_to_agent):
                     agent_id = future_to_agent[future]
                     try:
-                        raw_result = future.result()
+                        raw_result = future.result(timeout=120)  # 每个 Agent 最多 120s
                         normalized = self._normalize_agent_report(raw_result)
                         if normalized.get('success'):
                             ordered_reports[agent_id] = normalized
@@ -438,8 +480,15 @@ class TraderAgentPushService:
                                 'agentName': normalized.get('agentName') or agent_id,
                                 'error': normalized.get('error') or '分析失败',
                             })
+                    except FuturesTimeoutError:
+                        logger.warning('[AgentPush] Agent 分析超时: %s', agent_id)
+                        errors.append({
+                            'agentId': agent_id,
+                            'agentName': agent_id,
+                            'error': '分析超时 (120s)',
+                        })
                     except Exception as exc:
-                        logger.exception('Agent 推送分析失败: %s', agent_id)
+                        logger.exception('[AgentPush] Agent 分析异常: %s', agent_id)
                         errors.append({
                             'agentId': agent_id,
                             'agentName': agent_id,
@@ -580,14 +629,17 @@ class TraderAgentPushScheduler:
             redis_client = getattr(cache_layer, '_redis', None)
             if redis_available and redis_client is not None:
                 ok = redis_client.set(claim_key, datetime.now(self.tz).isoformat(), ex=36 * 3600, nx=True)
+                logger.info('[AgentPush] Slot claim: %s/%s -> Redis=%s', slot_date, slot_key, bool(ok))
                 return bool(ok)
         except Exception as exc:
             logger.debug('[AgentPush] Redis 槽位去重失败，降级内存: %s', exc)
 
         with self._state_lock:
             if claim_key in self._local_claims:
+                logger.info('[AgentPush] Slot claim: %s/%s -> memory_already_claimed=False', slot_date, slot_key)
                 return False
             self._local_claims.add(claim_key)
+            logger.info('[AgentPush] Slot claim: %s/%s -> memory=claimed', slot_date, slot_key)
             return True
 
     def _compute_next_slot(self, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
@@ -636,12 +688,55 @@ class TraderAgentPushScheduler:
                 continue
             logger.info('[AgentPush] 触发定时推送: %s %s', today, slot['label'])
             try:
-                self.service.run_push(
-                    slot_key=slot['key'],
-                    slot_label=slot['label'],
-                    trigger_type='scheduler',
-                    dry_run=False,
-                    now=current,
-                )
+                # 使用线程 + 超时控制，确保推送不会无限卡住
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix='push-worker') as executor:
+                    future = executor.submit(
+                        self.service.run_push,
+                        slot_key=slot['key'],
+                        slot_label=slot['label'],
+                        trigger_type='scheduler',
+                        dry_run=False,
+                        now=current,
+                    )
+                    try:
+                        result = future.result(timeout=300)  # 5 分钟超时
+                        if result.get('success'):
+                            logger.info(
+                                '[AgentPush] 推送完成: %s | sent=%s | agents=%d/%d',
+                                slot['label'], result.get('sent'),
+                                result.get('digest', {}).get('summary', {}).get('successCount', 0),
+                                result.get('digest', {}).get('summary', {}).get('agentCount', 0),
+                            )
+                        else:
+                            logger.warning('[AgentPush] 推送返回异常: %s', result)
+
+                        # 持久化推送历史到数据库
+                        try:
+                            import database as _db
+                            top_consensus = []
+                            if result.get('digest') and result['digest'].get('consensusStocks'):
+                                top_consensus = [
+                                    s.get('code', '') for s in result['digest']['consensusStocks'][:5]
+                                ]
+                            _db.save_push_history({
+                                'generated_at': result.get('generatedAt') or result.get('generated_at'),
+                                'slot_key': slot['key'],
+                                'slot_label': slot['label'],
+                                'trigger_type': 'scheduled',
+                                'sent': result.get('sent', False),
+                                'dry_run': False,
+                                'agent_count': result.get('digest', {}).get('summary', {}).get('agentCount', 0),
+                                'success_count': result.get('digest', {}).get('summary', {}).get('successCount', 0),
+                                'failed_count': result.get('digest', {}).get('summary', {}).get('failedCount', 0),
+                                'consensus_count': len(top_consensus),
+                                'top_consensus': top_consensus,
+                                'digest': result.get('digest') or {},
+                                'error_text': result.get('error') or '',
+                            })
+                        except Exception as db_exc:
+                            logger.warning('[AgentPush] 保存推送历史失败: %s', db_exc)
+                    except FuturesTimeoutError:
+                        logger.error('[AgentPush] 推送超时 (300s)，跳过: %s %s', today, slot['label'])
             except Exception as exc:
                 logger.exception('[AgentPush] 定时推送失败: %s', exc)

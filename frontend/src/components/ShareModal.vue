@@ -12,7 +12,7 @@
 
           <div class="fac-share-sheet__body">
             <!-- 精简分享卡片：信心指数 + 推荐结果 -->
-            <div class="fac-share-card">
+            <div class="fac-share-card" ref="shareCardRef">
               <div class="fac-share-card__left">
                 <!-- 信心指数圆环 -->
                 <div class="fac-share-gauge">
@@ -49,16 +49,21 @@
                     :key="idx"
                     class="fac-share-stock-item"
                   >
-                    <div class="fac-share-stock-item__left">
-                      <span class="fac-share-stock-item__name">{{ stock.name || stock.stock_name }}</span>
-                      <span class="fac-share-stock-item__code">{{ stock.code || stock.stock_code }}</span>
+                    <div class="fac-share-stock-item__top">
+                      <div class="fac-share-stock-item__left">
+                        <span class="fac-share-stock-item__name">{{ stock.name || stock.stock_name }}</span>
+                        <span class="fac-share-stock-item__code">{{ stock.code || stock.stock_code }}</span>
+                      </div>
+                      <span
+                        class="fac-share-stock-item__chg"
+                        :class="toPctNumber(stock.changePct ?? stock.chg_pct) >= 0 ? 'up' : 'down'"
+                      >
+                        {{ formatPct(stock.changePct ?? stock.chg_pct) }}
+                      </span>
                     </div>
-                    <span
-                      class="fac-share-stock-item__chg"
-                      :class="toPctNumber(stock.changePct ?? stock.chg_pct) >= 0 ? 'up' : 'down'"
-                    >
-                      {{ formatPct(stock.changePct ?? stock.chg_pct) }}
-                    </span>
+                    <div v-if="stock.reason" class="fac-share-stock-item__reason">
+                      {{ stock.reason }}
+                    </div>
                   </div>
                   <p v-if="!shareData.stocks?.length" class="fac-share-stocks__empty">暂无推荐股票</p>
                 </div>
@@ -93,6 +98,14 @@
                 </div>
                 <span class="fac-share-channel-btn__label">{{ copied ? '已复制' : '复制链接' }}</span>
               </button>
+
+              <button type="button" class="fac-share-channel-btn" @click="downloadShareCard">
+                <div class="fac-share-channel-btn__icon fac-share-channel-btn__icon--download">
+                  <span v-if="screenshotLoading" class="mso" style="color:#6462d2">hourglass_bottom</span>
+                  <span v-else class="mso" style="color:#6462d2">download</span>
+                </div>
+                <span class="fac-share-channel-btn__label">{{ screenshotLoading ? '生成中' : '保存分享图' }}</span>
+              </button>
             </div>
 
             <div class="fac-share-url-row">
@@ -109,29 +122,12 @@
       </div>
     </Transition>
 
-    <Transition name="share-modal">
-      <div v-if="showWeChatQR" class="fac-share-overlay" @click.self="showWeChatQR = false">
-        <div class="fac-share-wechat-qr">
-          <div class="fac-share-wechat-qr__header">
-            <span class="mso" style="color:#07c160;font-size:20px">qr_code_2</span>
-            <h3 class="fac-share-wechat-qr__title">微信分享</h3>
-            <button type="button" class="fac-share-sheet__close" @click="showWeChatQR = false" aria-label="关闭">
-              <span class="mso">close</span>
-            </button>
-          </div>
-          <div class="fac-share-wechat-qr__body">
-            <div class="fac-share-wechat-qr__canvas" ref="qrCanvasRef" />
-            <p class="fac-share-wechat-qr__hint">截图分享给微信朋友</p>
-            <p class="fac-share-wechat-qr__url">{{ currentUrl }}</p>
-          </div>
-        </div>
-      </div>
-    </Transition>
   </Teleport>
 </template>
 
 <script setup>
 import { ref, watch, nextTick, computed } from 'vue'
+import html2canvas from 'html2canvas'
 
 const props = defineProps({
   visible: {
@@ -155,10 +151,10 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 
-const showWeChatQR = ref(false)
 const copied = ref(false)
-const qrCanvasRef = ref(null)
 const urlInputRef = ref(null)
+const shareCardRef = ref(null)
+const screenshotLoading = ref(false)
 
 const currentUrl = computed(() => props.shareData.shortUrl || window.location.href)
 
@@ -179,17 +175,15 @@ watch(() => props.visible, (val) => {
 })
 
 async function handleWeChat() {
-  showWeChatQR.value = true
-  await nextTick()
-  renderQRCode()
+  window.location.href = 'weixin://'
 }
 
 function handleFeishu() {
   const encodedTitle = encodeURIComponent(props.shareData.title)
   const encodedDesc = encodeURIComponent(props.shareData.description || `${props.shareData.confidence}% 信心`)
   const encodedUrl = encodeURIComponent(currentUrl.value)
-  const feishuUrl = `https://applink.feishu.cn/client/share/open?appId=&title=${encodedTitle}&desc=${encodedDesc}&url=${encodedUrl}`
-  window.open(feishuUrl, '_blank', 'width=600,height=500')
+  const feishuWebUrl = `https://applink.feishu.cn/client/share/open?title=${encodedTitle}&desc=${encodedDesc}&url=${encodedUrl}`
+  window.open(feishuWebUrl, '_blank', 'width=600,height=500')
 }
 
 async function handleCopy() {
@@ -207,175 +201,28 @@ async function handleCopy() {
   }
 }
 
-function renderQRCode() {
-  if (!qrCanvasRef.value) return
-  qrCanvasRef.value.innerHTML = ''
-
-  const url = currentUrl.value
-  const size = 180
-  const cellSize = 5
-  const cells = Math.floor(size / cellSize)
-  const margin = 0
-
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, size, size)
-
-  const qr = generateQRMatrix(url, cells)
-  if (!qr) {
-    ctx.fillStyle = '#999'
-    ctx.font = '12px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillText('无法生成二维码', size / 2, size / 2)
-    qrCanvasRef.value.appendChild(canvas)
-    return
-  }
-
-  ctx.fillStyle = '#1e1633'
-  for (let row = 0; row < qr.length; row++) {
-    for (let col = 0; col < qr[row].length; col++) {
-      if (qr[row][col]) {
-        ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize)
-      }
-    }
-  }
-
-  qrCanvasRef.value.appendChild(canvas)
-}
-
-function generateQRMatrix(data, size) {
+async function downloadShareCard() {
+  if (!shareCardRef.value || screenshotLoading.value) return
+  screenshotLoading.value = true
   try {
-    const matrix = []
-    for (let i = 0; i < size; i++) {
-      matrix.push(new Array(size).fill(false))
-    }
-
-    const addFinderPattern = (startRow, startCol) => {
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 7; c++) {
-          if (r === 0 || r === 6 || c === 0 || c === 6) {
-            if (startRow + r < size && startCol + c < size) matrix[startRow + r][startCol + c] = true
-          } else if (r >= 2 && r <= 4 && c >= 2 && c <= 4) {
-            if (startRow + r < size && startCol + c < size) matrix[startRow + r][startCol + c] = true
-          }
-        }
-      }
-      for (let r = 0; r < 1; r++) {
-        for (let c = 0; c < 7; c++) {
-          if (startRow - 1 >= 0 && startCol + c < size) matrix[startRow - 1][startCol + c] = true
-          if (startRow + 7 < size && startCol + c < size) matrix[startRow + 7][startCol + c] = true
-        }
-      }
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 1; c++) {
-          if (startRow + r < size && startCol - 1 >= 0) matrix[startRow + r][startCol - 1] = true
-          if (startRow + r < size && startCol + 7 < size) matrix[startRow + r][startCol + 7] = true
-        }
-      }
-    }
-
-    addFinderPattern(0, 0)
-    addFinderPattern(0, size - 7)
-    addFinderPattern(size - 7, 0)
-
-    const alignPos = size >= 25 ? [size - 9, Math.floor((size - 9) / 2), 6] : [6]
-    for (let i = 0; i < alignPos.length; i++) {
-      for (let j = 0; j < alignPos.length; j++) {
-        const ar = alignPos[i]
-        const ac = alignPos[j]
-        if (ar + 4 < size && ac + 4 < size && !(ar < 9 && ac < 9) && !(ar < 9 && ac > size - 10) && !(ar > size - 10 && ac < 9)) {
-          for (let r = 0; r < 5; r++) {
-            for (let c = 0; c < 5; c++) {
-              if (r === 0 || r === 4 || c === 0 || c === 4) {
-                matrix[ar + r][ac + c] = true
-              } else {
-                matrix[ar + r][ac + c] = false
-              }
-            }
-          }
-        }
-      }
-    }
-
-    const timingStart = 8
-    for (let i = 0; i < size - 16; i++) {
-      const bit = (i % 2) === 0
-      if (timingStart + i < size) {
-        matrix[timingStart][timingStart + i] = bit
-        matrix[timingStart + i][timingStart] = bit
-      }
-    }
-
-    const bytes = new TextEncoder().encode(data)
-    let bitString = ''
-    for (const byte of bytes) {
-      bitString += byte.toString(2).padStart(8, '0')
-    }
-
-    const capacity = Math.floor(size * size * 0.4)
-    const bitsNeeded = Math.min(bitString.length, capacity)
-    bitString = bitString.substring(0, bitsNeeded)
-
-    let bitIdx = 0
-    outer: for (let col = size - 1; col > 0; col -= 2) {
-      if (col === 6) col = 5
-      for (let row = 0; row < size; row++) {
-        for (let c = 0; c < 2; c++) {
-          const actualCol = col - c
-          if (!isReserved(size, row, actualCol)) {
-            if (bitIdx < bitString.length) {
-              matrix[row][actualCol] = bitString[bitIdx] === '1'
-              bitIdx++
-            }
-          }
-        }
-        if (bitIdx >= bitString.length) break outer
-      }
-    }
-
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size; c++) {
-        const adj = countNeighbors(matrix, r, c, size)
-        if (matrix[r][c]) {
-          if (adj >= 4) matrix[r][c] = false
-        } else {
-          if (adj >= 5) matrix[r][c] = true
-        }
-      }
-    }
-
-    return matrix
-  } catch {
-    return null
+    const card = shareCardRef.value
+    const canvas = await html2canvas(card, {
+      backgroundColor: '#ffffff',
+      scale: 2,
+      useCORS: true,
+      logging: false,
+    })
+    const link = document.createElement('a')
+    link.download = `facSstock-${Date.now()}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.click()
+  } catch (e) {
+    console.error('[ShareModal] 截图失败:', e)
+  } finally {
+    screenshotLoading.value = false
   }
 }
 
-function isReserved(row, col, size) {
-  if (row < 9 && col < 9) return true
-  if (row < 9 && col >= size - 8) return true
-  if (row >= size - 8 && col < 9) return true
-  if (row === 6 || col === 6) return true
-  return false
-}
-
-function countNeighbors(matrix, row, col, size) {
-  let count = 0
-  for (let dr = -1; dr <= 1; dr++) {
-    for (let dc = -1; dc <= 1; dc++) {
-      if (dr === 0 && dc === 0) continue
-      const nr = row + dr
-      const nc = col + dc
-      if (nr >= 0 && nr < size && nc >= 0 && nc < size && matrix[nr][nc]) {
-        count++
-      }
-    }
-  }
-  return count
-}
 </script>
 
 <style scoped>
@@ -575,12 +422,18 @@ function countNeighbors(matrix, row, col, size) {
 
 .fac-share-stock-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   background: var(--surface-container-lowest, #fff);
   border-radius: 10px;
   padding: 8px 12px;
-  gap: 8px;
+  gap: 4px;
+}
+
+.fac-share-stock-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .fac-share-stock-item__left {
@@ -612,8 +465,20 @@ function countNeighbors(matrix, row, col, size) {
   border-radius: 6px;
 }
 
-.fac-share-stock-item__chg.up { color: #00b05e; background: rgba(0, 176, 94, 0.12); }
-.fac-share-stock-item__chg.down { color: #dc3232; background: rgba(220, 50, 50, 0.12); }
+.fac-share-stock-item__chg.up { color: #dc3232; background: rgba(220, 50, 50, 0.12); }
+.fac-share-stock-item__chg.down { color: #00b05e; background: rgba(0, 176, 94, 0.12); }
+
+.fac-share-stock-item__reason {
+  font-size: 11px;
+  color: var(--on-surface-variant, #464455);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-top: 2px;
+  padding-left: 2px;
+}
 
 .fac-share-stocks__empty {
   font-size: 12px;
@@ -660,6 +525,7 @@ function countNeighbors(matrix, row, col, size) {
 .fac-share-channel-btn__icon--feishu svg { width: 28px; height: 28px; }
 .fac-share-channel-btn__icon--native { background: var(--primary-container, #5a34a8); color: #fff; }
 .fac-share-channel-btn__icon--copy { background: var(--surface-container-high, #ddd8ff); color: var(--on-surface-variant, #464455); }
+.fac-share-channel-btn__icon--download { background: var(--surface-container-high, #ddd8ff); color: var(--on-surface-variant, #464455); }
 .fac-share-channel-btn__icon--native .mso { font-size: 24px; }
 
 .fac-share-channel-btn__label {
@@ -685,76 +551,6 @@ function countNeighbors(matrix, row, col, size) {
   font-family: var(--font-mono, monospace);
   outline: none;
   min-width: 0;
-}
-
-.fac-share-wechat-qr {
-  background: var(--surface-container-lowest, #fff);
-  border-radius: 20px;
-  width: 100%;
-  max-width: 340px;
-  overflow: hidden;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.2);
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-}
-
-.fac-share-wechat-qr__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(196, 198, 208, 0.2);
-}
-
-.fac-share-wechat-qr__title {
-  font-family: var(--font-headline, -apple-system, sans-serif);
-  font-size: 14px;
-  font-weight: 800;
-  color: var(--on-surface, #1e1633);
-  margin: 0;
-  flex: 1;
-  text-align: center;
-}
-
-.fac-share-wechat-qr__body {
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-
-.fac-share-wechat-qr__canvas {
-  width: 180px;
-  height: 180px;
-  background: #fff;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.fac-share-wechat-qr__hint {
-  font-size: 13px;
-  color: var(--on-surface-variant, #464455);
-  margin: 0;
-  text-align: center;
-}
-
-.fac-share-wechat-qr__url {
-  font-size: 10px;
-  color: var(--on-surface-variant, #464455);
-  margin: 0;
-  word-break: break-all;
-  text-align: center;
-  font-family: var(--font-mono, monospace);
-  background: var(--surface-container-low, #ede8ff);
-  padding: 6px 10px;
-  border-radius: 6px;
-  width: 100%;
-  box-sizing: border-box;
 }
 
 .share-modal-enter-active,

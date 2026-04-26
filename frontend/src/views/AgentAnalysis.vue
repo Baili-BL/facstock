@@ -1454,6 +1454,10 @@ import { useShare } from '@/composables/useShare.js'
 const route = useRoute()
 const router = useRouter()
 
+const basePath = computed(() =>
+  route.path.startsWith('/strategy/youzi_agents') ? '/strategy/youzi_agents' : '/strategy/agents'
+)
+
 const agentId = computed(() => route.params.id || 'jun')
 const agentName = computed(() => _nameMap[agentId.value] || agentId.value)
 const roleSubtitle = computed(() => _roleMap[agentId.value] || '')
@@ -2475,7 +2479,7 @@ function resetAnalysis() {
 
 function goBack() {
   if (window.history.length > 1) router.back()
-  else router.push('/strategy/agents')
+  else router.push(basePath.value)
 }
 </script>
 

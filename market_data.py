@@ -243,6 +243,446 @@ def _fetch_limit_counts_from_qwen() -> Optional[Tuple[int, int]]:
         return None
 
 
+def _extract_first_json_object(text: str) -> Optional[Dict]:
+    """从模型输出中尽量提取首个 JSON 对象。"""
+    if not text:
+        return None
+
+    import json
+    import re
+
+    text = str(text).strip()
+    match = re.search(r'\{[\s\S]*\}', text)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _normalize_focus_topics(raw_topics) -> List[str]:
+    """将模型输出的话题列表规范化为字符串数组。"""
+    topics: List[str] = []
+    if not isinstance(raw_topics, list):
+        return topics
+
+    for item in raw_topics:
+        name = ''
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(
+                item.get('name')
+                or item.get('topic')
+                or item.get('label')
+                or item.get('板块')
+                or ''
+            ).strip()
+        if name and name not in topics:
+            topics.append(name)
+    return topics[:5]
+
+
+def _fallback_today_theme_summary(
+    overview: List[Dict],
+    snapshot: Dict,
+    limit: Dict,
+    sectors: List[Dict],
+) -> Dict:
+    """Qwen 不可用时，用本地盘面数据兜底生成『今日炒什么』。"""
+    sh = next((x for x in overview if x.get('name') == '上证指数'), {})
+    sh_change = float(sh.get('change', 0) or 0)
+    up = int(snapshot.get('up_count', 0) or 0)
+    down = int(snapshot.get('down_count', 0) or 0)
+    flat = int(snapshot.get('flat_count', 0) or 0)
+    limit_up = int(limit.get('limit_up_count', 0) or 0)
+    limit_down = int(limit.get('limit_down_count', 0) or 0)
+
+    focus_topics = []
+    for row in sectors[:5]:
+        name = str(row.get('name') or '').strip()
+        if name and name not in focus_topics:
+            focus_topics.append(name)
+
+    if limit_up >= 50 and up > down:
+        trade_bias = '进攻轮动'
+    elif limit_down >= 12 or down > up * 1.1:
+        trade_bias = '谨慎防守'
+    elif limit_up >= 25:
+        trade_bias = '结构轮动'
+    elif focus_topics:
+        trade_bias = '局部抱团'
+    else:
+        trade_bias = '防守观察'
+
+    breadth_total = max(1, up + down + flat)
+    breadth_bonus = ((up - down) / breadth_total) * 35
+    score_raw = 52 + breadth_bonus + (limit_up - limit_down) * 0.8 + sh_change * 6
+    theme_score = max(28, min(92, int(round(score_raw))))
+
+    if focus_topics:
+        topic_text = '、'.join(focus_topics[:3])
+        summary_text = (
+            f'今日资金主要围绕{topic_text}展开，'
+            f'盘面呈现{trade_bias}特征。'
+            f'当前上涨{up}家、下跌{down}家，涨停{limit_up}家、跌停{limit_down}家，'
+            '更适合围绕高辨识度主线快进快出。'
+        )
+    else:
+        summary_text = (
+            f'今日盘面以{trade_bias}为主，'
+            f'当前上涨{up}家、下跌{down}家，涨停{limit_up}家、跌停{limit_down}家。'
+            '热点并不集中，更适合等待强主线进一步确认。'
+        )
+
+    return {
+        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'summary_text': summary_text,
+        'theme_score': theme_score,
+        'trade_bias': trade_bias,
+        'focus_topics': focus_topics[:5],
+        'source': 'local-fallback',
+    }
+
+
+def compute_today_theme_summary() -> Dict:
+    """
+    首页专用：今日炒什么。
+
+    优先结合本地盘面事实 + Qwen 联网搜索（参考同花顺/财经站点）生成主线摘要，
+    失败时降级为本地盘面兜底摘要。
+    """
+    overview = get_market_overview() or []
+    snapshot = get_market_snapshot() or {}
+    limit = get_limit_up_data() or {}
+    sectors = get_hot_sectors() or []
+    fallback = _fallback_today_theme_summary(overview, snapshot, limit, sectors)
+
+    api_key = _get_qwen_api_key()
+    if not api_key:
+        return fallback
+
+    try:
+        import dashscope
+
+        sh = next((x for x in overview if x.get('name') == '上证指数'), {})
+        sz = next((x for x in overview if x.get('name') == '深证成指'), {})
+        cy = next((x for x in overview if x.get('name') == '创业板指'), {})
+
+        up = int(snapshot.get('up_count', 0) or 0)
+        down = int(snapshot.get('down_count', 0) or 0)
+        flat = int(snapshot.get('flat_count', 0) or 0)
+        limit_up = int(limit.get('limit_up_count', 0) or 0)
+        limit_down = int(limit.get('limit_down_count', 0) or 0)
+
+        sector_lines = []
+        for idx, row in enumerate(sectors[:8], start=1):
+            name = str(row.get('name') or '').strip()
+            if not name:
+                continue
+            change = float(row.get('change', 0) or 0)
+            leader = str(row.get('leader') or '').strip()
+            leader_change = float(row.get('leader_change', 0) or 0)
+            sector_lines.append(
+                f'{idx}. {name} {change:+.2f}%'
+                + (f'；领涨股 {leader} {leader_change:+.2f}%' if leader else '')
+            )
+
+        sector_block = '\n'.join(sector_lines) if sector_lines else '暂无可靠热门板块列表'
+        today = datetime.now().strftime('%Y年%m月%d日')
+
+        prompt = f"""今天是{today}。请结合下面给你的实时盘面事实，并联网搜索同花顺 q.10jqka.com.cn、权威财经媒体信息，总结一句首页用的『今日炒什么』。
+
+【盘面事实】
+上证指数：{float(sh.get('change', 0) or 0):+.2f}%
+深证成指：{float(sz.get('change', 0) or 0):+.2f}%
+创业板指：{float(cy.get('change', 0) or 0):+.2f}%
+上涨家数：{up}
+下跌家数：{down}
+平盘家数：{flat}
+涨停家数：{limit_up}
+跌停家数：{limit_down}
+
+【热门板块】
+{sector_block}
+
+请严格输出 JSON，不要 markdown，不要解释：
+{{
+  "summary_text": "60到100字，直接说明今天资金主要在炒什么、盘面是什么节奏",
+  "theme_score": 0,
+  "trade_bias": "进攻轮动/结构轮动/局部抱团/防守观察/谨慎防守",
+  "focus_topics": ["题材1", "题材2", "题材3"]
+}}
+
+要求：
+1. focus_topics 必须是板块/题材，不要股票名；
+2. summary_text 要像交易首页摘要，不要空话；
+3. theme_score 取 0-100 整数；
+4. trade_bias 只能从给定选项里选；
+5. 如果热点分散，也要明确写出“轮动”或“防守”。"""
+
+        with _no_http_proxy_env():
+            response = dashscope.Generation.call(
+                api_key=api_key,
+                model='qwen-plus',
+                messages=[
+                    {'role': 'system', 'content': '你是一位专业的A股盘面编辑，请用简洁准确的中文总结当日市场主线。'},
+                    {'role': 'user', 'content': prompt},
+                ],
+                enable_search=True,
+                result_format='message',
+                temperature=0.2,
+                max_tokens=1200,
+            )
+
+        if getattr(response, 'status_code', None) != 200:
+            return fallback
+
+        content = ''
+        try:
+            content = response.output.choices[0].message.content or ''
+        except Exception:
+            content = str(response)
+
+        payload = _extract_first_json_object(content)
+        if not payload:
+            return fallback
+
+        summary_text = str(payload.get('summary_text') or '').strip() or fallback['summary_text']
+        raw_score = payload.get('theme_score', fallback['theme_score'])
+        try:
+            theme_score = int(round(float(raw_score)))
+        except Exception:
+            theme_score = int(fallback['theme_score'])
+        theme_score = max(0, min(100, theme_score))
+
+        trade_bias = str(payload.get('trade_bias') or '').strip() or str(fallback['trade_bias'])
+        if trade_bias not in {'进攻轮动', '结构轮动', '局部抱团', '防守观察', '谨慎防守'}:
+            trade_bias = str(fallback['trade_bias'])
+
+        focus_topics = _normalize_focus_topics(payload.get('focus_topics')) or list(fallback['focus_topics'])
+
+        return {
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'summary_text': summary_text,
+            'theme_score': theme_score,
+            'trade_bias': trade_bias,
+            'focus_topics': focus_topics[:5],
+            'source': 'Qwen+Search',
+        }
+    except Exception as e:
+        logger.warning(f'compute_today_theme_summary fallback due to error: {e}')
+        return fallback
+
+
+def _recent_trade_days(limit: int = 5) -> List[str]:
+    """最近 N 个交易日（简单按工作日回溯，不处理节假日）。"""
+    days: List[str] = []
+    cursor = datetime.now()
+    while len(days) < max(1, limit):
+        if cursor.weekday() < 5:
+            days.append(cursor.strftime('%Y-%m-%d'))
+        cursor -= timedelta(days=1)
+    return days
+
+
+def _normalize_theme_day_payload(raw_day: Dict, default_date: str) -> Dict:
+    """规范化单日题材榜结构。"""
+    date = str(raw_day.get('date') or default_date).strip()[:10] or default_date
+    raw_themes = raw_day.get('themes')
+    themes: List[Dict] = []
+    if isinstance(raw_themes, list):
+        for idx, item in enumerate(raw_themes[:8], start=1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or item.get('theme') or item.get('label') or '').strip()
+            if not name:
+                continue
+            try:
+                change = float(item.get('change', 0) or 0)
+            except Exception:
+                change = 0.0
+            try:
+                limit_up_count = int(float(item.get('limit_up_count', 0) or 0))
+            except Exception:
+                limit_up_count = 0
+            try:
+                leader_change = float(item.get('leader_change', 0) or 0)
+            except Exception:
+                leader_change = 0.0
+            try:
+                heat_value = float(item.get('heat_value', 0) or 0)
+            except Exception:
+                heat_value = 0.0
+            themes.append({
+                'rank': int(item.get('rank') or idx),
+                'name': name,
+                'change': round(change, 2),
+                'limit_up_count': limit_up_count,
+                'leader_name': str(item.get('leader_name') or item.get('leader') or '').strip(),
+                'leader_change': round(leader_change, 2),
+                'heat_value': round(heat_value, 1),
+                'summary': str(item.get('summary') or item.get('desc') or '').strip()[:120],
+                'detail_url': str(item.get('detail_url') or '').strip(),
+            })
+    return {'date': date, 'themes': themes}
+
+
+def _fallback_today_theme_history(days: int = 5) -> Dict:
+    """题材历史页兜底：仅保证今天有内容，其他交易日保留空列表。"""
+    trade_days = _recent_trade_days(days)
+    sectors = get_hot_sectors() or []
+    today_summary = compute_today_theme_summary()
+
+    today_themes = []
+    for idx, row in enumerate(sectors[:6], start=1):
+        name = str(row.get('name') or '').strip()
+        if not name:
+            continue
+        try:
+            change = float(row.get('change', 0) or 0)
+        except Exception:
+            change = 0.0
+        try:
+            leader_change = float(row.get('leader_change', 0) or 0)
+        except Exception:
+            leader_change = 0.0
+        amount = float(row.get('amount', 0) or 0)
+        heat_value = round(amount / 1e8, 1) if amount > 0 else max(1.0, round(abs(change) * 4 + (7 - idx), 1))
+        today_themes.append({
+            'rank': idx,
+            'name': name,
+            'change': round(change, 2),
+            'limit_up_count': 0,
+            'leader_name': str(row.get('leader') or '').strip(),
+            'leader_change': round(leader_change, 2),
+            'heat_value': heat_value,
+            'summary': str(today_summary.get('summary_text') or '').strip()[:120],
+            'detail_url': '',
+        })
+
+    history = []
+    for idx, d in enumerate(trade_days):
+        history.append({
+            'date': d,
+            'themes': today_themes if idx == 0 else [],
+        })
+
+    return {
+        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'days': history,
+        'source': 'local-fallback',
+    }
+
+
+def compute_today_theme_history(days: int = 5) -> Dict:
+    """
+    最近交易日『今日炒什么』题材榜。
+    主要用于详情页，优先走 Qwen 联网搜索，失败时回退到本地盘面。
+    """
+    days = max(1, min(int(days or 5), 5))
+    fallback = _fallback_today_theme_history(days)
+
+    api_key = _get_qwen_api_key()
+    if not api_key:
+        return fallback
+
+    trade_days = _recent_trade_days(days)
+    try:
+        import dashscope
+
+        day_text = '、'.join(trade_days)
+        prompt = f"""请联网搜索并整理最近 {days} 个交易日（{day_text}）A股市场每天『炒什么』的热门题材榜。
+
+请参考同花顺热点板块/热榜风格，按下面 JSON 结构返回，不要 markdown，不要解释：
+{{
+  "days": [
+    {{
+      "date": "2026-04-23",
+      "themes": [
+        {{
+          "rank": 1,
+          "name": "燃气轮机",
+          "change": 1.83,
+          "limit_up_count": 3,
+          "leader_name": "福鞍股份",
+          "leader_change": 10.03,
+          "heat_value": 22.6,
+          "summary": "一句话说明这一天为什么在炒这个方向",
+          "detail_url": ""
+        }}
+      ]
+    }}
+  ]
+}}
+
+要求：
+1. days 最多返回最近 {days} 个交易日；
+2. 每个交易日至少尽量返回前 5 个、最多 8 个热门题材；
+3. change / leader_change / heat_value 必须是数字，不要带百分号或“万”字；
+4. summary 必须简短具体，适合手机端列表；
+5. 如果某天热度分散，也要给出当日最强的几个题材。"""
+
+        with _no_http_proxy_env():
+            response = dashscope.Generation.call(
+                api_key=api_key,
+                model='qwen-plus',
+                messages=[
+                    {'role': 'system', 'content': '你是一位A股题材榜编辑，请只输出合法 JSON。'},
+                    {'role': 'user', 'content': prompt},
+                ],
+                enable_search=True,
+                result_format='message',
+                temperature=0.2,
+                max_tokens=2800,
+            )
+
+        if getattr(response, 'status_code', None) != 200:
+            return fallback
+
+        try:
+            content = response.output.choices[0].message.content or ''
+        except Exception:
+            content = str(response)
+
+        payload = _extract_first_json_object(content)
+        raw_days = payload.get('days') if isinstance(payload, dict) else None
+        if not isinstance(raw_days, list):
+            return fallback
+
+        normalized_days = []
+        seen_dates = set()
+        for idx, day in enumerate(raw_days[:days]):
+            if not isinstance(day, dict):
+                continue
+            default_date = trade_days[idx] if idx < len(trade_days) else trade_days[-1]
+            item = _normalize_theme_day_payload(day, default_date)
+            if item['date'] in seen_dates:
+                continue
+            seen_dates.add(item['date'])
+            normalized_days.append(item)
+
+        if not normalized_days:
+            return fallback
+
+        # 补齐缺失日期，保证最多展示最近 5 天
+        day_map = {item['date']: item for item in normalized_days}
+        completed = []
+        for d in trade_days:
+            completed.append(day_map.get(d, {'date': d, 'themes': []}))
+
+        return {
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'days': completed,
+            'source': 'Qwen+Search',
+        }
+    except Exception as e:
+        logger.warning(f'compute_today_theme_history fallback due to error: {e}')
+        return fallback
+
+
 def get_market_overview() -> List[Dict]:
     """
     获取大盘指数概览（上证、深证、创业板、科创板等）
@@ -487,10 +927,10 @@ def get_money_flow() -> Dict:
 
 def get_limit_up_data() -> Dict:
     """
-    获取涨跌停数据
-    家数口径优先使用 Qwen（同花顺口径）；
-    再尝试 q.10jqka 首页 / 同花顺温度计；
-    个股列表继续使用东方财富涨停池。
+    获取涨跌停数据（家数 + Top10 个股列表）。
+
+    优先级：东方财富涨停池（逐股统计，最准确）→ 同花顺 q首页
+    → 同花顺温度计 → Qwen 联网搜索（最慢，仅兜底）。
     """
     cached = _get_cached('limit_up')
     if cached:
@@ -505,14 +945,42 @@ def get_limit_up_data() -> Dict:
         'time': datetime.now().strftime('%H:%M'),
     }
 
-    # ── Qwen + 同花顺口径：用户指定的第一优先级 ────────────────────────
-    qwen_counts = _fetch_limit_counts_from_qwen()
-    if qwen_counts:
-        result['limit_up_count'], result['limit_down_count'] = qwen_counts
-        result['count_source'] = 'Qwen+同花顺'
+    # ── 东方财富涨停池（主数据源，逐股统计最准确） ─────────────────
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+    try:
+        with _ak_eastmoney_direct():
+            up_df = _get_ak().stock_zt_pool_em(date=today)
+        if up_df is None or up_df.empty:
+            # 盘后/非交易日 API 可能返回空，退回到最近交易日
+            with _ak_eastmoney_direct():
+                up_df = _get_ak().stock_zt_pool_em(date=yesterday)
+        if up_df is not None and not up_df.empty:
+            result['limit_up_count'] = len(up_df)
+            result['count_source'] = '东方财富涨停池'
+            for _, row in up_df.head(10).iterrows():
+                result['limit_up_stocks'].append({
+                    'name': str(row.get('名称', '')),
+                    'code': str(row.get('代码', '')),
+                    'change': _safe_float(row.get('涨跌幅')),
+                    'reason': str(row.get('涨停统计', '')),
+                })
+    except Exception as e:
+        logger.warning(f"东方财富涨停池获取失败: {e}")
 
-    # ── 同花顺 q 首页 indexflash：优先对齐用户在 q.10jqka.com.cn 看到的口径 ──
-    if not result['count_source']:
+    try:
+        with _ak_eastmoney_direct():
+            down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
+        if down_df is None or down_df.empty:
+            with _ak_eastmoney_direct():
+                down_df = _get_ak().stock_zt_pool_dtgc_em(date=yesterday)
+        if down_df is not None and not down_df.empty:
+            result['limit_down_count'] = len(down_df)
+    except Exception as e:
+        logger.warning(f"东方财富跌停池获取失败: {e}")
+
+    # ── 同花顺补充：东方财富可能不完整时用于交叉校准 ─────────────────
+    if not result.get('limit_up_count') and not result.get('limit_down_count'):
+        # 同花顺 q 首页 indexflash
         try:
             from curl_cffi import requests as cr
             import json
@@ -537,7 +1005,6 @@ def get_limit_up_data() -> Dict:
                 try:
                     payload = json.loads(text)
                 except Exception:
-                    # 同花顺这类老接口偶尔返回接近 JS 对象字面量，做一次兜底清洗
                     cleaned = re.sub(r'^\s*\(|\)\s*;?\s*$', '', text)
                     payload = json.loads(cleaned)
 
@@ -546,17 +1013,18 @@ def get_limit_up_data() -> Dict:
                 ztzs = last_zdt.get('ztzs')
                 dtzs = last_zdt.get('dtzs')
                 if ztzs is not None and dtzs is not None:
-                    result['limit_up_count'] = int(float(ztzs))
-                    result['limit_down_count'] = int(float(dtzs))
-                    result['count_source'] = '同花顺 q首页'
+                    if not result['limit_up_count']:
+                        result['limit_up_count'] = int(float(ztzs))
+                    if not result['limit_down_count']:
+                        result['limit_down_count'] = int(float(dtzs))
+                    result['count_source'] = result.get('count_source', '') or '同花顺 q首页'
         except Exception as e:
             logger.debug(f'同花顺 q 首页涨跌停家数获取失败: {e}')
 
-    # ── 同花顺温度计：优先用于首页“涨跌停对比”家数口径 ─────────────────
-    if not result['count_source']:
+    # ── 同花顺温度计兜底 ──────────────────────────────────────
+    if not result.get('limit_up_count') and not result.get('limit_down_count'):
         try:
             from curl_cffi import requests as cr
-            import re
 
             with _no_http_proxy_env():
                 resp = cr.get(
@@ -577,33 +1045,12 @@ def get_limit_up_data() -> Dict:
         except Exception as e:
             logger.debug(f'同花顺涨跌停家数获取失败: {e}')
 
-    try:
-        with _ak_eastmoney_direct():
-            up_df = _get_ak().stock_zt_pool_em(date=today)
-        if up_df is not None and not up_df.empty:
-            if not result['limit_up_count']:
-                result['limit_up_count'] = len(up_df)
-                result['count_source'] = '东方财富涨停池'
-            for _, row in up_df.head(10).iterrows():
-                result['limit_up_stocks'].append({
-                    'name': str(row.get('名称', '')),
-                    'code': str(row.get('代码', '')),
-                    'change': _safe_float(row.get('涨跌幅')),
-                    'reason': str(row.get('涨停统计', '')),
-                })
-    except Exception as e:
-        logger.warning(f"涨停池获取失败: {e}")
-
-    try:
-        with _ak_eastmoney_direct():
-            down_df = _get_ak().stock_zt_pool_dtgc_em(date=today)
-        if down_df is not None and not down_df.empty:
-            if not result['limit_down_count']:
-                result['limit_down_count'] = len(down_df)
-                if not result['count_source']:
-                    result['count_source'] = '东方财富跌停池'
-    except Exception as e:
-        logger.warning(f"大跌股池获取失败: {e}")
+    # ── Qwen 联网搜索兜底（最慢，放在最后） ──────────────────────
+    if not result.get('limit_up_count') and not result.get('limit_down_count'):
+        qwen_counts = _fetch_limit_counts_from_qwen()
+        if qwen_counts:
+            result['limit_up_count'], result['limit_down_count'] = qwen_counts
+            result['count_source'] = 'Qwen+同花顺'
 
     _set_cached('limit_up', result)
     return result

@@ -66,5 +66,31 @@ export const hotSectors = () => cached('market/hot-sectors', 30_000,
 export const macroSummary = () => cached('macro/summary', 60_000,
     () => apiFetch('/api/macro/summary', 'macro/summary'))
 
-export const macroFlashReport = () => cached('macro/flash-report', 60_000,
-    () => apiFetch('/api/macro/flash-report', 'macro/flash-report'))
+export const macroFlashReport = (force = false) => {
+  if (force) invalidate('macro/flash-report')
+  const key = force ? `macro/flash-report/force/${Date.now()}` : 'macro/flash-report'
+  const path = force ? '/api/macro/flash-report?force=1' : '/api/macro/flash-report'
+  return cached(key, 60_000, () => apiFetch(path, key))
+}
+
+export const macroGlobalEvents = (force = false) => {
+  if (force) invalidate('macro/global-events')
+  const key = force ? `macro/global-events/force/${Date.now()}` : 'macro/global-events'
+  const path = force ? '/api/macro/global-events?force=1' : '/api/macro/global-events'
+  return cached(key, 60_000, () => apiFetch(path, key))
+}
+
+export const todayThemeSummary = () => cached('market/today-theme', 60_000,
+    () => apiFetch('/api/market/today-theme', 'market/today-theme'))
+
+export const todayThemeHistory = (days = 5, force = false) => {
+  const safeDays = Math.max(1, Math.min(Number(days) || 5, 5))
+  if (force) invalidate(`market/today-theme/history/${safeDays}`)
+  const key = force
+    ? `market/today-theme/history/${safeDays}/force/${Date.now()}`
+    : `market/today-theme/history/${safeDays}`
+  const path = force
+    ? `/api/market/today-theme/history?days=${safeDays}&force=1`
+    : `/api/market/today-theme/history?days=${safeDays}`
+  return cached(key, 60_000, () => apiFetch(path, key))
+}

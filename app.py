@@ -11,14 +11,12 @@ from flask import Flask, jsonify, request, send_from_directory, abort, redirect,
 
 # 加载 .env 文件
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 import database as db
 from utils.llm import get_client
 
 os.environ.setdefault('LLM_PROVIDER', 'deepseek')
-os.environ.setdefault('DASHSCOPE_API_KEY', 'sk-bac2a0f93a7744858239db7e69979729')
-os.environ.setdefault('DASHSCOPE_MODEL', 'deepseek-chat')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,12 +35,54 @@ app.register_blueprint(strategy_bp)
 app.register_blueprint(task_bp)
 app.register_blueprint(tv_udf_bp, url_prefix='/tv_udf')
 
+# ── 飞书推送配置变更日志（直接注册，确保路由生效）────────────────────────
+@app.route('/api/push/config-logs', methods=['GET'])
+def get_push_config_logs():
+    try:
+        import database as _db
+        limit = request.args.get('limit', 50, type=int)
+        limit = max(1, min(200, limit))
+        logs = _db.get_push_config_logs(limit=limit)
+        return jsonify({'success': True, 'data': logs})
+    except Exception as e:
+        logger.exception('获取推送配置日志失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/push/config-logs/<int:log_id>', methods=['DELETE'])
+def delete_push_config_log(log_id):
+    try:
+        import database as _db
+        deleted = _db.delete_push_config_log(log_id)
+        if not deleted:
+            return jsonify({'success': False, 'error': '日志不存在'}), 404
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.exception('删除推送配置日志失败')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 try:
     from utils.agent_push_service import TraderAgentPushScheduler, TraderAgentPushService
 
     trader_agent_push_service = TraderAgentPushService(
         analyze_agent_fn=analyze_single_agent,
     )
+    # 尝试从数据库加载推送配置，同步到运行时服务
+    try:
+        db_config = db.get_push_config()
+        if db_config and db_config.get('id'):
+            trader_agent_push_service.update_config({
+                'webhook_url': db_config.get('webhook_url'),
+                'enabled': db_config.get('enabled'),
+                'agent_ids': db_config.get('agent_ids'),
+                'top_stocks_per_agent': db_config.get('top_stocks_per_agent'),
+                'consensus_top_n': db_config.get('consensus_top_n'),
+                'analysis_max_workers': db_config.get('analysis_max_workers'),
+            })
+            logger.info('[Push] 从数据库加载推送配置: webhook=%s, enabled=%s',
+                        bool(db_config.get('webhook_url')), db_config.get('enabled'))
+    except Exception as cfg_err:
+        logger.warning('[Push] 从数据库加载推送配置失败: %s', cfg_err)
+
     trader_agent_push_scheduler = TraderAgentPushScheduler(
         service=trader_agent_push_service,
     )
@@ -1623,9 +1663,8 @@ def api_get_holdings():
             h['stock_name'] = h.get('stock_name', h.get('name', ''))
             h['stock_code'] = h.get('stock_code', h.get('code', ''))
             h['current_price'] = h.get('current_price', h.get('price', 0))
-            # Vue 使用 changePct / change_pct，回填数据库的 profit_loss_pct
+            # Vue 使用 changePct，映射自数据库 profit_loss_pct（AI推荐时为日涨跌幅）
             h.setdefault('changePct', h.get('profit_loss_pct', 0))
-            h.setdefault('change_pct', h.get('profit_loss_amount', 0))
         total_count = len(holdings)
         total_position_value = sum(
             (h.get('position_ratio', 0) or 0) for h in holdings
@@ -1747,7 +1786,8 @@ def api_get_today_agent_analysis(agent_id):
                     'name': h.get('stock_name', h.get('name', '')),
                     'code': h.get('stock_code', h.get('code', '')),
                     'price': h.get('current_price', h.get('price', 0)),
-                    'changePct': h.get('profit_loss_pct', h.get('changePct', 0)),
+                    # 向后兼容: 新快照用 change_pct，旧快照用 profit_loss_pct
+                    'changePct': h.get('change_pct', h.get('profit_loss_pct', h.get('changePct', 0))),
                     'sector': h.get('sector', ''),
                 }
                 for h in record['holdings_snapshot']
@@ -1773,7 +1813,8 @@ def api_get_latest_agent_analysis(agent_id):
                     'name': h.get('stock_name', h.get('name', '')),
                     'code': h.get('stock_code', h.get('code', '')),
                     'price': h.get('current_price', h.get('price', 0)),
-                    'changePct': h.get('profit_loss_pct', h.get('changePct', 0)),
+                    # 向后兼容: 新快照用 change_pct，旧快照用 profit_loss_pct
+                    'changePct': h.get('change_pct', h.get('profit_loss_pct', h.get('changePct', 0))),
                     'sector': h.get('sector', ''),
                 }
                 for h in record['holdings_snapshot']

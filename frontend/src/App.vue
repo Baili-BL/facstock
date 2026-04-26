@@ -23,12 +23,15 @@ const hideBottomNav = computed(
     route.path.startsWith('/ticai') ||
     route.path.startsWith('/strategy/ai') ||
     route.path.startsWith('/strategy/macro') ||
+    route.path.startsWith('/strategy/today-theme') ||
     route.path.startsWith('/strategy/bollinger') ||
     route.path.startsWith('/strategy/factor-prompt') ||
-    route.path.startsWith('/strategy/agents') ||
     route.path.startsWith('/strategy/backtest') ||
     route.path.startsWith('/sectors/heatmap') ||
-    route.path === '/watchlist/settings'
+    route.path === '/watchlist/settings' ||
+    ((route.path.startsWith('/strategy/agents') || route.path.startsWith('/strategy/youzi_agents')) &&
+     route.path !== '/strategy/agents' &&
+     route.path !== '/strategy/youzi_agents')
 )
 
 watch(hideBottomNav, (v) => {

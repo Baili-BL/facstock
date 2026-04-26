@@ -39,20 +39,14 @@ LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'deepseek')
 
 # ── 阿里云百炼 ────────────────────────────────────────────────────────────────
 
-DASHSCOPE_API_KEY = os.environ.get(
-    'DASHSCOPE_API_KEY',
-    'sk-9bc00f8ae2d84e71b002b7ae82fd3188'
-)
+DASHSCOPE_API_KEY = os.environ.get('DASHSCOPE_API_KEY', '')
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DASHSCOPE_MODEL = os.environ.get('DASHSCOPE_MODEL', 'qwen3.6-plus')
 DASHSCOPE_TIMEOUT = int(os.environ.get('DASHSCOPE_TIMEOUT', '120'))
 
 # ── DeepSeek ─────────────────────────────────────────────────────────────────
 
-DEEPSEEK_API_KEY = os.environ.get(
-    'DEEPSEEK_API_KEY',
-    'sk-bac2a0f93a7744858239db7e69979729'
-)
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 DEEPSEEK_TIMEOUT = int(os.environ.get('DEEPSEEK_TIMEOUT', '300'))

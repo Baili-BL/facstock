@@ -84,7 +84,7 @@ const baseCards = computed(() => {
   return [
     {
       id: 'agents',
-      to: '/strategy/agents',
+      to: '/strategy/youzi_agents',
       cat: 'AI 智能体',
       pill: '游资专家库',
       title: '游资智能体 · 策略智能体',

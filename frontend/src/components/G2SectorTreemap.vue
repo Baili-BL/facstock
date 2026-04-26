@@ -65,11 +65,11 @@ const containerRef = ref(null)
 const containerW = ref(360)
 let resizeObserver = null
 
-// A股标准配色：绿涨红跌
-const UP_DARK   = [8,   153, 129]
-const UP_LIGHT = [213, 245, 227]
-const DN_LIGHT = [253, 232, 232]
-const DN_DARK  = [242,  54,  69]
+// 首页热门板块按用户习惯使用：红涨绿跌
+const UP_LIGHT = [253, 232, 232]
+const UP_DARK  = [242,  54,  69]
+const DN_LIGHT = [213, 245, 227]
+const DN_DARK  = [8,   153, 129]
 
 function mixRgb(light, dark, t) {
   const a = Math.round(light[0] + (dark[0] - light[0]) * t)
@@ -85,9 +85,7 @@ function fillForChange(change) {
 }
 
 function textColor(change) {
-  const c = Number(change) || 0
-  if (Math.abs(c) >= 2) return c >= 0 ? '#047857' : '#b71c2c'
-  return c >= 0 ? '#1a6b4a' : '#8b1a1a'
+  return '#ffffff'
 }
 
 function labelStyle(cell) {
@@ -234,6 +232,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.st-map__label-chg.up  { color: #089981; }
-.st-map__label-chg.dn  { color: #f23645; }
+.st-map__label-chg.up  { color: #ffffff; }
+.st-map__label-chg.dn  { color: #ffffff; }
 </style>

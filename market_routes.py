@@ -23,9 +23,12 @@ from market_data import (
     get_market_snapshot,
     peek_market_snapshot_cache,
     compute_macro_sentiment,
+    compute_today_theme_summary,
+    compute_today_theme_history,
     enrich_snapshot_industries,
     snapshot_rankings_need_industry_enrich,
     MARKET_SNAPSHOT_REDIS_KEY,
+    _no_http_proxy_env,
 )
 from utils.ths_crawler import get_ths_industry_list
 from ticai.news_fetcher import fetch_all_news
@@ -256,6 +259,44 @@ def api_macro_summary():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@market_bp.route('/api/market/today-theme')
+def api_today_theme_summary():
+    """首页专用：今日炒什么（Qwen+盘面事实，Redis 缓存 90s）"""
+    hit = get('market/today-theme')
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
+    try:
+        data = compute_today_theme_summary()
+        set('market/today-theme', data, ttl=90)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@market_bp.route('/api/market/today-theme/history')
+def api_today_theme_history():
+    """最近 5 个交易日题材热榜。"""
+    force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+    days = request.args.get('days', 5, type=int) or 5
+    days = max(1, min(days, 5))
+    cache_key = f'market/today-theme/history/{days}'
+
+    if force:
+        delete_key(cache_key)
+
+    hit = None if force else get(cache_key)
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
+    try:
+        data = compute_today_theme_history(days=days)
+        set(cache_key, data, ttl=300)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @market_bp.route('/api/market/index-mini')
 def api_index_mini():
     """
@@ -323,6 +364,140 @@ def api_index_mini():
 # ══════════════════════════════════════════════════════════════════════════════
 # 宏观同步快讯 — Editorial Intelligence 数据聚合
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _fetch_global_events_from_qwen(limit: int = 4) -> list:
+    """通过 Qwen 联网搜索获取『今日国际上发生什么大事件』。"""
+    import json as _json
+    import os
+    import re
+
+    api_key = os.environ.get('DASHSCOPE_API_KEY', '') or os.environ.get('QWEN_API_KEY', '')
+    if not api_key:
+        return []
+
+    try:
+        import dashscope
+
+        today = datetime.now().strftime('%Y年%m月%d日')
+        prompt = f"""今天是{today}。请联网搜索并总结今天国际上最值得关注的 {limit} 条大事件。
+
+只返回 JSON，不要 markdown，不要解释。格式如下：
+{{
+  "events": [
+    {{
+      "title": "事件标题",
+      "time": "刚刚/今日/XX:XX",
+      "desc": "40到80字，说明发生了什么以及为什么重要",
+      "impact": "利好风险资产/利空风险资产/影响油价/影响黄金/影响汇率/中性观察"
+    }}
+  ]
+}}
+
+要求：
+1. 只写国际事件，不写A股个股新闻；
+2. 优先宏观、地缘、央行、商品、大公司财报级别事件；
+3. desc 要简洁，适合直接展示在快讯列表。"""
+
+        with _no_http_proxy_env():
+            response = dashscope.Generation.call(
+                api_key=api_key,
+                model='qwen-plus',
+                messages=[
+                    {'role': 'system', 'content': '你是一位全球宏观快讯编辑，请只输出合法 JSON。'},
+                    {'role': 'user', 'content': prompt},
+                ],
+                enable_search=True,
+                result_format='message',
+                temperature=0.2,
+                max_tokens=1500,
+            )
+
+        if getattr(response, 'status_code', None) != 200:
+            return []
+
+        try:
+            content = response.output.choices[0].message.content or ''
+        except Exception:
+            content = str(response)
+
+        match = re.search(r'\{[\s\S]*\}', content)
+        if not match:
+            return []
+
+        payload = _json.loads(match.group(0))
+        raw_events = payload.get('events')
+        if not isinstance(raw_events, list):
+            return []
+
+        cls_map = {
+            '利好风险资产': 'bullish',
+            '利空风险资产': 'bearish',
+            '影响油价': 'bearish',
+            '影响黄金': 'bullish',
+            '影响汇率': 'neutral',
+            '中性观察': 'neutral',
+        }
+
+        events = []
+        for item in raw_events[:limit]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get('title') or '').strip()
+            if not title:
+                continue
+            impact = str(item.get('impact') or '中性观察').strip()
+            events.append({
+                'title': title[:60],
+                'time': str(item.get('time') or '今日')[:12],
+                'desc': str(item.get('desc') or title)[:100],
+                'tags': [{
+                    'text': impact,
+                    'cls': cls_map.get(impact, 'neutral'),
+                }],
+            })
+        return events
+    except Exception as e:
+        logger.warning('global events from qwen failed: %s', e)
+        return []
+
+
+def _fallback_global_events_from_news(limit: int = 5) -> list:
+    """新闻源兜底的国际大事件列表。"""
+    events = []
+    try:
+        news = fetch_all_news(limit_per_source=30, force=False)
+        if news:
+            for item in news[:limit]:
+                title = item.get('title', '')
+                content = item.get('content', '') or ''
+                if not title:
+                    continue
+                sentiment = item.get('sentiment', 'neutral')
+                time_ago = item.get('publish_time', '')
+                tags = []
+                lower_text = (title + content).lower()
+                if any(k in lower_text for k in ['美联储', '降息', '加息', '利率']):
+                    if '降息' in lower_text:
+                        tags.append({'text': '潜在影响：利好美债 / 成长股', 'cls': 'bullish'})
+                    else:
+                        tags.append({'text': '潜在影响：利空美债', 'cls': 'bearish'})
+                if any(k in lower_text for k in ['地缘', '中东', '俄乌', '战争']):
+                    tags.append({'text': '潜在影响：利好黄金', 'cls': 'bullish'})
+                    tags.append({'text': '潜在影响：扰动油价', 'cls': 'bearish'})
+                if any(k in lower_text for k in ['欧洲央行', 'ECB', '欧元区']):
+                    tags.append({'text': '潜在影响：欧元震荡', 'cls': 'neutral'})
+                if not tags:
+                    tags.append({'text': f'情感：{sentiment}', 'cls': 'neutral'})
+                events.append({
+                    'title': title[:60],
+                    'time': time_ago[:10] if time_ago else '刚刚',
+                    'desc': content[:100] if content else title[:80],
+                    'tags': tags,
+                })
+    except Exception:
+        pass
+    return events
+
 
 def _fetch_macro_flash_report(timeout_seconds=15) -> dict:
     """
@@ -503,40 +678,9 @@ def _fetch_macro_flash_report(timeout_seconds=15) -> dict:
     domestic_quote = domestic_quote_map.get(risk_level, domestic_quote_map['MEDIUM'])
 
     # ── 4. 市场新闻 → 大事件提取 ──────────────────────────────────────────
-    events = []
-    try:
-        news = fetch_all_news(limit_per_source=30, force=False)
-        if news:
-            for item in news[:5]:
-                title = item.get('title', '')
-                content = item.get('content', '') or ''
-                if not title:
-                    continue
-                sentiment = item.get('sentiment', 'neutral')
-                time_ago = item.get('publish_time', '')
-                # 简单关键词判断潜在影响
-                tags = []
-                lower_text = (title + content).lower()
-                if any(k in lower_text for k in ['美联储', '降息', '加息', '利率']):
-                    if '降息' in lower_text:
-                        tags.append({'text': '潜在影响：利好美债 / 成长股', 'cls': 'bullish'})
-                    else:
-                        tags.append({'text': '潜在影响：利空美债', 'cls': 'bearish'})
-                if any(k in lower_text for k in ['地缘', '中东', '俄乌', '战争']):
-                    tags.append({'text': '潜在影响：利好黄金', 'cls': 'bullish'})
-                    tags.append({'text': '潜在影响：扰动油价', 'cls': 'bearish'})
-                if any(k in lower_text for k in ['欧洲央行', 'ECB', '欧元区']):
-                    tags.append({'text': '潜在影响：欧元震荡', 'cls': 'neutral'})
-                if not tags:
-                    tags.append({'text': f'情感：{sentiment}', 'cls': 'neutral'})
-                events.append({
-                    'title': title[:60],
-                    'time': time_ago[:10] if time_ago else '刚刚',
-                    'desc': content[:100] if content else title[:80],
-                    'tags': tags,
-                })
-    except Exception:
-        pass
+    events = _fetch_global_events_from_qwen(limit=4)
+    if not events:
+        events = _fallback_global_events_from_news(limit=5)
 
     # 如果没有新闻，填充示例
     if not events:
@@ -727,7 +871,11 @@ def api_macro_flash_report():
     宏观同步快讯 — Editorial Intelligence 专用数据接口（Redis 缓存 60s）。
     返回: title, subtitle, international[], domestic[], events[], agents[], sectors[], synthesis{}
     """
-    hit = get('macro/flash-report')
+    force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+    if force:
+        delete_key('macro/flash-report')
+
+    hit = None if force else get('macro/flash-report')
     if hit is not None:
         return jsonify({'success': True, 'data': hit})
 
@@ -774,3 +922,34 @@ def api_macro_flash_report():
     except Exception:
         pass
     return jsonify({'success': True, 'data': data})
+
+
+@market_bp.route('/api/macro/global-events')
+def api_macro_global_events():
+    """详情页专用：国际大事件流，独立于整页宏观报告。"""
+    force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+    if force:
+        delete_key('macro/global-events')
+
+    hit = None if force else get('macro/global-events')
+    if hit is not None:
+        return jsonify({'success': True, 'data': hit})
+
+    try:
+        events = _fetch_global_events_from_qwen(limit=4)
+        if not events:
+            events = _fallback_global_events_from_news(limit=5)
+        if not events:
+            events = [
+                {
+                    'title': '暂无国际大事件摘要',
+                    'time': '今日',
+                    'desc': '当前未能获取到可靠的国际事件摘要，请稍后刷新重试。',
+                    'tags': [{'text': '中性观察', 'cls': 'neutral'}],
+                }
+            ]
+        payload = {'events': events}
+        set('macro/global-events', payload, ttl=120)
+        return jsonify({'success': True, 'data': payload})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

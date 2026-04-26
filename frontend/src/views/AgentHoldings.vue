@@ -186,7 +186,7 @@
 
     <div v-else class="ah-empty">
       <p>未找到该智能体</p>
-      <button type="button" class="ah-empty__btn" @click="$router.push('/strategy/agents')">返回智能体</button>
+      <button type="button" class="ah-empty__btn" @click="$router.push(basePath)">返回智能体</button>
     </div>
 
     <div v-if="toast" class="ah-toast" role="status">{{ toast }}</div>
@@ -279,6 +279,10 @@ const toast = ref('')
 const dateKey = ref('latest')
 const showProcessModal = ref(false)
 
+const basePath = computed(() =>
+  route.path.startsWith('/strategy/youzi_agents') ? '/strategy/youzi_agents' : '/strategy/agents'
+)
+
 const rawHoldings = ref(null)
 const latestAnalysis = ref(null)
 const loading = ref(false)
@@ -350,7 +354,7 @@ const analysisPositions = computed(() => {
       name:      h.stock_name || h.name      || '',
       code:      h.stock_code || h.code      || '',
       price:     h.current_price ?? h.price  ?? 0,
-      changePct: Number(h.profit_loss_pct ?? h.changePct) || 0,
+      changePct: Number(h.changePct ?? h.change_pct ?? 0) || 0,
       sector:    h.sector || '',
     }))
   }
@@ -535,7 +539,7 @@ onMounted(fetchData)
 
 function goBack() {
   if (window.history.length > 1) router.back()
-  else router.push('/strategy/agents')
+  else router.push(basePath.value)
 }
 
 function pnlTone(s) {
