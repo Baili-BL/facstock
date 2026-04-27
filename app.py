@@ -16,7 +16,7 @@ load_dotenv(override=True)
 import database as db
 from utils.llm import get_client
 
-os.environ.setdefault('LLM_PROVIDER', 'deepseek')
+os.environ.setdefault('LLM_PROVIDER', 'dashscope')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -586,8 +586,8 @@ def analyze_with_agent_stream(agent_id):
             data = request.get_json() or {}
             from utils.llm.client import DASHSCOPE_API_KEY as _DEFAULT_KEY
             api_key = data.get('api_key') or os.environ.get('DASHSCOPE_API_KEY', '') or _DEFAULT_KEY
-            DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-            model = data.get('model') or os.environ.get('DASHSCOPE_MODEL', 'deepseek-chat')
+            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            model = data.get('model') or os.environ.get('DASHSCOPE_MODEL') or 'qwen-plus'
             if not api_key:
                 err = '请提供 API Key'
                 logger.error(f"[Stream] {err}")
@@ -649,9 +649,8 @@ def analyze_with_agent_stream(agent_id):
 
             yield f"data: {_json.dumps({'type': 'status', 'message': '正在调用 AI 分析...'})}\n\n"
 
-            client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=300)
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=300)
             extra_body = {
-                "thinking": {"type": "enabled"},
                 "enable_search": True,
             }
             tools = [

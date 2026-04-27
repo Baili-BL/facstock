@@ -29,9 +29,8 @@ const hideBottomNav = computed(
     route.path.startsWith('/strategy/backtest') ||
     route.path.startsWith('/sectors/heatmap') ||
     route.path === '/watchlist/settings' ||
-    ((route.path.startsWith('/strategy/agents') || route.path.startsWith('/strategy/youzi_agents')) &&
-     route.path !== '/strategy/agents' &&
-     route.path !== '/strategy/youzi_agents')
+    route.path.startsWith('/strategy/agents') ||
+    route.path.startsWith('/strategy/youzi_agents')
 )
 
 watch(hideBottomNav, (v) => {

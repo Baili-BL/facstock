@@ -51,11 +51,10 @@ class QwenDataSource:
         self.model = "qwen-plus"
 
     def _get_api_key(self) -> str:
-        """获取 API Key"""
+        """获取 API Key，优先百炼，备选 DeepSeek"""
         import os
         if self.api_key:
             return self.api_key
-        # 从环境变量获取
         return os.environ.get('DASHSCOPE_API_KEY', '') or os.environ.get('QWEN_API_KEY', '')
 
     def call(self, prompt: str, max_tokens: int = 3000, enable_search: bool = True) -> Dict:
@@ -71,6 +70,7 @@ class QwenDataSource:
             {'content': str, 'success': bool, 'error': str}
         """
         import os
+        import requests
 
         # 清除代理
         for k in list(os.environ.keys()):
@@ -82,34 +82,108 @@ class QwenDataSource:
             return {'content': '', 'success': False, 'error': '未配置 API Key'}
 
         try:
-            import dashscope
-
             messages = [
                 {'role': 'system', 'content': '你是一位专业的A股财经分析师，专注于题材炒作和事件驱动选股。请基于最新市场数据给出准确分析。'},
                 {'role': 'user', 'content': prompt}
             ]
 
-            response = dashscope.Generation.call(
-                api_key=api_key,
-                model=self.model,
-                messages=messages,
-                enable_search=enable_search,
-                result_format='message',
-                max_tokens=max_tokens,
-                temperature=0.3,
-            )
-
-            if response.status_code == 200:
-                content = response.output.choices[0].message.content or ''
-                return {'content': content, 'success': True, 'usage': response.usage}
-            else:
-                error_msg = response.message or f"HTTP {response.status_code}"
-                logger.warning(f"[QwenDataSource] API Error: {error_msg}")
-                return {'content': '', 'success': False, 'error': error_msg}
-
+            # 优先使用百炼（Qwen）
+            resp = self._call_dashscope(api_key, self.model, messages, max_tokens, enable_search)
+            if resp:
+                return resp
         except Exception as e:
-            logger.error(f"[QwenDataSource] Error: {e}")
-            return {'content': '', 'success': False, 'error': str(e)}
+            logger.warning(f"[QwenDataSource] 百炼调用失败: {e}，尝试 DeepSeek 降级...")
+
+        # 百炼失败，降级尝试 DeepSeek
+        import os as _os
+        deepseek_key = _os.environ.get('DEEPSEEK_API_KEY', '')
+        if deepseek_key:
+            try:
+                ds_messages = [
+                    {'role': 'system', 'content': '你是一位专业的A股财经分析师，专注于题材炒作和事件驱动选股。请基于最新市场数据给出准确分析。'},
+                    {'role': 'user', 'content': prompt}
+                ]
+                resp = self._call_deepseek(deepseek_key, 'deepseek-chat', ds_messages, max_tokens, enable_search)
+                if resp:
+                    return resp
+            except Exception as e2:
+                logger.warning(f"[QwenDataSource] DeepSeek 降级也失败: {e2}")
+
+        return {'content': '', 'success': False, 'error': '所有 API 提供商均调用失败'}
+
+    def _call_dashscope(self, api_key: str, model: str, messages: List[Dict], max_tokens: int, enable_search: bool) -> Optional[Dict]:
+        """调用百炼 Qwen API"""
+        import requests
+
+        for k in list(__import__('os').environ.keys()):
+            if 'proxy' in k.lower():
+                del __import__('os').environ[k]
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "enable_search": enable_search,
+        }
+
+        resp = requests.post(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=120,
+            proxies={"http": None, "https": None},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        content = data['choices'][0]['message']['content']
+        usage = data.get('usage', {})
+        return {'content': content, 'success': True, 'usage': usage}
+
+    def _call_deepseek(self, api_key: str, model: str, messages: List[Dict], max_tokens: int, enable_search: bool) -> Optional[Dict]:
+        """调用 DeepSeek API（联网搜索降级）"""
+        import requests
+
+        for k in list(__import__('os').environ.keys()):
+            if 'proxy' in k.lower():
+                del __import__('os').environ[k]
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "extra_body": {
+                "thinking": {"type": "enabled"},
+                "enable_search": enable_search,
+            },
+        }
+
+        resp = requests.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=120,
+            proxies={"http": None, "https": None},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        content = data['choices'][0]['message']['content'] or ''
+        # DeepSeek 可能返回 reasoning_content
+        reasoning = data['choices'][0]['message'].get('reasoning_content', '') or ''
+        if reasoning:
+            content = reasoning + '\n\n' + content
+        usage = data.get('usage', {})
+        return {'content': content, 'success': True, 'usage': usage}
+
 
 
 class DataProvider:
@@ -262,6 +336,99 @@ class DataProvider:
             'limit_up': self.fetch_limit_up_analysis(),
             'sentiment': self.fetch_sentiment_data(),
         }
+
+    def fetch_limit_up_pool_via_qwen(self) -> Dict[str, Any]:
+        """
+        通过 Qwen 联网搜索获取涨停池数据（作为 akshare 的 fallback）
+
+        返回结构兼容 akshare stock_zt_pool_em 返回的字段。
+        """
+        if not self.qwen:
+            return {'success': False, 'error': 'Qwen 未初始化', 'stocks': []}
+
+        today = datetime.now().strftime('%Y年%m月%d日')
+
+        prompt = f"""请联网搜索今天（{today}）A股涨停板数据，严格按照以下格式输出：
+
+1. 首先输出【涨停概览】：今日涨停总家数、昨日涨停今日表现、炸板率、市场情绪周期判断
+2. 然后输出【重点涨停股】列表（最多30只），每只股票格式：
+股票名称|股票代码|所属行业|换手率|流通市值（亿）|成交额（亿）|首次封板时间|连板数|封板资金（亿）|涨停原因
+
+数据必须真实，搜索同花顺、东方财富、东财Choice等数据源。不要编造数据，如果没有某字段则留空。"""
+
+        result = self.qwen.call(prompt, max_tokens=4000, enable_search=True)
+        if not result.get('success'):
+            return {'success': False, 'error': result.get('error', 'Qwen 调用失败'), 'stocks': []}
+
+        content = result.get('content', '')
+
+        stocks = []
+        import re
+        lines = content.split('\n')
+        in_list = False
+        for line in lines:
+            line = line.strip()
+            if '重点涨停股' in line or '涨停股' in line or re.match(r'^\d+\.', line):
+                in_list = True
+                continue
+            if in_list and line and not line.startswith('['):
+                parts = line.split('|')
+                if len(parts) >= 2:
+                    name = parts[0].strip()
+                    code_match = re.search(r'\d{{6}}', parts[1])
+                    if code_match:
+                        code = code_match.group()
+                        stocks.append({
+                            '名称': name,
+                            '代码': code,
+                            '所属行业': parts[2].strip() if len(parts) > 2 else '',
+                            '换手率': parts[3].strip() if len(parts) > 3 else '',
+                            '流通市值': parts[4].strip() if len(parts) > 4 else '',
+                            '成交额': parts[5].strip() if len(parts) > 5 else '',
+                            '首次封板时间': parts[6].strip() if len(parts) > 6 else '',
+                            '连板数': parts[7].strip() if len(parts) > 7 else '',
+                            '封板资金': parts[8].strip() if len(parts) > 8 else '',
+                            '涨停原因': parts[9].strip() if len(parts) > 9 else '',
+                            '_qwen_source': True,
+                        })
+
+        overview = ''
+        if '涨停概览' in content:
+            start = content.index('【涨停概览】')
+            end = content.index('【重点涨停股】') if '【重点涨停股】' in content else len(content)
+            overview = content[start:end].strip()
+
+        return {
+            'success': True,
+            'overview': overview,
+            'stocks': stocks,
+            'raw': content,
+        }
+
+    def fetch_market_overview_via_qwen(self) -> str:
+        """
+        通过 Qwen 联网搜索获取市场概览（指数点位），
+        作为新浪接口的 fallback。
+        """
+        if not self.qwen:
+            return ''
+
+        prompt = """请联网搜索今日A股三大指数的最新数据：
+
+上证指数、深证成指、创业板指的：
+1. 最新点位
+2. 涨跌幅
+3. 涨跌额
+
+请直接输出数值，不要解释。格式示例：
+上证指数: 3300.00 | +0.50 (+0.02%)
+深证成指: 11000.00 | -50.00 (-0.45%)
+创业板指: 2200.00 | -30.00 (-1.35%)"""
+
+        result = self.qwen.call(prompt, max_tokens=500, enable_search=True)
+        if result.get('success'):
+            return result.get('content', '')
+        return ''
 
     # ─── AKShare 数据获取方法 ───────────────────────────────────────────
 

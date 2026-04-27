@@ -306,6 +306,10 @@ const agent = computed(() => {
     quant: { analysisBrand: '量化之翼', name: '量化之翼' },
     deepseek: { analysisBrand: '深度思考者', name: '深度思考者' },
     beijing: { analysisBrand: '北京炒家', name: '北京炒家' },
+    chenxiaoqun: { analysisBrand: '陈小群', name: '陈小群' },
+    zhaolaoge: { analysisBrand: '赵老哥', name: '赵老哥' },
+    zhangmengzhu: { analysisBrand: '章盟主', name: '章盟主' },
+    xiaoyueyu: { analysisBrand: '小鳄鱼', name: '小鳄鱼' },
   }
   const mapped = nameMap[id] || { analysisBrand: ar.agent_name || id, name: ar.agent_name || id }
   return {

@@ -274,6 +274,50 @@ TASK_DECOMPOSITIONS = {
             {"title": "次日卖出计划", "description": "高开低走、低开低走反抽、跌停必走，多数票在首小时完成处理"},
         ],
     },
+    "chenxiaoqun": {
+        "phase": "phase_1",
+        "core_objective": "专注情绪合力龙头，在主线行情中捕捉高位接力与反核博弈机会",
+        "steps": [
+            {"title": "识别情绪周期", "description": "判断当前处于冰点/回暖/主升/高潮/退潮哪一阶段"},
+            {"title": "锁定主线龙头", "description": "确认市场主线题材，找出总龙头和板块龙头"},
+            {"title": "高位接力机会", "description": "在龙头分歧转一致时参与高位接力"},
+            {"title": "反核博弈信号", "description": "识别前期龙头急跌后的反核机会"},
+            {"title": "卖出与切换", "description": "情绪退潮立即兑现，新龙头确认迅速切换"},
+        ],
+    },
+    "zhaolaoge": {
+        "phase": "phase_2",
+        "core_objective": "以板上买为核心手法，精于捕捉首板和二板主升浪",
+        "steps": [
+            {"title": "判断趋势方向", "description": "确认标的处于上升趋势或新高附近"},
+            {"title": "首板识别", "description": "寻找突破关键位置的放量首板"},
+            {"title": "二板确认", "description": "在首板次日确认二板质量与板块共振"},
+            {"title": "板上买执行", "description": "只在涨停板上买入，坚持板上成交纪律"},
+            {"title": "止损与持有", "description": "趋势破位或新高回踩时严格执行止损"},
+        ],
+    },
+    "zhangmengzhu": {
+        "phase": "phase_3",
+        "core_objective": "涨停开路后缩量回踩20日线，专攻高确定性主升浪",
+        "steps": [
+            {"title": "涨停开路确认", "description": "识别标志性涨停，确认主力意图和板块共振"},
+            {"title": "缩量回踩跟踪", "description": "跟踪涨停后缩量回调至20日线的过程"},
+            {"title": "均线支撑验证", "description": "确认20日线支撑有效，量能萎缩到位"},
+            {"title": "波段入场", "description": "回踩确认后分批入场，趋势完好持有"},
+            {"title": "趋势管理", "description": "趋势破位无条件止损，让利润奔跑"},
+        ],
+    },
+    "xiaoyueyu": {
+        "phase": "phase_2",
+        "core_objective": "以二板接力为核心战法，择时控仓，风控第一",
+        "steps": [
+            {"title": "情绪择时", "description": "判断市场情绪周期，选择出击或休息"},
+            {"title": "二板信号识别", "description": "从首板池中筛选有二板潜力的标的"},
+            {"title": "接力质量评估", "description": "评估二板时的板块共振、封板质量与换手"},
+            {"title": "仓位动态管理", "description": "根据情绪强弱动态调整仓位，情绪差时空仓"},
+            {"title": "快速止损", "description": "二板失败或炸板立即止损，不恋战"},
+        ],
+    },
 }
 
 
@@ -399,7 +443,7 @@ ARCHITECTURE_LAYERS = [
         "tone": "persona",
         "description": "多位游资/量化人格在统一事实上给出各自打法观点，是系统的观点生产层。",
         "modules": ["题材低吸", "龙头主升", "低位潜伏", "打板", "趋势", "量化", "深度推理"],
-        "agent_ids": ["jun", "qiao", "jia", "speed", "trend", "quant", "deepseek", "beijing"],
+        "agent_ids": ["jun", "qiao", "jia", "speed", "trend", "quant", "deepseek", "beijing", "chenxiaoqun", "zhaolaoge", "zhangmengzhu", "xiaoyueyu"],
         "outputs": ["StrategyView", "推荐标的", "仓位节奏", "风险预案"],
     },
     {
@@ -531,6 +575,50 @@ AGENT_METADATA = {
         "hardRules": ["三有不全不参与", "单票不超过 1/8 仓", "尾盘板不碰，炸板不恋战"],
         "outputFocus": ["boardType", "positionRatio", "buyMethod", "holdPeriod"],
     },
+    "chenxiaoqun": {
+        "displayOrder": 90,
+        "layer": "persona",
+        "styleCategory": "情绪合力龙头",
+        "marketScope": "主线龙头、情绪周期",
+        "holdingStyle": "1-3 天超短",
+        "toolPolicy": "shared_context_only",
+        "requiredInputs": ["情绪周期", "主线题材", "龙头梯队", "高位接力信号"],
+        "hardRules": ["只做主线龙头", "情绪退潮不重仓", "分歧转一致确认后出手"],
+        "outputFocus": ["emotionStage", "mainLeader", "rotationSignal", "entryStyle"],
+    },
+    "zhaolaoge": {
+        "displayOrder": 100,
+        "layer": "persona",
+        "styleCategory": "主升浪战法",
+        "marketScope": "首板、二板、连板",
+        "holdingStyle": "T+1 超短",
+        "toolPolicy": "market_board_tools",
+        "requiredInputs": ["涨停结构", "板块共振", "首板质量", "二板确认"],
+        "hardRules": ["不创新高不做", "不回踩不重仓", "板上买纪律"],
+        "outputFocus": ["boardType", "mainStage", "entryStyle", "holdPeriod"],
+    },
+    "zhangmengzhu": {
+        "displayOrder": 110,
+        "layer": "persona",
+        "styleCategory": "涨停开路+缩量回踩",
+        "marketScope": "主升浪、百亿体量",
+        "holdingStyle": "波段持有",
+        "toolPolicy": "shared_context_only",
+        "requiredInputs": ["涨停质量", "缩量回踩位置", "20日线支撑", "量能配合"],
+        "hardRules": ["涨停开路确认", "缩量回踩20日线才进", "趋势破位止损"],
+        "outputFocus": ["mainStage", "keyLevel", "trendStatus", "holdDiscipline"],
+    },
+    "xiaoyueyu": {
+        "displayOrder": 120,
+        "layer": "persona",
+        "styleCategory": "二板接力",
+        "marketScope": "超短狙击、择时控仓",
+        "holdingStyle": "1-2 天超短",
+        "toolPolicy": "selective_market_tools",
+        "requiredInputs": ["二板信号", "情绪阶段", "择时模型", "仓位控制"],
+        "hardRules": ["二板确认才进", "弱势时空仓", "风控第一"],
+        "outputFocus": ["boardType", "emotionStage", "positionRatio", "entryStyle"],
+    },
 }
 
 AGENT_DISPLAY_ORDER = [
@@ -543,6 +631,10 @@ AGENT_DISPLAY_ORDER = [
     "quant",
     "deepseek",
     "beijing",
+    "chenxiaoqun",
+    "zhaolaoge",
+    "zhangmengzhu",
+    "xiaoyueyu",
 ]
 
 
@@ -2150,6 +2242,54 @@ AGENTS = {
         "temperature": 0.3,
         "max_tokens": 3000,
     },
+    "chenxiaoqun": {
+        "id": "chenxiaoqun",
+        "name": "陈小群",
+        "role": "情绪合力龙头",
+        "style": "情绪合力龙头",
+        "tagline": "新生代游资典范，以情绪合力龙头战法为核心，专做主线龙头，擅长高位接力、分歧转一致和反核博弈",
+        "adviseType": "情绪龙头",
+        "system_prompt": "",
+        "user_prompt_template": USER_COMMON_HEADER,
+        "temperature": 0.25,
+        "max_tokens": 3000,
+    },
+    "zhaolaoge": {
+        "id": "zhaolaoge",
+        "name": "赵老哥",
+        "role": "主升浪战法",
+        "style": "主升浪战法",
+        "tagline": "主要手法为板上买，以首板和二板接力为主，精于捕捉主升浪，坚持\"不创新高不做、不回踩不重仓\"的铁律",
+        "adviseType": "主升浪",
+        "system_prompt": "",
+        "user_prompt_template": USER_COMMON_HEADER,
+        "temperature": 0.3,
+        "max_tokens": 3000,
+    },
+    "zhangmengzhu": {
+        "id": "zhangmengzhu",
+        "name": "章盟主",
+        "role": "涨停开路+缩量回踩",
+        "style": "涨停开路+缩量回踩",
+        "tagline": "从5万做到百亿体量的老牌游资，江湖人称\"游资教父\"，深耕A股30年，核心模式为涨停开路后缩量回踩20日线确认，专攻高确定性主升浪",
+        "adviseType": "主升浪",
+        "system_prompt": "",
+        "user_prompt_template": USER_COMMON_HEADER,
+        "temperature": 0.25,
+        "max_tokens": 3000,
+    },
+    "xiaoyueyu": {
+        "id": "xiaoyueyu",
+        "name": "小鳄鱼",
+        "role": "二板接力",
+        "style": "二板接力",
+        "tagline": "90后新生代游资领军人物，以二板接力为核心战法，操盘手法灵活多样，市场好时追龙头、弱势时空仓或低吸，从万元起步四年过亿，风控意识极强",
+        "adviseType": "二板接力",
+        "system_prompt": "",
+        "user_prompt_template": USER_COMMON_HEADER,
+        "temperature": 0.25,
+        "max_tokens": 3000,
+    },
     "master": {
         "id": "master",
         "name": "市场首席策略官",
@@ -2296,6 +2436,7 @@ class AgentRegistry:
             return ""
 
         ctx = extra_context or {}
+        scan_is_stale = ctx.get("scan_is_stale", False)
         ctx_rest = {
             k: v for k, v in ctx.items()
             if k not in {
@@ -2313,6 +2454,7 @@ class AgentRegistry:
                 "scan_task_rule1",
                 "scan_task_rule2",
                 "master_context",
+                "scan_is_stale",
             }
         }
 
@@ -2331,6 +2473,17 @@ class AgentRegistry:
         master_context = _build_master_context(ctx)
         search_data = ctx.get("search_data", "【暂无联网补充数据】")
 
+        stale_warning = (
+            "⚠️ 警告：今日尚未执行热点扫描，当前推荐基于实时涨停池，请结合最新市场信息判断。\n\n"
+            if scan_is_stale
+            else ""
+        )
+        agent_exec_ctx = ctx.get("agent_execution_context", "")
+        if stale_warning and agent_exec_ctx:
+            agent_exec_ctx = stale_warning + agent_exec_ctx
+        elif stale_warning:
+            agent_exec_ctx = stale_warning
+
         return agent["user_prompt_template"].format(
             agent_name=agent["name"],
             agent_id=agent["id"],
@@ -2341,7 +2494,7 @@ class AgentRegistry:
             holdings_data=holdings_data,
             scan_data=scan_data,
             search_data=search_data,
-            agent_execution_context=ctx.get("agent_execution_context", ""),
+            agent_execution_context=agent_exec_ctx,
             scan_task_directive=scan_task_directive,
             scan_task_rule1=scan_task_rule1,
             scan_task_rule2=scan_task_rule2,

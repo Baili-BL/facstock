@@ -241,7 +241,7 @@ const cfg = reactive({
 const slots = ref([])
 
 const availableAgents = [
-  { id: 'beijing',  name: '北京炒家' },
+  { id: 'beijing',   name: '北京炒家' },
   { id: 'qiao',     name: '乔帮主' },
   { id: 'jia',      name: '炒股养家' },
   { id: 'jun',      name: '钧哥天下无双' },
@@ -249,6 +249,10 @@ const availableAgents = [
   { id: 'trend',    name: '趋势追随者' },
   { id: 'quant',    name: '量化之翼' },
   { id: 'deepseek', name: '深度思考者' },
+  { id: 'chenxiaoqun',  name: '陈小群' },
+  { id: 'zhaolaoge',     name: '赵老哥' },
+  { id: 'zhangmengzhu', name: '章盟主' },
+  { id: 'xiaoyueyu',    name: '小鳄鱼' },
 ]
 
 async function loadStatus() {

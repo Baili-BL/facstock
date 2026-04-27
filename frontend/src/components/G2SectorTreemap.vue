@@ -232,6 +232,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.st-map__label-chg.up  { color: #ffffff; }
-.st-map__label-chg.dn  { color: #ffffff; }
+.st-map__label-chg.up  { color: #ffffff !important; }
+.st-map__label-chg.dn  { color: #ffffff !important; }
 </style>

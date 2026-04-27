@@ -838,6 +838,9 @@
                   <span v-if="beijingExecution.marketGate.positionCap" class="fac-beijing-gate-chip fac-beijing-gate-chip--subtle">
                     仓位上限 {{ beijingExecution.marketGate.positionCap }}
                   </span>
+                  <span v-if="beijingExecution.scanIsStale" class="fac-beijing-gate-chip fac-beijing-gate-chip--warn">
+                    ⚠ 今日未扫描
+                  </span>
                   <span v-if="beijingExecution.timeAnchor?.phase" class="fac-beijing-gate-chip fac-beijing-gate-chip--anchor">
                     时间锚点 {{ beijingExecution.timeAnchor.phase }}
                   </span>
@@ -1473,11 +1476,15 @@ const _nameMap = {
   jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
   speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
   deepseek: '深度思考者', beijing: '北京炒家',
+  chenxiaoqun: '陈小群', zhaolaoge: '赵老哥',
+  zhangmengzhu: '章盟主', xiaoyueyu: '小鳄鱼',
 }
 const _roleMap = {
   jun: '龙头战法', qiao: '龙头主升', jia: '情绪龙头',
   speed: '打板专家', trend: '中线波段', quant: '算法回测',
   deepseek: '深度推理', beijing: '游资打板',
+  chenxiaoqun: '情绪合力龙头', zhaolaoge: '主升浪战法',
+  zhangmengzhu: '涨停开路+缩量回踩', xiaoyueyu: '二板接力',
 }
 
 const agentDescMap = {
@@ -1489,6 +1496,10 @@ const agentDescMap = {
   quant: '运用量化模型与回测数据，从统计学角度验证交易逻辑的可靠性。',
   deepseek: '宏观+行业+个股三维共振；布林带+资金流+催化剂三角验证。',
   beijing: '临盘先判市场闸门，只做前排首板与辨识度后排，扫排分明，次日机械处理。',
+  chenxiaoqun: '新生代游资典范，以情绪合力龙头战法为核心，专做主线龙头，擅长高位接力、分歧转一致和反核博弈。',
+  zhaolaoge: '主要手法为板上买，以首板和二板接力为主，精于捕捉主升浪，坚持"不创新高不做、不回踩不重仓"的铁律。',
+  zhangmengzhu: '从5万做到百亿体量的老牌游资，江湖人称"游资教父"，深耕A股30年，核心模式为涨停开路后缩量回踩20日线确认，专攻高确定性主升浪。',
+  xiaoyueyu: '90后新生代游资领军人物，以二板接力为核心战法，操盘手法灵活多样，市场好时追龙头、弱势时空仓或低吸，从万元起步四年过亿，风控意识极强。',
 }
 
 // 任务标签配置（人格工件型 Agent 单独定义）
@@ -1961,6 +1972,10 @@ const userPromptPreview = computed(() => {
     'quant': '请根据以下市场数据，给出量化视角的分析...',
     'deepseek': '请从宏观+行业+个股三维深度推理，结合扫描数据给出分析...',
     'beijing': '请先判断市场闸门，再从题材前排、辨识度后排、板型与次日卖点角度分析首板机会...',
+    'chenxiaoqun': '请从情绪合力龙头视角，分析主线题材、龙头梯队与高位接力机会...',
+    'zhaolaoge': '请从主升浪战法视角，分析首板、二板与板上买机会...',
+    'zhangmengzhu': '请从涨停开路+缩量回踩视角，分析主升浪与波段持有机会...',
+    'xiaoyueyu': '请从二板接力视角，分析情绪周期、择时控仓与超短机会...',
   }
   return m[agentId.value] || '正在加载 Prompt...'
 })
@@ -3650,6 +3665,11 @@ function goBack() {
 .fac-beijing-gate-chip--anchor {
   background: rgba(59, 31, 140, 0.1);
   color: var(--primary-container);
+}
+.fac-beijing-gate-chip--warn {
+  background: rgba(255, 152, 0, 0.16);
+  color: #b35c00;
+  font-weight: 700;
 }
 .fac-beijing-card__stats {
   display: grid;

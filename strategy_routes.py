@@ -7,6 +7,11 @@
 import os
 from flask import Blueprint, jsonify, request, current_app
 from typing import Optional
+
+# 加载 .env 文件（确保在任何 API 调用前加载环境变量）
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import database as db
 import json
 import math
@@ -3379,6 +3384,32 @@ def analyze_single_agent_stream(agent_id):
             yield f"data: {json.dumps({'type': 'error', 'error': '未知 Agent'})}\n\n"
             return
 
+        # 检查 Agent 是否已配置 system_prompt，未配置则返回友好提示
+        if not profile.get('system_prompt'):
+            agent_name = profile.get('name', _agent_id)
+            yield sse({
+                'type': 'cot',
+                'step': 1,
+                'total': 1,
+                'title': '智能体待开发',
+                'message': f'{agent_name} 正在紧张开发中，敬请期待...',
+            })
+            yield sse({
+                'type': 'content',
+                'content': f'⚙️ {agent_name} 智能体目前正在紧张开发中，暂不支持分析功能。',
+            })
+            yield sse({'type': 'done', 'structured': {
+                'agentId': _agent_id,
+                'agentName': agent_name,
+                'stance': 'neutral',
+                'confidence': 0,
+                'marketCommentary': f'{agent_name} 正在开发中，暂不支持分析。',
+                'positionAdvice': '',
+                'riskWarning': '',
+                'recommendedStocks': [],
+            }})
+            return
+
         def sse(payload: Dict[str, Any]) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -3477,7 +3508,7 @@ def analyze_single_agent_stream(agent_id):
                 'message': f"{profile.get('name', _agent_id)} 正在按既定方法论拆解当前市场...",
             })
 
-            all_stocks = _collect_latest_scan_candidates()
+            all_stocks = _collect_latest_scan_candidates()[0]
             beijing_artifacts = None
             qiao_artifacts = None
             jia_artifacts = None
@@ -3603,7 +3634,7 @@ def analyze_single_agent_stream(agent_id):
             from utils.llm.client import get_client, CallOptions, LLMResponse
 
             client = get_client()
-            model = profile.get('model') or 'deepseek-v3.2'
+            model = profile.get('model') or os.environ.get('DASHSCOPE_MODEL', 'qwen-plus')
             temperature = profile.get('temperature', 0.3)
             max_tokens = profile.get('max_tokens', 3000)
 
@@ -3970,65 +4001,143 @@ def _call_dashscope_with_tools(model, messages, tools, temperature, max_tokens):
 def _call_deepseek_search(prompt: str, model: str = 'qwen-plus'):
     """
     调用百炼 qwen-plus 联网搜索获取市场数据（不走 Function Calling，纯联网）
+
+    优先使用 DASHSCOPE_API_KEY（百炼/Qwen），失败时降级尝试 DEEPSEEK_API_KEY。
     """
     import logging
     import httpx
-    import os
+    import os as _os
 
     logger = logging.getLogger(__name__)
 
-    try:
-        for k in list(os.environ.keys()):
-            if 'proxy' in k.lower():
-                del os.environ[k]
+    # ── 1. 尝试百炼 ───────────────────────────────────────────────────────
+    dashscope_key = _os.environ.get('DASHSCOPE_API_KEY', '')
+    if dashscope_key:
+        try:
+            for k in list(_os.environ.keys()):
+                if 'proxy' in k.lower():
+                    del _os.environ[k]
 
-        http_client = httpx.Client(trust_env=False, timeout=120.0)
-        from utils.llm.client import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=DASHSCOPE_API_KEY,
-            base_url=DASHSCOPE_BASE_URL,
-            http_client=http_client,
-        )
+            http_client = httpx.Client(trust_env=False, timeout=120.0)
+            from openai import OpenAI
+            ds_client = OpenAI(
+                api_key=dashscope_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                http_client=http_client,
+            )
 
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "你是一个专业的A股市场分析师，擅长联网搜索获取实时数据。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-            extra_body={
-                "enable_search": True,
-            },
-        )
+            resp = ds_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是一个专业的A股市场分析师，擅长联网搜索获取实时数据。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=2000,
+                extra_body={
+                    "enable_search": True,
+                },
+            )
 
-        content = resp.choices[0].message.content or ''
-        tokens = resp.usage.total_tokens if resp.usage else 0
+            content = resp.choices[0].message.content or ''
+            tokens = resp.usage.total_tokens if resp.usage else 0
 
-        return SimpleResponse(
-            content=content,
-            tokens_used=tokens,
-            model=model,
-            provider='dashscope',
-            success=True,
-            reasoning_content='',
-            tool_calls=[],
-        )
+            logger.info(f"[_call_deepseek_search] 联网搜索成功（百炼） content_len={len(content)}")
+            return SimpleResponse(
+                content=content,
+                tokens_used=tokens,
+                model=model,
+                provider='dashscope',
+                success=True,
+                reasoning_content='',
+                tool_calls=[],
+            )
+        except Exception as e:
+            err_str = str(e)
+            logger.warning(f"[_call_deepseek_search] 百炼调用失败: {err_str}，尝试 DeepSeek...")
+            # 如果是认证错误（401），直接失败，不继续尝试 DeepSeek
+            if '401' in err_str or 'unauthorized' in err_str.lower() or 'api key' in err_str.lower():
+                return SimpleResponse(
+                    content='',
+                    tokens_used=0,
+                    model=model,
+                    provider='dashscope',
+                    success=False,
+                    error=f'百炼 API Key 认证失败（401）：{err_str}',
+                    reasoning_content='',
+                    tool_calls=[],
+                )
+            # 其他错误继续尝试 DeepSeek
 
-    except Exception as e:
-        logger.error(f"[_call_deepseek_search] error={e}")
-        return SimpleResponse(
-            content='',
-            tokens_used=0,
-            model=model,
-            provider='dashscope',
-            success=False,
-            error=str(e),
-            reasoning_content='',
-            tool_calls=[],
-        )
+    # ── 2. 降级：尝试 DeepSeek 联网搜索 ─────────────────────────────────
+    deepseek_key = _os.environ.get('DEEPSEEK_API_KEY', '')
+    if deepseek_key:
+        try:
+            for k in list(_os.environ.keys()):
+                if 'proxy' in k.lower():
+                    del _os.environ[k]
+
+            http_client = httpx.Client(trust_env=False, timeout=120.0)
+            from openai import OpenAI
+            ds_client = OpenAI(
+                api_key=deepseek_key,
+                base_url="https://api.deepseek.com",
+                http_client=http_client,
+            )
+
+            resp = ds_client.chat.completions.create(
+                model='deepseek-chat',
+                messages=[
+                    {"role": "system", "content": "你是一个专业的A股市场分析师，擅长联网搜索获取实时数据。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=2000,
+                extra_body={
+                    "thinking": {"type": "enabled"},
+                    "enable_search": True,
+                },
+            )
+
+            content = resp.choices[0].message.content or ''
+            tokens = resp.usage.total_tokens if resp.usage else 0
+
+            logger.info(f"[_call_deepseek_search] 联网搜索成功（DeepSeek 降级） content_len={len(content)}")
+            return SimpleResponse(
+                content=content,
+                tokens_used=tokens,
+                model='deepseek-chat',
+                provider='deepseek',
+                success=True,
+                reasoning_content='',
+                tool_calls=[],
+            )
+        except Exception as e:
+            err_str = str(e)
+            logger.warning(f"[_call_deepseek_search] DeepSeek 降级也失败: {err_str}")
+            return SimpleResponse(
+                content='',
+                tokens_used=0,
+                model='deepseek-chat',
+                provider='deepseek',
+                success=False,
+                error=f'百炼调用失败，DeepSeek 降级也失败：{err_str}',
+                reasoning_content='',
+                tool_calls=[],
+            )
+
+    # ── 3. 没有配置任何 API Key ──────────────────────────────────────────
+    logger.error("[_call_deepseek_search] 未配置任何 API Key（DASHSCOPE_API_KEY 和 DEEPSEEK_API_KEY 均未设置）")
+    return SimpleResponse(
+        content='',
+        tokens_used=0,
+        model=model,
+        provider='dashscope',
+        success=False,
+        error='未配置 API Key（DASHSCOPE_API_KEY 和 DEEPSEEK_API_KEY 均未设置）',
+        reasoning_content='',
+        tool_calls=[],
+    )
 
 
 def _call_deepseek_with_tools(client, model, messages, tools, temperature, max_tokens):
@@ -4055,14 +4164,18 @@ def _call_deepseek_with_tools(client, model, messages, tools, temperature, max_t
             http_client=http_client,
         )
 
+        extra_body = {}
+        if 'deepseek-v4-pro' in model:
+            extra_body["reasoning_effort"] = "medium"
+        else:
+            extra_body["enable_thinking"] = False
+
         resp = ds_client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            extra_body={
-                "enable_thinking": False,
-            },
+            extra_body=extra_body,
             tools=tools if tools else None,
             tool_choice="auto" if tools else None,
         )
@@ -4097,14 +4210,18 @@ def _call_deepseek_with_tools(client, model, messages, tools, temperature, max_t
         )
 
     except Exception as e:
-        logger.error(f"[_call_deepseek_with_tools] error={e}")
+        err_str = str(e)
+        logger.error(f"[_call_deepseek_with_tools] error={err_str}")
+        if 'does not exist' in err_str or 'not have access' in err_str:
+            logger.warning(f"[_call_deepseek_with_tools] 当前模型 {model} 不支持，降级到 qwen-plus...")
+            return _call_dashscope_with_tools('qwen-plus', messages, tools, temperature, max_tokens)
         return SimpleResponse(
             content='',
             tokens_used=0,
             model=model,
-            provider='deepseek',
+            provider='dashscope',
             success=False,
-            error=str(e),
+            error=err_str,
             reasoning_content='',
             tool_calls=[],
         )
@@ -4173,7 +4290,7 @@ def _do_web_search(query: str) -> str:
 
 
 def _get_limit_up_stocks() -> str:
-    """获取今日涨停板数据"""
+    """获取今日涨停板数据，优先直连东财，失败则用 Qwen 联网搜索兜底"""
     import requests
     import logging
     logger = logging.getLogger(__name__)
@@ -4187,7 +4304,7 @@ def _get_limit_up_stocks() -> str:
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Referer': 'https://data.eastmoney.com/',
     }
-    
+
     url = 'https://push2.eastmoney.com/api/qt/clist/get'
     params = {
         'pn': 1, 'pz': 50, 'po': 1, 'np': 1,
@@ -4196,7 +4313,7 @@ def _get_limit_up_stocks() -> str:
         'fs': 'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
         'fields': 'f12,f14,f2,f3,f4,f5,f6',
     }
-    
+
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code == 200:
@@ -4215,7 +4332,34 @@ def _get_limit_up_stocks() -> str:
                 return '\n'.join(lines)
     except Exception as e:
         logger.warning("[LimitUp] 获取涨停数据失败: %s", e)
-    
+
+    # ── Fallback: Qwen 联网搜索 ───────────────────────────────────────────
+    try:
+        from utils.llm.data_provider import get_data_provider
+        dp = get_data_provider()
+        qwen_result = dp.fetch_limit_up_pool_via_qwen()
+        if qwen_result.get('success'):
+            logger.info("[LimitUp] Qwen 联网搜索成功，替代东财数据")
+            raw = qwen_result.get('raw', '')
+            overview = qwen_result.get('overview', '')
+            stocks = qwen_result.get('stocks', [])
+            parts = []
+            if overview:
+                parts.append(f"【涨停概览】{overview}")
+            if stocks:
+                parts.append(f"今日涨停股票共 {len(stocks)} 只:")
+                for i, s in enumerate(stocks[:30], 1):
+                    parts.append(
+                        f"{i}. {s.get('名称','?')}({s.get('代码','?')}) | "
+                        f"换手:{s.get('换手率','?')} | 流通市值:{s.get('流通市值','?')}亿 | "
+                        f"成交:{s.get('成交额','?')}亿 | 首次封板:{s.get('首次封板时间','?')} | "
+                        f"连板:{s.get('连板数','1')} | 涨停原因:{s.get('涨停原因','?')}"
+                    )
+            if parts:
+                return '\n'.join(parts)
+    except Exception as exc:
+        logger.warning("[LimitUp] Qwen 联网搜索失败: %s", exc)
+
     return "暂时无法获取涨停板数据"
 
 
@@ -4320,11 +4464,11 @@ def _get_stock_quote(code: str) -> str:
 
 
 def _get_market_overview() -> str:
-    """获取市场概览"""
+    """获取市场概览，优先直连新浪，失败则用 Qwen 联网搜索兜底"""
     import requests
     import logging
     logger = logging.getLogger(__name__)
-    
+
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0',
@@ -4333,13 +4477,13 @@ def _get_market_overview() -> str:
         # 上证指数和深证成指
         url = 'https://hq.sinajs.cn/list=s_sh000001,s_sh000300,s_sz399001,s_sz399006'
         resp = requests.get(url, headers=headers, timeout=10)
-        
+
         if resp.status_code == 200:
             lines = []
             texts = resp.text.split('\n')
             names = ['上证指数', '沪深300', '深证成指', '创业板指']
             indices = ['sh000001', 'sh000300', 'sz399001', 'sz399006']
-            
+
             for i, idx in enumerate(indices):
                 for line in texts:
                     if idx in line:
@@ -4353,12 +4497,23 @@ def _get_market_overview() -> str:
                                 pct = parts[3] if parts[3] else '0'
                                 lines.append(f"{name}: {price} | {float(change):+.2f} ({float(pct):+.2f}%)")
                         break
-            
+
             if lines:
                 return '\n'.join(lines)
     except Exception as e:
         logger.warning("[MarketOverview] 获取市场概览失败: %s", e)
-    
+
+    # ── Fallback: Qwen 联网搜索 ───────────────────────────────────────────
+    try:
+        from utils.llm.data_provider import get_data_provider
+        dp = get_data_provider()
+        qwen_result = dp.fetch_market_overview_via_qwen()
+        if qwen_result:
+            logger.info("[MarketOverview] Qwen 联网搜索成功，替代新浪数据")
+            return qwen_result
+    except Exception as exc:
+        logger.warning("[MarketOverview] Qwen 联网搜索失败: %s", exc)
+
     return "暂时无法获取市场概览数据"
 
 
@@ -4766,10 +4921,18 @@ def _infer_beijing_auction_teammates_with_qwen(
         return {}
 
 
-def _collect_latest_scan_candidates() -> List[Dict[str, Any]]:
+def _collect_latest_scan_candidates() -> tuple:
+    """
+    收集最新扫描的候选股票，返回 (candidates, is_stale) 元组。
+    is_stale=True 表示扫描数据不是今天的（过时数据）。
+    """
     latest_scan = db.get_latest_scan()
     if not latest_scan:
-        return []
+        return [], True
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    scan_time = latest_scan.get('scan_time', '')[:10]
+    is_stale = scan_time != today
 
     candidates: List[Dict[str, Any]] = []
     results_dict = latest_scan.get('results', {}) or {}
@@ -4784,7 +4947,7 @@ def _collect_latest_scan_candidates() -> List[Dict[str, Any]]:
             one['code'] = _normalize_code6(one.get('code'))
             if one['code']:
                 candidates.append(one)
-    return candidates
+    return candidates, is_stale
 
 
 def _load_single_agent_prompt_bundle(
@@ -4798,7 +4961,7 @@ def _load_single_agent_prompt_bundle(
     from ai_service import fetch_market_news, fetch_junge_enhanced_news
     from junge_trader import format_holdings_for_prompt, format_scan_data_for_prompt
 
-    all_stocks = _collect_latest_scan_candidates()
+    all_stocks, scan_is_stale = _collect_latest_scan_candidates()
     latest_scan = db.get_latest_scan()
     scan_time = latest_scan.get('scan_time', '') if latest_scan else ''
     scan_date = scan_time[:10] if scan_time else datetime.now().strftime('%Y-%m-%d')
@@ -4833,6 +4996,7 @@ def _load_single_agent_prompt_bundle(
         extra_context={
             'search_data': search_data,
             'agent_execution_context': agent_execution_context,
+            'scan_is_stale': scan_is_stale,
         },
     )
 
@@ -4843,6 +5007,7 @@ def _load_single_agent_prompt_bundle(
         'holdings_text': holdings_text,
         'current_time': current_time,
         'scan_date': scan_date,
+        'scan_is_stale': scan_is_stale,
         'user_prompt': user_prompt,
     }
 
@@ -5837,6 +6002,21 @@ def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str
     except Exception as exc:
         logger.warning('[Beijing] 今日涨停池获取失败: %s', exc)
 
+    # ── Fallback: akshare 失败则用 Qwen 联网搜索 ────────────────────────
+    if today_df is None or today_df.empty:
+        try:
+            from utils.llm.data_provider import get_data_provider
+            dp = get_data_provider()
+            qwen_data = dp.fetch_limit_up_pool_via_qwen()
+            if qwen_data.get('success') and qwen_data.get('stocks'):
+                logger.info('[Beijing] Qwen 联网搜索替代涨停池数据，共 %d 只', len(qwen_data['stocks']))
+                today_df = _pd.DataFrame(qwen_data['stocks'])
+            elif qwen_data.get('success') and qwen_data.get('raw'):
+                # 纯文本模式，也记录下来供分析
+                logger.info('[Beijing] Qwen 返回涨停概览（非结构化）: %s', qwen_data['raw'][:200])
+        except Exception as qwen_exc:
+            logger.warning('[Beijing] Qwen 联网搜索涨停池失败: %s', qwen_exc)
+
     for delta in range(1, 8):
         probe_date = (datetime.now() - timedelta(days=delta)).strftime('%Y%m%d')
         try:
@@ -5849,7 +6029,7 @@ def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str
         except Exception as exc:
             logger.debug('[Beijing] 昨日涨停池探测失败 date=%s err=%s', probe_date, exc)
 
-    scan_candidates = _collect_latest_scan_candidates()
+    scan_candidates, scan_is_stale = _collect_latest_scan_candidates()
     scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
     yesterday_map = {}
     if yesterday_df is not None and not yesterday_df.empty:
@@ -6019,22 +6199,26 @@ def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str
         ))
         item.update(_build_beijing_peer_snapshot(item, sector_map))
 
-    qwen_inputs = []
-    for item in enrich_targets[:8]:
-        qwen_inputs.append({
-            'code': item.get('code'),
-            'name': item.get('name'),
-            'sector': item.get('sector'),
-            'boardType': item.get('boardType'),
-            'selectionType': item.get('selectionType'),
-            'firstSealTime': item.get('firstSealTime'),
-            'resonanceCount': item.get('resonanceCount'),
-            'openChangeProxy': item.get('openChangeProxy'),
-            'minuteTurnoverLabel': item.get('minuteTurnoverLabel'),
-            'minuteEvidence': item.get('minuteEvidence'),
-            'peerSummary': item.get('peerSummary'),
-        })
-    qwen_judgements = _infer_beijing_auction_teammates_with_qwen(qwen_inputs, search_data=search_data)
+    qwen_judgements: Dict[str, Any] = {}
+    if scan_is_stale:
+        logger.info('[Beijing] 扫描数据过期，跳过 Qwen 竞价/队友推断，使用启发式估算')
+    else:
+        qwen_inputs = []
+        for item in enrich_targets[:8]:
+            qwen_inputs.append({
+                'code': item.get('code'),
+                'name': item.get('name'),
+                'sector': item.get('sector'),
+                'boardType': item.get('boardType'),
+                'selectionType': item.get('selectionType'),
+                'firstSealTime': item.get('firstSealTime'),
+                'resonanceCount': item.get('resonanceCount'),
+                'openChangeProxy': item.get('openChangeProxy'),
+                'minuteTurnoverLabel': item.get('minuteTurnoverLabel'),
+                'minuteEvidence': item.get('minuteEvidence'),
+                'peerSummary': item.get('peerSummary'),
+            })
+        qwen_judgements = _infer_beijing_auction_teammates_with_qwen(qwen_inputs, search_data=search_data)
 
     for item in board_candidates:
         qwen_meta = qwen_judgements.get(item.get('code', ''), {})
@@ -6250,6 +6434,73 @@ def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str
             'timeAnchorWindow': time_anchor.get('window', ''),
         })
         seen_actionable.add(code)
+
+    # ── 当扫描数据过期时：从今日涨停池直接构建候选股票 ──────────────────────────
+    if scan_is_stale and not actionable_candidates and today_df is not None and not today_df.empty:
+        logger.info('[Beijing] 扫描数据过期，从今日涨停池直接构建候选，共 %d 只', len(today_df))
+        for _, row in today_df.iterrows():
+            row_dict = row.to_dict()
+            code = _normalize_code6(row_dict.get('代码'))
+            if not code or code in seen_actionable:
+                continue
+
+            name = str(row_dict.get('名称') or code)
+            sector = str(row_dict.get('所属行业') or '').strip()
+            pct_change = _safe_float_num(row_dict.get('涨跌幅'))
+            turnover_rate = _safe_float_num(row_dict.get('换手率'))
+            mkt_cap_yi = _to_yi(row_dict.get('流通市值'))
+            resonance_count = industry_counts.get(sector, 0) if sector else 0
+            first_seal = _format_clock_hhmm(row_dict.get('首次封板时间'))
+            board_type = _classify_beijing_board_type(row_dict, {})
+
+            if mkt_cap_yi < 5 or mkt_cap_yi > 300:
+                continue
+
+            sector_heat = resonance_count
+            score = int(min(99, 60 + resonance_count * 5 + (15 if board_type in {'换手板', '回封板'} else 0)))
+            selection_type = _beijing_scan_selection_type(
+                sector_heat=sector_heat,
+                pct_change=pct_change,
+                score=score,
+                market_cap_yi=mkt_cap_yi,
+                sector_rank=999,
+            )
+            setup = _beijing_actionable_setup(
+                pct_change=pct_change,
+                volume_ratio=turnover_rate,
+                gate_status=gate_status,
+                time_anchor=time_anchor,
+                sector_heat=sector_heat,
+                score=score,
+            )
+            trade_status = setup['tradeStatus']
+            if trade_status == '仅观察':
+                continue
+
+            actionable_candidates.append({
+                'code': code,
+                'name': name,
+                'sector': sector,
+                'pct_change': pct_change,
+                'score': score,
+                'total_score': score,
+                'volume_ratio': turnover_rate,
+                'volumeRatio': turnover_rate,
+                'market_cap': mkt_cap_yi * 100000000,
+                'marketCap': mkt_cap_yi * 100000000,
+                'sector_name': sector,
+                'selectionType': selection_type,
+                'tradeStatus': trade_status,
+                'boardType': board_type,
+                'firstSealTime': first_seal,
+                'turnoverRate': turnover_rate,
+                'marketCapYi': mkt_cap_yi,
+                'resonanceCount': resonance_count,
+                'sectorHeat': sector_heat,
+                'sectorRank': 999,
+                'actionSource': 'stale_scan_fallback',
+            })
+            seen_actionable.add(code)
 
     actionable_candidates.sort(
         key=lambda item: (
@@ -6734,6 +6985,7 @@ def _build_beijing_execution_artifacts(search_data: str = '', overview_text: str
         'positionAdvice': position_advice,
         'riskWarning': risk_warning,
         'searchDataPreview': (search_data or '')[:1200],
+        'scanIsStale': scan_is_stale,
     }
 
 
@@ -6753,9 +7005,12 @@ def _build_beijing_execution_context_text(artifacts: Dict[str, Any]) -> str:
         f"- 三有达标：{stats.get('qualifiedCount', 0)} 只",
         f"- 盘中可买：{stats.get('actionableCount', 0)} 只",
         f"- 推荐候选：{stats.get('recommendedCount', 0)} 只",
-        '',
-        '### 板型分布',
     ]
+    if artifacts.get('scanIsStale'):
+        lines.insert(2, '⚠️ 警告：今日尚未执行热点扫描，当前推荐基于实时涨停池，请结合最新市场信息判断。')
+    lines.extend(['',
+        '### 板型分布',
+    ])
     for item in artifacts.get('boardTypeSummary', [])[:6]:
         lines.append(f"- {item.get('type', '待观察')}：{item.get('count', 0)} 只")
 
@@ -6839,6 +7094,7 @@ def _merge_beijing_structured(structured: Dict[str, Any], artifacts: Dict[str, A
         'boardCandidates': artifacts.get('boardCandidates', []),
         'actionableCandidates': artifacts.get('actionableCandidates', []),
         'stepOutputs': artifacts.get('stepOutputs', []),
+        'scanIsStale': artifacts.get('scanIsStale', False),
     }
 
     if not str(merged.get('marketCommentary') or '').strip():
@@ -7265,7 +7521,7 @@ def _build_qiao_execution_artifacts(search_data: str = '', overview_text: str = 
     except Exception as exc:
         logger.warning('[Qiao] 今日涨停池获取失败: %s', exc)
 
-    scan_candidates = _collect_latest_scan_candidates()
+    scan_candidates, _ = _collect_latest_scan_candidates()
     scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
 
     today_sector_counts: Dict[str, int] = {}
@@ -8395,7 +8651,7 @@ def _build_jia_execution_artifacts(search_data: str = '', overview_text: str = '
     except Exception as exc:
         logger.warning('[Jia] 今日涨停池获取失败: %s', exc)
 
-    scan_candidates = _collect_latest_scan_candidates()
+    scan_candidates, _ = _collect_latest_scan_candidates()
     scan_map = {_normalize_code6(item.get('code')): item for item in scan_candidates}
 
     today_sector_counts: Dict[str, int] = {}

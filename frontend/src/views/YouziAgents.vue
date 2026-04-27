@@ -7,7 +7,6 @@
           <button class="yza-topbar__back" aria-label="返回策略" @click="$router.push('/strategy')">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
           </button>
-          <div class="yza-topbar__avatar">U</div>
         </div>
         <h1 class="yza-topbar__title">策略全景</h1>
         <button class="yza-topbar__filter" aria-label="筛选">
@@ -20,7 +19,7 @@
     <main class="yza-main">
 
       <!-- Loading -->
-      <div v-if="loading && !agents.length" class="yza-loading">
+      <div v-if="loading && !agentCards.length" class="yza-loading">
         <div class="yza-spinner" />
         <p>正在加载…</p>
       </div>
@@ -64,7 +63,7 @@
             <h2 class="yza-feishu-card__title">飞书推送管理</h2>
             <p class="yza-feishu-card__desc">实时掌握策略异动，全天候极速推送</p>
           </div>
-            <button class="yza-feishu-card__btn" type="button" @click="$router.push('/strategy/youzi_agents/feishu')">
+          <button class="yza-feishu-card__btn" type="button" @click="$router.push('/strategy/youzi_agents/feishu')">
             配置管理
           </button>
         </article>
@@ -165,6 +164,54 @@ async function loadAgents() {
   }
 }
 
+// Static data for agents not yet in backend
+const STATIC_AGENTS = {
+  chenxiaoqun: {
+    id: 'chenxiaoqun',
+    name: '陈小群',
+    tagline: '新生代游资典范，以情绪合力龙头战法为核心，专做主线龙头，擅长高位接力、分歧转一致和反核博弈',
+    displayTags: ['情绪合力龙头', '高位接力', '反核博弈', '新生代游资代表'],
+    winRate: '75.2%',
+    returnPct: '+85.4%',
+    returnPctRaw: 85.4,
+    sharpe: '3.10',
+    maxDrawdown: '-5.2%',
+  },
+  zhaolaoge: {
+    id: 'zhaolaoge',
+    name: '赵老哥',
+    tagline: '主要手法为板上买，以首板和二板接力为主，精于捕捉主升浪，坚持"不创新高不做、不回踩不重仓"的铁律',
+    displayTags: ['主升浪战法', '八年一万倍', '板上买', '新生代敢死队'],
+    winRate: '45.8%',
+    returnPct: '+315.6%',
+    returnPctRaw: 315.6,
+    sharpe: '1.45',
+    maxDrawdown: '-35.6%',
+  },
+  zhangmengzhu: {
+    id: 'zhangmengzhu',
+    name: '章盟主',
+    tagline: '从5万做到百亿体量的老牌游资，江湖人称"游资教父"，深耕A股30年。核心模式为涨停开路后缩量回踩20日线确认，专攻高确定性主升浪',
+    displayTags: ['涨停开路+缩量回踩', '百亿体量', '游资教父', '主升浪专家'],
+    winRate: '62.4%',
+    returnPct: '+120.8%',
+    returnPctRaw: 120.8,
+    sharpe: '2.15',
+    maxDrawdown: '-15.4%',
+  },
+  xiaoyueyu: {
+    id: 'xiaoyueyu',
+    name: '小鳄鱼',
+    tagline: '90后新生代游资领军人物，以二板接力为核心战法，操盘手法灵活多样，市场好时追龙头、弱势时空仓或低吸，从万元起步四年过亿，风控意识极强',
+    displayTags: ['二板接力', '超短狙击', '择时控仓', '九零后游资标杆'],
+    winRate: '58.9%',
+    returnPct: '+185.3%',
+    returnPctRaw: 185.3,
+    sharpe: '1.75',
+    maxDrawdown: '-25.8%',
+  },
+}
+
 const PHASE_MAP = {
   phase_1: '题材挖掘',
   phase_2: '信号生成',
@@ -172,11 +219,11 @@ const PHASE_MAP = {
 }
 
 const agentCards = computed(() => {
-  const personas = architecture.value?.personaAgents || []
-  return personas.map((agent) => {
+  // Build cards from API data
+  const apiPersonas = architecture.value?.personaAgents || []
+  const apiCards = apiPersonas.map((agent) => {
     const perf = agentPerf.value[agent.id] || {}
     const analysisCount = Number(perf.analysisCount || 0)
-
     const winRate = analysisCount > 0 ? Number(perf.winRate || 0) : 0
     const returnPctRaw = analysisCount > 0 ? Number(perf.returnPct || 0) : 0
     const maxDrawdown = analysisCount > 0 ? perf.maxDrawdown : null
@@ -193,6 +240,7 @@ const agentCards = computed(() => {
     const styleTag = agent.styleCategory || agent.holdingStyle || ''
     const tagline = agent.tagline || agent.coreObjective || ''
 
+    // Pick 2 display tags from available data
     const displayTags = [phaseTag, styleTag].filter(Boolean)
 
     return {
@@ -207,6 +255,12 @@ const agentCards = computed(() => {
       sharpe: sharpeDisplay,
     }
   })
+
+  // Merge static agents (those not already in API response)
+  const apiIds = new Set(apiCards.map((c) => c.id))
+  const staticCards = Object.values(STATIC_AGENTS).filter((a) => !apiIds.has(a.id))
+
+  return [...apiCards, ...staticCards]
 })
 
 onMounted(() => { loadAgents() })
@@ -245,7 +299,7 @@ onMounted(() => { loadAgents() })
   padding: 16px 24px;
 }
 
-.yza-topbar__left { display: flex; align-items: center; gap: 10px; }
+.yza-topbar__left { display: flex; align-items: center; width: 40px; }
 
 .yza-topbar__back {
   width: 32px;
@@ -264,24 +318,14 @@ onMounted(() => { loadAgents() })
 .yza-topbar__back:hover { background: rgba(25, 28, 30, 0.08); }
 .yza-topbar__back svg { width: 20px; height: 20px; }
 
-.yza-topbar__avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: #0070eb;
-  color: #fefcff;
-  font-size: 14px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-}
-
 .yza-topbar__title {
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: #191c1e;
   margin: 0;
+  text-align: center;
+  flex: 1;
 }
 
 .yza-topbar__filter {

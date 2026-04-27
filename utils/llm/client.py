@@ -223,6 +223,10 @@ class LLMClient:
             "max_tokens": options.max_tokens,
         }
 
+        # deepseek-v4-pro 需要 reasoning_effort 参数
+        if 'deepseek-v4-pro' in model:
+            payload["reasoning_effort"] = "medium"
+
         try:
             logger.info(
                 "[LLM] provider=dashscope model=%s temperature=%s prompt_len=%d",

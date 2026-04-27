@@ -13,6 +13,7 @@ python-dotenv>=1.0.0
 
 # AI 模型（阿里云百炼 / OpenAI 兼容）
 openai>=1.0.0
+dashscope>=1.20.0
 
 # 生产服务器
 gunicorn>=21.0.0

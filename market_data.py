@@ -12,6 +12,7 @@
 
 import contextlib
 import concurrent.futures
+import json
 import os
 import time
 import pandas as pd
@@ -121,6 +122,46 @@ def _get_cached(key: str) -> Optional[any]:
 def _set_cached(key: str, data: any):
     """设置缓存数据"""
     _cache[key] = (data, datetime.now().timestamp())
+
+
+# 历史数据持久化存储路径（使用绝对路径）
+_THEME_HISTORY_DIR = '/Users/kevin/Desktop/facSstock/data/theme_history'
+
+
+def _ensure_history_dir():
+    """确保历史数据目录存在"""
+    os.makedirs(_THEME_HISTORY_DIR, exist_ok=True)
+
+
+def _get_theme_history_file(date: str) -> str:
+    """获取指定日期的历史数据文件路径"""
+    _ensure_history_dir()
+    return os.path.join(_THEME_HISTORY_DIR, f'{date}.json')
+
+
+def load_theme_history_by_date(date: str) -> Optional[Dict]:
+    """从磁盘读取指定日期的历史题材数据"""
+    filepath = _get_theme_history_file(date)
+    if not os.path.exists(filepath):
+        return None
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f'读取历史题材数据失败 {date}: {e}')
+        return None
+
+
+def save_theme_history_by_date(date: str, data: Dict) -> bool:
+    """保存指定日期的历史题材数据到磁盘"""
+    filepath = _get_theme_history_file(date)
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.warning(f'保存历史题材数据失败 {date}: {e}')
+        return False
 
 
 def _safe_float(val, default: float = 0.0) -> float:
@@ -577,54 +618,44 @@ def _fallback_today_theme_history(days: int = 5) -> Dict:
     }
 
 
-def compute_today_theme_history(days: int = 5) -> Dict:
-    """
-    最近交易日『今日炒什么』题材榜。
-    主要用于详情页，优先走 Qwen 联网搜索，失败时回退到本地盘面。
-    """
-    days = max(1, min(int(days or 5), 5))
-    fallback = _fallback_today_theme_history(days)
-
-    api_key = _get_qwen_api_key()
-    if not api_key:
-        return fallback
-
-    trade_days = _recent_trade_days(days)
-    try:
-        import dashscope
-
-        day_text = '、'.join(trade_days)
-        prompt = f"""请联网搜索并整理最近 {days} 个交易日（{day_text}）A股市场每天『炒什么』的热门题材榜。
+def _build_today_theme_prompt(trade_days: List[str]) -> str:
+    """构建今日题材榜的 prompt，只请求今天的最新数据"""
+    today = trade_days[0] if trade_days else ''
+    return f"""请联网搜索并整理 A股市场今日（{today}）『炒什么』的热门题材榜。
 
 请参考同花顺热点板块/热榜风格，按下面 JSON 结构返回，不要 markdown，不要解释：
 {{
-  "days": [
+  "date": "{today}",
+  "themes": [
     {{
-      "date": "2026-04-23",
-      "themes": [
-        {{
-          "rank": 1,
-          "name": "燃气轮机",
-          "change": 1.83,
-          "limit_up_count": 3,
-          "leader_name": "福鞍股份",
-          "leader_change": 10.03,
-          "heat_value": 22.6,
-          "summary": "一句话说明这一天为什么在炒这个方向",
-          "detail_url": ""
-        }}
-      ]
+      "rank": 1,
+      "name": "燃气轮机",
+      "change": 1.83,
+      "limit_up_count": 3,
+      "leader_name": "福鞍股份",
+      "leader_change": 10.03,
+      "heat_value": 22.6,
+      "summary": "一句话说明今天为什么在炒这个方向",
+      "detail_url": ""
     }}
   ]
 }}
 
 要求：
-1. days 最多返回最近 {days} 个交易日；
-2. 每个交易日至少尽量返回前 5 个、最多 8 个热门题材；
-3. change / leader_change / heat_value 必须是数字，不要带百分号或“万”字；
-4. summary 必须简短具体，适合手机端列表；
-5. 如果某天热度分散，也要给出当日最强的几个题材。"""
+1. 只返回今日（{today}）的热门题材；
+2. 至少返回前 5 个、最多 8 个热门题材；
+3. change / leader_change / heat_value 必须是数字，不要带百分号或"万"字；
+4. summary 必须简短具体，适合手机端列表。"""
 
+
+def _call_qwen_for_today_theme(api_key: str, trade_days: List[str]) -> Optional[Dict]:
+    """调用 Qwen 联网搜索获取今日题材数据"""
+    import dashscope
+
+    prompt = _build_today_theme_prompt(trade_days)
+    today = trade_days[0] if trade_days else ''
+
+    try:
         with _no_http_proxy_env():
             response = dashscope.Generation.call(
                 api_key=api_key,
@@ -636,51 +667,112 @@ def compute_today_theme_history(days: int = 5) -> Dict:
                 enable_search=True,
                 result_format='message',
                 temperature=0.2,
-                max_tokens=2800,
+                max_tokens=1500,
             )
 
         if getattr(response, 'status_code', None) != 200:
-            return fallback
+            logger.warning(f'Qwen API 返回错误状态码: {response.status_code}')
+            return None
 
-        try:
-            content = response.output.choices[0].message.content or ''
-        except Exception:
-            content = str(response)
-
+        content = response.output.choices[0].message.content or ''
         payload = _extract_first_json_object(content)
-        raw_days = payload.get('days') if isinstance(payload, dict) else None
-        if not isinstance(raw_days, list):
-            return fallback
 
-        normalized_days = []
-        seen_dates = set()
-        for idx, day in enumerate(raw_days[:days]):
-            if not isinstance(day, dict):
-                continue
-            default_date = trade_days[idx] if idx < len(trade_days) else trade_days[-1]
-            item = _normalize_theme_day_payload(day, default_date)
-            if item['date'] in seen_dates:
-                continue
-            seen_dates.add(item['date'])
-            normalized_days.append(item)
+        if not isinstance(payload, dict):
+            logger.warning('Qwen API 返回非 JSON 格式')
+            return None
 
-        if not normalized_days:
-            return fallback
+        item = _normalize_theme_day_payload(payload, today)
+        return item
 
-        # 补齐缺失日期，保证最多展示最近 5 天
-        day_map = {item['date']: item for item in normalized_days}
-        completed = []
-        for d in trade_days:
-            completed.append(day_map.get(d, {'date': d, 'themes': []}))
-
-        return {
-            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'days': completed,
-            'source': 'Qwen+Search',
-        }
     except Exception as e:
-        logger.warning(f'compute_today_theme_history fallback due to error: {e}')
-        return fallback
+        logger.warning(f'Qwen API 调用失败: {e}')
+        return None
+
+
+def compute_today_theme_history(days: int = 5) -> Dict:
+    """
+    最近交易日『今日炒什么』题材榜。
+    策略：
+    - 今日数据：优先调用 Qwen 联网搜索
+    - 历史数据：从磁盘文件读取，避免重复调用 LLM
+    - 每日数据：首次调用后保存到磁盘，供后续复用
+    """
+    days = max(1, min(int(days or 5), 5))
+    trade_days = _recent_trade_days(days)
+    today = trade_days[0] if trade_days else ''
+
+    result_days = []
+    today_data = None
+
+    # 先尝试从磁盘加载历史数据
+    for d in trade_days:
+        if d == today:
+            # 今天的实时获取
+            continue
+        stored = load_theme_history_by_date(d)
+        if stored:
+            result_days.append({'date': d, 'themes': stored.get('themes', [])})
+        else:
+            # 历史上没有存储过，回退到空
+            result_days.append({'date': d, 'themes': []})
+
+    # 尝试获取今天的数据
+    api_key = _get_qwen_api_key()
+    if api_key:
+        today_result = _call_qwen_for_today_theme(api_key, trade_days)
+        if today_result:
+            today_data = today_result
+            # 保存今天的数据到磁盘
+            save_theme_history_by_date(today, today_data)
+        else:
+            today_data = _build_today_fallback_themes(trade_days)
+    else:
+        today_data = _build_today_fallback_themes(trade_days)
+
+    result_days.insert(0, {'date': today, 'themes': today_data.get('themes', [])})
+
+    return {
+        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'days': result_days[:days],
+        'source': 'Qwen+Search+File' if api_key else 'local-fallback',
+    }
+
+
+def _build_today_fallback_themes(trade_days: List[str]) -> Dict:
+    """构建今日的兜底数据（使用盘面热点板块）"""
+    today = trade_days[0] if trade_days else ''
+    sectors = get_hot_sectors() or []
+    today_summary = compute_today_theme_summary()
+
+    themes = []
+    for idx, row in enumerate(sectors[:6], start=1):
+        name = str(row.get('name') or '').strip()
+        if not name:
+            continue
+        try:
+            change = float(row.get('change', 0) or 0)
+        except Exception:
+            change = 0.0
+        try:
+            leader_change = float(row.get('leader_change', 0) or 0)
+        except Exception:
+            leader_change = 0.0
+        amount = float(row.get('amount', 0) or 0)
+        heat_value = round(amount / 1e8, 1) if amount > 0 else max(1.0, round(abs(change) * 4 + (7 - idx), 1))
+        themes.append({
+            'rank': idx,
+            'name': name,
+            'change': round(change, 2),
+            'limit_up_count': 0,
+            'leader_name': str(row.get('leader') or '').strip(),
+            'leader_change': round(leader_change, 2),
+            'heat_value': heat_value,
+            'summary': str(today_summary.get('summary_text') or '').strip()[:120],
+            'detail_url': '',
+        })
+
+    return {'date': today, 'themes': themes}
+
 
 
 def get_market_overview() -> List[Dict]:

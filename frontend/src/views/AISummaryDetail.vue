@@ -296,6 +296,8 @@ const _nameMap = {
   jun: '钧哥天下无双', qiao: '乔帮主', jia: '炒股养家',
   speed: '极速先锋', trend: '趋势追随者', quant: '量化之翼',
   deepseek: '深度思考者', beijing: '北京炒家', master: '市场首席策略官',
+  chenxiaoqun: '陈小群', zhaolaoge: '赵老哥',
+  zhangmengzhu: '章盟主', xiaoyueyu: '小鳄鱼',
 }
 
 function getAgentName(agentId) {
