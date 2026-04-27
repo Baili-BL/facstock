@@ -100,11 +100,11 @@
       <!-- 颜色图例 -->
       <div class="kq-legend">
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch" style="background: #f23645" />
+          <div class="kq-legend__swatch" style="background: #089981" />
           <span>-3%</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch" style="background: #fde8e8" />
+          <div class="kq-legend__swatch" style="background: #d5f5e3" />
           <span>-1%</span>
         </div>
         <div class="kq-legend__item">
@@ -112,11 +112,11 @@
           <span>平盘</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch" style="background: #d5f5e3" />
+          <div class="kq-legend__swatch" style="background: #fde8e8" />
           <span>+1%</span>
         </div>
         <div class="kq-legend__item">
-          <div class="kq-legend__swatch" style="background: #089981" />
+          <div class="kq-legend__swatch" style="background: #f23645" />
           <span>+3%</span>
         </div>
       </div>
@@ -157,11 +157,11 @@ const tfDefs = [
 const industryRaw = ref([])
 const conceptRaw  = ref([])
 
-// A股标准配色：绿涨红跌
-const UP_DARK   = [8,   153, 129]
-const UP_LIGHT = [213, 245, 227]
-const DN_LIGHT = [253, 232, 232]
-const DN_DARK  = [242,  54,  69]
+// A股标准配色：红涨绿跌
+const UP_DARK   = [242,  54,  69]
+const UP_LIGHT = [253, 232, 232]
+const DN_LIGHT = [213, 245, 227]
+const DN_DARK  = [8,   153, 129]
 
 function mixRgb(light, dark, t) {
   const a = Math.round(light[0] + (dark[0] - light[0]) * t)
@@ -177,9 +177,7 @@ function fillForChange(change) {
 }
 
 function textColor(change) {
-  const c = Number(change) || 0
-  if (Math.abs(c) >= 2) return c >= 0 ? '#047857' : '#b71c2c'
-  return c >= 0 ? '#1a6b4a' : '#8b1a1a'
+  return '#ffffff'
 }
 
 function labelStyle(cell) {
@@ -445,8 +443,8 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 700;
 }
-.kq-breadth-mini__up  { color: var(--gain-mid); }
-.kq-breadth-mini__dn  { color: var(--loss-mid); }
+.kq-breadth-mini__up  { color: #f23645; }
+.kq-breadth-mini__dn  { color: #089981; }
 .kq-breadth-mini__bar {
   display: flex;
   width: 80px;
@@ -456,16 +454,16 @@ onMounted(() => {
   background: var(--surface3);
 }
 .kq-breadth-mini__seg { height: 100%; transition: width 0.3s; }
-.kq-breadth-mini__seg--up { background: var(--gain-mid); }
-.kq-breadth-mini__seg--dn { background: var(--loss-mid); }
+.kq-breadth-mini__seg--up { background: #f23645; }
+.kq-breadth-mini__seg--dn { background: #089981; }
 .kq-breadth-mini__status {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
   font-weight: 800;
 }
-.kq-breadth-mini__status.bull { background: #d5f5e3; color: var(--gain); }
-.kq-breadth-mini__status.bear { background: #fadbd8; color: var(--loss); }
+.kq-breadth-mini__status.bull { background: #fde8e8; color: #f23645; }
+.kq-breadth-mini__status.bear { background: #d5f5e3; color: #089981; }
 .kq-breadth-mini__status.neu  { background: var(--surface3); color: var(--muted); }
 
 /* 加载/空 */
@@ -550,8 +548,8 @@ onMounted(() => {
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
-.st-map__label-chg.up { color: #089981; }
-.st-map__label-chg.dn { color: #f23645; }
+.st-map__label-chg.up { color: #ffffff !important; }
+.st-map__label-chg.dn { color: #ffffff !important; }
 
 /* 图例 */
 .kq-legend {

@@ -30,6 +30,9 @@ import AgentDetailSummary from './views/AgentDetailSummary.vue'
 import FeishuPush from './views/FeishuPush.vue'
 import FeishuPushHistory from './views/FeishuPushHistory.vue'
 import FeishuPushLogs from './views/FeishuPushLogs.vue'
+import XiaoyueyuTrader from './views/XiaoyueyuTrader.vue'
+import JunGeTrader from './views/JunGeTrader.vue'
+import ChenxiaoqunTrader from './views/ChenxiaoqunTrader.vue'
 import Ticai from './views/Ticai.vue'
 import TicaiHistory from './views/TicaiHistory.vue'
 import TicaiPerformance from './views/TicaiPerformance.vue'
@@ -77,6 +80,12 @@ const routes = [
   { path: '/strategy/youzi_agents/feishu', component: FeishuPushLogs },
   { path: '/strategy/youzi_agents/feishu/edit', component: FeishuPush },
   { path: '/strategy/youzi_agents/feishu/history', component: FeishuPushHistory },
+  // 小鳄鱼独立页面
+  { path: '/strategy/youzi_agents/xiaoyueyu', component: XiaoyueyuTrader },
+  // 钧哥独立页面
+  { path: '/strategy/youzi_agents/jun', component: JunGeTrader },
+  // 陈小群独立页面
+  { path: '/strategy/youzi_agents/chenxiaoqun', component: ChenxiaoqunTrader },
   { path: '/strategy/backtest', component: Backtest },
   { path: '/strategy/factor-prompt', component: FactorPrompt },
   { path: '/ticai', component: Ticai },

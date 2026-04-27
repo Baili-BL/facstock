@@ -54,10 +54,7 @@
                         <span class="fac-share-stock-item__name">{{ stock.name || stock.stock_name }}</span>
                         <span class="fac-share-stock-item__code">{{ stock.code || stock.stock_code }}</span>
                       </div>
-                      <span
-                        class="fac-share-stock-item__chg"
-                        :class="toPctNumber(stock.changePct ?? stock.chg_pct) >= 0 ? 'up' : 'down'"
-                      >
+                      <span class="fac-share-stock-item__chg">
                         {{ formatPct(stock.changePct ?? stock.chg_pct) }}
                       </span>
                     </div>
@@ -302,12 +299,12 @@ async function downloadShareCard() {
 }
 
 .fac-share-card__left {
-  width: 120px;
+  width: 110px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .fac-share-card__divider {
@@ -367,9 +364,9 @@ async function downloadShareCard() {
   transition: stroke-dasharray 0.8s ease;
 }
 
-.fac-share-gauge__arc--bull { stroke: #00b05e; }
-.fac-share-gauge__arc--bear { stroke: #dc3232; }
-.fac-share-gauge__arc--neutral { stroke: #6462d2; }
+.fac-share-gauge__arc--bull { stroke: #f23645; }
+.fac-share-gauge__arc--bear { stroke: #f23645; }
+.fac-share-gauge__arc--neutral { stroke: #f23645; }
 
 .fac-share-gauge__num {
   font-size: 22px;
@@ -393,23 +390,26 @@ async function downloadShareCard() {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  color: #f23645;
+  background: rgba(242, 54, 69, 0.15);
 }
 
-.fac-share-stance-tag--bull { background: rgba(0, 176, 94, 0.15); color: #00b05e; }
-.fac-share-stance-tag--bear { background: rgba(220, 50, 50, 0.15); color: #dc3232; }
-.fac-share-stance-tag--neutral { background: rgba(100, 98, 212, 0.15); color: #6462d2; }
+.fac-share-stance-tag--bull { }
+.fac-share-stance-tag--bear { }
+.fac-share-stance-tag--neutral { }
 
 .fac-share-card__commentary {
   font-size: 10px;
   color: var(--on-surface-variant, #464455);
   margin: 0;
   text-align: center;
-  line-height: 1.5;
-  overflow: hidden;
+  line-height: 1.4;
+  overflow: visible;
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 .fac-share-stocks {
@@ -463,10 +463,9 @@ async function downloadShareCard() {
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 6px;
+  color: #f23645;
+  background: rgba(242, 54, 69, 0.12);
 }
-
-.fac-share-stock-item__chg.up { color: #dc3232; background: rgba(220, 50, 50, 0.12); }
-.fac-share-stock-item__chg.down { color: #00b05e; background: rgba(0, 176, 94, 0.12); }
 
 .fac-share-stock-item__reason {
   font-size: 11px;

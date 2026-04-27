@@ -255,6 +255,72 @@ export async function fetchJungeAiResult() {
   return apiGet(`${BASE}/junge/ai-result`)
 }
 
+// ─── XiaoyueyuTrader API ─────────────────────────────────────────────────────────
+
+/**
+ * XiaoyueyuTrader API 客户端
+ * 小鳄鱼智能交易员 - 龙头战法·超短狙击
+ * 对接 /api/xiaoyueyu/* 端点
+ */
+
+/**
+ * 获取大盘市场状态
+ * @returns {Promise<{indexData: object, limitUpCount: number, emotion: object, timestamp: string}>}
+ */
+export async function fetchXiaoyueyuMarket() {
+  const json = await apiGet(`${BASE}/xiaoyueyu/market`)
+  return json.data
+}
+
+/**
+ * 获取热点板块
+ * @param {number} limit - 板块数量，默认10
+ * @returns {Promise<Array<{name, code, change, leader, leaderChange}>>}
+ */
+export async function fetchXiaoyueyuSectors(limit = 10) {
+  const json = await apiGet(`${BASE}/xiaoyueyu/sectors?limit=${limit}`)
+  return json.data
+}
+
+/**
+ * 执行小鳄鱼每日扫描
+ * @param {object} opts
+ * @param {boolean} opts.enhance - 是否启用 AI 增强，默认true
+ * @param {boolean} opts.force - 是否强制刷新缓存，默认false
+ * @returns {Promise<{
+ *   scanTime: string,
+ *   elapsedSeconds: number,
+ *   market: object,
+ *   hotSectors: array,
+ *   emotion: object,
+ *   stats: object,
+ *   recommendations: array,
+ *   candidates: array,
+ *   agentResult: object,
+ *   summary: string,
+ * }>}
+ */
+export async function runXiaoyueyuScan({ enhance = true, force = false } = {}) {
+  return apiPost(`${BASE}/xiaoyueyu/scan`, { enhance, force })
+}
+
+/**
+ * 获取 XiaoyueyuTrader 状态
+ * @returns {Promise<{lastScanTime, lastCandidatesCount, hasAiResult, emotion}>}
+ */
+export async function fetchXiaoyueyuStatus() {
+  const json = await apiGet(`${BASE}/xiaoyueyu/status`)
+  return json.data
+}
+
+/**
+ * 获取最近一次 AI 增强分析结果
+ * @returns {Promise<object>}
+ */
+export async function fetchXiaoyueyuAiResult() {
+  return apiGet(`${BASE}/xiaoyueyu/ai-result`)
+}
+
 // ─── 新架构：Qwen + AKShare + DeepSeek 流式分析 ──────────────────────────────
 
 /**
@@ -540,4 +606,64 @@ export async function deletePushConfigLog(logId) {
   const res = await fetch(`${BASE}/push/config-logs/${logId}`, { method: 'DELETE' })
   const json = await res.json()
   if (!json.success) throw new Error(json.error || '删除失败')
+}
+
+
+// ─── ChenxiaoqunTrader API ─────────────────────────────────────────────────────────
+
+/**
+ * ChenxiaoqunTrader API 客户端
+ * 陈小群智能交易员 - 趋势战法·主升持有
+ * 对接 /api/chenxiaoqun/* 端点
+ */
+
+/**
+ * 获取大盘市场状态
+ * @returns {Promise<object>}
+ */
+export async function fetchChenxiaoqunMarket() {
+  const json = await apiGet(`${BASE}/chenxiaoqun/market`)
+  return json.data
+}
+
+/**
+ * 获取热点板块
+ * @param {number} limit - 板块数量，默认10
+ * @returns {Promise<Array<{name, code, change, leader, leaderChange}>>}
+ */
+export async function fetchChenxiaoqunSectors(limit = 10) {
+  const json = await apiGet(`${BASE}/chenxiaoqun/sectors?limit=${limit}`)
+  return json.data
+}
+
+/**
+ * 执行陈小群趋势扫描
+ * @param {object} opts
+ * @param {boolean} opts.enhance - 是否启用 AI 增强，默认true
+ * @param {boolean} opts.force - 是否强制刷新缓存，默认false
+ * @returns {Promise<{
+ *   scanResult: object,
+ *   aiResult: object,
+ *   timestamp: string,
+ * }>}
+ */
+export async function chenxiaoqunScan({ enhance = true, force = false } = {}) {
+  return apiPost(`${BASE}/chenxiaoqun/scan`, { enhance, force })
+}
+
+/**
+ * 获取 ChenxiaoqunTrader 状态
+ * @returns {Promise<{lastScanTime, hasResult, trendEnvironment}>}
+ */
+export async function fetchChenxiaoqunStatus() {
+  const json = await apiGet(`${BASE}/chenxiaoqun/status`)
+  return json.data
+}
+
+/**
+ * 获取最近一次 AI 增强分析结果
+ * @returns {Promise<object>}
+ */
+export async function fetchChenxiaoqunAiResult() {
+  return apiGet(`${BASE}/chenxiaoqun/ai-result`)
 }

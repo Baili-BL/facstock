@@ -46,7 +46,7 @@
               <span class="bb-header-card__stat-lbl">覆盖</span>
             </div>
           </div>
-          <button type="button" class="bb-header-card__cta" @click="openCreateModal">
+          <button type="button" class="bb-header-card__cta" @click="confirmConfig">
             开始创建策略
           </button>
         </div>

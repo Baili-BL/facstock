@@ -107,11 +107,11 @@
           </div>
 
           <div class="yza-card__actions">
-            <button class="yza-action-btn yza-action-btn--primary" type="button" @click="$router.push(`/strategy/youzi_agents/${agent.id}`)">
+            <button class="yza-action-btn yza-action-btn--white" type="button" @click="$router.push(`/strategy/youzi_agents/${agent.id}`)">
               <span class="material-symbols-outlined">account_balance_wallet</span>
               <span>查看持仓</span>
             </button>
-            <button class="yza-action-btn yza-action-btn--secondary" type="button" @click="$router.push(`/strategy/youzi_agents/${agent.id}/analysis`)">
+            <button class="yza-action-btn yza-action-btn--black" type="button" @click="$router.push(`/strategy/youzi_agents/${agent.id}/analysis`)">
               <span class="material-symbols-outlined">insights</span>
               <span>查看分析</span>
             </button>
@@ -169,8 +169,8 @@ const STATIC_AGENTS = {
   chenxiaoqun: {
     id: 'chenxiaoqun',
     name: '陈小群',
-    tagline: '新生代游资典范，以情绪合力龙头战法为核心，专做主线龙头，擅长高位接力、分歧转一致和反核博弈',
-    displayTags: ['情绪合力龙头', '高位接力', '反核博弈', '新生代游资代表'],
+    tagline: '趋势战法专家，专注主升浪持有。核心策略：趋势回调低吸、突破加仓、趋势破坏离场。坚持"趋势不破不卖，破了必须走"铁律',
+    displayTags: ['趋势主升', '回调低吸', '波段持有', '破位离场'],
     winRate: '75.2%',
     returnPct: '+85.4%',
     returnPctRaw: 85.4,
@@ -694,12 +694,20 @@ onMounted(() => { loadAgents() })
 
 .yza-action-btn .material-symbols-outlined { font-size: 18px; }
 
-.yza-action-btn--primary {
+.yza-action-btn--white {
+  background: #ffffff;
+  color: #191c1e;
+  border: 1px solid #c1c6d7;
+}
+
+.yza-action-btn--white:hover { background: #f2f4f6; }
+
+.yza-action-btn--black {
   background: #191c1e;
   color: #f2f4f6;
 }
 
-.yza-action-btn--primary:hover { background: #2d3133; }
+.yza-action-btn--black:hover { background: #2d3133; }
 
 .yza-action-btn--secondary {
   background: transparent;

@@ -3211,7 +3211,8 @@ def get_agent_prompts():
 def get_single_agent_prompt(agent_id):
     """返回单个 Agent 的完整资料（策略详情页用）"""
     registry = get_agent_registry()
-    profile = registry.describe_agent(agent_id, include_prompts=False)
+    include_prompts = request.args.get('include_prompts', 'false').lower() == 'true'
+    profile = registry.describe_agent(agent_id, include_prompts=include_prompts)
     if not profile:
         return jsonify({'success': False, 'error': '未知 Agent'}), 404
     return jsonify({'success': True, 'data': profile})
@@ -3384,6 +3385,9 @@ def analyze_single_agent_stream(agent_id):
             yield f"data: {json.dumps({'type': 'error', 'error': '未知 Agent'})}\n\n"
             return
 
+        def sse(payload: Dict[str, Any]) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
         # 检查 Agent 是否已配置 system_prompt，未配置则返回友好提示
         if not profile.get('system_prompt'):
             agent_name = profile.get('name', _agent_id)
@@ -3409,9 +3413,6 @@ def analyze_single_agent_stream(agent_id):
                 'recommendedStocks': [],
             }})
             return
-
-        def sse(payload: Dict[str, Any]) -> str:
-            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
         try:
             task_decomposition = get_agent_task_decomposition(_agent_id)
@@ -9676,6 +9677,30 @@ try:
     logger.info("JunGeTrader 路由注册成功")
 except ImportError as e:
     logger.warning(f"JunGeTrader 路由注册失败: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XiaoyueyuTrader API - 小鳄鱼智能交易员
+# 龙头战法·超短狙击
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from xiaoyueyu_trader import register_xiaoyueyu_routes
+    register_xiaoyueyu_routes(strategy_bp, get, set, invalidate, db)
+    logger.info("XiaoyueyuTrader 路由注册成功")
+except ImportError as e:
+    logger.warning(f"XiaoyueyuTrader 路由注册失败: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ChenxiaoqunTrader API - 陈小群智能交易员
+# 趋势战法·主升持有
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from chenxiaoqun_trader import register_chenxiaoqun_routes
+    register_chenxiaoqun_routes(strategy_bp, get, set, invalidate, db)
+    logger.info("ChenxiaoqunTrader 路由注册成功")
+except ImportError as e:
+    logger.warning(f"ChenxiaoqunTrader 路由注册失败: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

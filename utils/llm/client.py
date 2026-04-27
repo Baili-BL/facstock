@@ -502,14 +502,36 @@ class LLMClient:
             )
 
         except Exception as e:
-            logger.error("[LLM] provider=deepseek error=%s", e)
+            error_str = str(e)
+            error_type = type(e).__name__
+            
+            # 识别 DeepSeek 常见错误类型
+            if '429' in error_str or 'rate_limit' in error_str.lower() or 'too many requests' in error_str.lower():
+                user_message = 'DeepSeek 请求过于频繁，请稍后重试'
+                logger.warning(f"[LLM] DeepSeek rate limit: {error_str}")
+            elif '401' in error_str or 'authentication' in error_str.lower() or 'unauthorized' in error_str.lower():
+                user_message = 'DeepSeek API 认证失败，请检查 API Key'
+                logger.warning(f"[LLM] DeepSeek auth error: {error_str}")
+            elif '403' in error_str or 'forbidden' in error_str.lower():
+                user_message = 'DeepSeek API 权限不足'
+                logger.warning(f"[LLM] DeepSeek forbidden: {error_str}")
+            elif '500' in error_str or 'internal error' in error_str.lower():
+                user_message = 'DeepSeek 服务器内部错误，请稍后重试'
+                logger.warning(f"[LLM] DeepSeek server error: {error_str}")
+            elif 'timeout' in error_str.lower() or 'timed out' in error_str.lower():
+                user_message = 'DeepSeek 请求超时'
+                logger.warning(f"[LLM] DeepSeek timeout: {error_str}")
+            else:
+                user_message = f'DeepSeek 调用失败: {error_str}'
+                logger.error(f"[LLM] provider=deepseek error_type={error_type} error={error_str}")
+            
             return LLMResponse(
                 content='',
                 tokens_used=0,
                 model=model,
                 provider='deepseek',
                 success=False,
-                error=str(e),
+                error=user_message,
             )
 
     def _call_deepseek_messages(
@@ -556,14 +578,36 @@ class LLMClient:
             )
 
         except Exception as e:
-            logger.error("[LLM] provider=deepseek messages error=%s", e)
+            error_str = str(e)
+            error_type = type(e).__name__
+            
+            # 识别 DeepSeek 常见错误类型
+            if '429' in error_str or 'rate_limit' in error_str.lower() or 'too many requests' in error_str.lower():
+                user_message = 'DeepSeek 请求过于频繁，请稍后重试'
+                logger.warning(f"[LLM] DeepSeek rate limit: {error_str}")
+            elif '401' in error_str or 'authentication' in error_str.lower() or 'unauthorized' in error_str.lower():
+                user_message = 'DeepSeek API 认证失败，请检查 API Key'
+                logger.warning(f"[LLM] DeepSeek auth error: {error_str}")
+            elif '403' in error_str or 'forbidden' in error_str.lower():
+                user_message = 'DeepSeek API 权限不足'
+                logger.warning(f"[LLM] DeepSeek forbidden: {error_str}")
+            elif '500' in error_str or 'internal error' in error_str.lower():
+                user_message = 'DeepSeek 服务器内部错误，请稍后重试'
+                logger.warning(f"[LLM] DeepSeek server error: {error_str}")
+            elif 'timeout' in error_str.lower() or 'timed out' in error_str.lower():
+                user_message = 'DeepSeek 请求超时'
+                logger.warning(f"[LLM] DeepSeek timeout: {error_str}")
+            else:
+                user_message = f'DeepSeek 调用失败: {error_str}'
+                logger.error(f"[LLM] provider=deepseek messages error_type={error_type} error={error_str}")
+            
             return LLMResponse(
                 content='',
                 tokens_used=0,
                 model=model,
                 provider='deepseek',
                 success=False,
-                error=str(e),
+                error=user_message,
             )
 
     # ── Agent 场景封装 ─────────────────────────────────────────────────────
@@ -630,7 +674,34 @@ class LLMClient:
             max_tokens=agent.get('max_tokens', 3000),
         )
 
-        resp = self.call_messages(messages, options)
+        # 调用 LLM，支持重试（应对限流）
+        max_retries = 3
+        retry_delay = 5  # 秒
+        last_error = None
+        
+        for attempt in range(max_retries):
+            resp = self.call_messages(messages, options)
+            
+            if resp.success and resp.content:
+                break
+                
+            error_str = resp.error or ''
+            last_error = error_str
+            
+            # 如果是可重试的错误（限流/服务器错误），等待后重试
+            if attempt < max_retries - 1:
+                is_retryable = any(x in error_str.lower() for x in [
+                    'rate limit', '429', 'too many requests', 
+                    'server error', '500', 'internal error', 'timeout'
+                ])
+                if is_retryable:
+                    logger.warning(f"[LLM] call_agent retry: agent_id={agent_id} attempt={attempt+1} error={error_str}")
+                    import time
+                    time.sleep(retry_delay * (attempt + 1))  # 指数退避
+                    continue
+            
+            # 最后一次尝试或不可重试的错误
+            break
 
         if not resp.success or not resp.content:
             logger.warning("[LLM] call_agent failed: agent_id=%s resp=%s", agent_id, resp.error)
