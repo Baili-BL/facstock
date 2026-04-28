@@ -172,15 +172,70 @@ watch(() => props.visible, (val) => {
 })
 
 async function handleWeChat() {
-  window.location.href = 'weixin://'
+  // 优先使用系统原生分享面板（手机端会列出所有支持分享的 App，包括微信）
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: props.shareData.title,
+        text: props.shareData.description || `${props.shareData.confidence}% 信心`,
+        url: currentUrl.value,
+      })
+      return
+    } catch (err) {
+      // 用户取消或分享失败，继续尝试其他方式
+      if (err.name === 'AbortError') return
+    }
+  }
+
+  // 回退：在支持 weixin:// scheme 的浏览器尝试直接调起（部分 Android 浏览器有效）
+  const iframe = document.createElement('iframe')
+  iframe.style.display = 'none'
+  iframe.src = 'weixin://'
+  document.body.appendChild(iframe)
+  setTimeout(() => document.body.removeChild(iframe), 1000)
+
+  // 如果 iframe 方式失败（iOS 大多数情况），提示用户
+  setTimeout(() => {
+    if (!document.hidden) {
+      // 提示长按复制链接后手动在微信打开
+      handleCopy()
+    }
+  }, 1500)
 }
 
 function handleFeishu() {
+  // 优先使用系统原生分享面板
+  if (navigator.share) {
+    navigator.share({
+      title: props.shareData.title,
+      text: props.shareData.description || `${props.shareData.confidence}% 信心`,
+      url: currentUrl.value,
+    }).catch(() => {})
+    return
+  }
+
   const encodedTitle = encodeURIComponent(props.shareData.title)
   const encodedDesc = encodeURIComponent(props.shareData.description || `${props.shareData.confidence}% 信心`)
   const encodedUrl = encodeURIComponent(currentUrl.value)
-  const feishuWebUrl = `https://applink.feishu.cn/client/share/open?title=${encodedTitle}&desc=${encodedDesc}&url=${encodedUrl}`
-  window.open(feishuWebUrl, '_blank', 'width=600,height=500')
+
+  // 移动端：使用飞书 universal link（可被系统识别并打开飞书 App）
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  if (isMobile) {
+    // 尝试调起飞书 App
+    const iframe = document.createElement('iframe')
+    iframe.style.display = 'none'
+    iframe.src = 'feishu://'
+    document.body.appendChild(iframe)
+    setTimeout(() => document.body.removeChild(iframe), 1000)
+
+    // 同时打开网页版分享链接作为兜底
+    const feishuWebUrl = `https://applink.feishu.cn/client/share/open?title=${encodedTitle}&desc=${encodedDesc}&url=${encodedUrl}`
+    setTimeout(() => window.open(feishuWebUrl, '_blank'), 500)
+  } else {
+    // 桌面端：打开飞书网页版分享链接
+    const feishuWebUrl = `https://applink.feishu.cn/client/share/open?title=${encodedTitle}&desc=${encodedDesc}&url=${encodedUrl}`
+    window.open(feishuWebUrl, '_blank', 'width=600,height=500')
+  }
 }
 
 async function handleCopy() {

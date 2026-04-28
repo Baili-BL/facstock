@@ -14,7 +14,7 @@
         />
         <div>
           <h1 class="cxq-header__title">陈小群</h1>
-          <span class="cxq-header__sub">趋势战法 · 主升持有</span>
+          <span class="cxq-header__sub">情绪驱动 · 结构确认</span>
         </div>
       </div>
       <div class="cxq-header__right">

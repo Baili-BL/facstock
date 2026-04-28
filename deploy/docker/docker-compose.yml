@@ -24,6 +24,8 @@ services:
     restart: always
     ports:
       - "5002:5002"
+    env_file:
+      - .env
     environment:
       - MYSQL_HOST=host.docker.internal
       - MYSQL_PORT=3306

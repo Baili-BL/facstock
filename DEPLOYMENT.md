@@ -11,8 +11,8 @@
 ## 快速部署命令
 
 ```bash
-# 打包
-tar --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' --exclude='.venv' --exclude='venv' --exclude='dist' --exclude='frontend/node_modules' --exclude='frontend/.vite' --exclude='.env' --exclude='*.log' -czf /tmp/stock-scanner.tar.gz -C /Users/kevin/Desktop/facSstock . 2>/dev/null
+# 打包（注意：不再排除 .env 文件）
+tar --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' --exclude='.venv' --exclude='venv' --exclude='dist' --exclude='frontend/node_modules' --exclude='frontend/.vite' --exclude='*.log' -czf /tmp/stock-scanner.tar.gz -C /Users/kevin/Desktop/facSstock . 2>/dev/null
 
 # 上传并构建
 scp -i ~/.ssh/fasstock /tmp/stock-scanner.tar.gz root@111.229.238.115:/tmp/
@@ -23,6 +23,9 @@ ssh -i ~/.ssh/fasstock root@111.229.238.115 "docker logs stock_scanner -f"
 
 # 重启容器
 ssh -i ~/.ssh/fasstock root@111.229.238.115 "docker restart stock_scanner"
+
+# 验证环境变量（确保 API Key 已加载）
+ssh -i ~/.ssh/fasstock root@111.229.238.115 "docker exec stock_scanner env | grep DASHSCOPE"
 ```
 
 ## 数据库信息
@@ -32,6 +35,44 @@ ssh -i ~/.ssh/fasstock root@111.229.238.115 "docker restart stock_scanner"
 - **用户**: root
 - **密码**: StockPass@2024
 - **数据库**: stock_scanner
+
+## 环境变量配置
+
+**重要**: 部署前必须配置 `.env` 文件，否则 Agent 的 AI 分析功能将无法使用。
+
+### 1. 服务器配置 .env 文件
+
+```bash
+ssh -i ~/.ssh/fasstock root@111.229.238.115
+# 在服务器上创建配置文件
+cat > /opt/stock-scanner/deploy/docker/.env << 'EOF'
+# 阿里云百炼 API Key（从 https://bailian.console.aliyun.com 获取）
+DASHSCOPE_API_KEY=your_api_key_here
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=deepseek-v4-pro
+LLM_PROVIDER=dashscope
+FEISHU_ENABLED=true
+FEISHU_WEBHOOK_URL=your_feishu_webhook_url_here
+AGENT_PUSH_WEBHOOK_URL=your_feishu_webhook_url_here
+AGENT_PUSH_ENABLED=true
+AGENT_PUSH_AGENT_IDS=beijing,qiao,jia,jun,speed,trend,quant,deepseek
+AGENT_PUSH_MAX_WORKERS=4
+EOF
+```
+
+### 2. docker-compose.yml 必须加载 env_file
+
+```yaml
+services:
+  app:
+    env_file:
+      - .env   # 必须配置此行！
+    environment:
+      - MYSQL_HOST=host.docker.internal
+      # ...
+```
+
+**注意**: `docker-compose.yml` 中的 `env_file: .env` 配置已添加到项目中。
 
 ## API端点
 
@@ -105,3 +146,20 @@ url = 'https://hq.sinajs.cn/list=' + codes_str
 
 - 当前存储: **5497条** A股数据
 - 同步命令: `curl -X POST http://111.229.238.115:5002/api/stocks/sync`
+
+## 常见问题
+
+### 1. Agent AI 分析报 "未配置 API Key"
+**原因**: docker-compose.yml 没有加载 .env 文件，或 .env 文件不存在
+
+**解决方法**:
+```bash
+# 1. 确认 .env 文件存在
+ssh -i ~/.ssh/fasstock root@111.229.238.115 "cat /opt/stock-scanner/deploy/docker/.env"
+
+# 2. 确认容器内环境变量已加载
+ssh -i ~/.ssh/fasstock root@111.229.238.115 "docker exec stock_scanner env | grep DASHSCOPE"
+
+# 3. 如未加载，重启容器
+ssh -i ~/.ssh/fasstock root@111.229.238.115 "cd /opt/stock-scanner/deploy/docker && docker compose restart"
+```

@@ -376,3 +376,29 @@ f'上证指数跌 {_fmt(abs(sh_change))}%，'
 
 ### 修改文件
 - `market_data.py` 第1351行
+
+---
+
+## 12. Docker env_file 配置缺失 (2026-04-27)
+
+### 问题
+Agent 的 AI 分析功能报错 "未配置 API Key（DASHSCOPE_API_KEY 和 DEEPSEEK_API_KEY 均未设置）"
+
+### 原因
+1. `docker-compose.yml` 没有配置 `env_file: .env`，导致容器启动时没有加载环境变量
+2. 打包脚本错误地排除了 `.env` 文件
+
+### 修复
+1. `deploy/docker/docker-compose.yml` 添加 `env_file: .env` 配置
+2. 打包命令移除 `--exclude='.env'`
+
+### 修改文件
+- `deploy/docker/docker-compose.yml` - 添加 `env_file: .env`
+- `DEPLOYMENT.md` - 更新部署文档
+
+### 验证命令
+```bash
+# 检查容器内环境变量
+docker exec stock_scanner env | grep DASHSCOPE
+# 应输出: DASHSCOPE_API_KEY=sk-xxx
+```

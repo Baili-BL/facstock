@@ -9,11 +9,46 @@
           </button>
         </div>
         <h1 class="yza-topbar__title">策略全景</h1>
-        <button class="yza-topbar__filter" aria-label="筛选">
-          <span class="material-symbols-outlined">filter_list</span>
-        </button>
+        <div class="yza-topbar__actions">
+          <div class="yza-topbar__menu-wrap">
+            <button class="yza-topbar__menu-btn" aria-label="智能体菜单" @click="menuOpen = true">
+              <span class="material-symbols-outlined">menu</span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
+
+    <!-- Right Drawer — Agent Selector -->
+    <Transition name="drawer">
+      <div v-if="menuOpen" class="yza-drawer">
+        <header class="yza-drawer__header">
+          <button class="yza-drawer__close" aria-label="关闭" @click="menuOpen = false">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+          <h2 class="yza-drawer__title">跳转智能体</h2>
+          <div class="yza-drawer__placeholder" />
+        </header>
+        <main class="yza-drawer__body">
+          <button
+            v-for="agent in agentCards"
+            :key="agent.id"
+            class="yza-drawer-item"
+            type="button"
+            @click="scrollToAgent(agent.id)"
+          >
+            <span class="yza-drawer-item__icon-wrap" :style="{ background: AGENT_ICON_BG[agent.id], color: AGENT_ICON_COLOR[agent.id] }">
+              <span class="material-symbols-outlined" :style="{ fontVariationSettings: `'FILL' 1` }">{{ AGENT_ICONS[agent.id] || 'person' }}</span>
+            </span>
+            <span class="yza-drawer-item__name">{{ agent.name }}</span>
+            <span class="material-symbols-outlined yza-drawer-item__anchor">anchor</span>
+          </button>
+        </main>
+      </div>
+    </Transition>
+    <Transition name="overlay">
+      <div v-if="menuOpen" class="yza-overlay" @click="menuOpen = false" />
+    </Transition>
 
     <!-- Main Content -->
     <main class="yza-main">
@@ -72,6 +107,7 @@
         <article
           v-for="agent in agentCards"
           :key="agent.id"
+          :id="`agent-${agent.id}`"
           class="yza-card"
         >
           <div class="yza-card__header">
@@ -135,6 +171,15 @@ const architecture = ref(null)
 const agentPerf = ref({})
 const loading = ref(false)
 const errorMsg = ref('')
+const menuOpen = ref(false)
+
+function scrollToAgent(agentId) {
+  menuOpen.value = false
+  const el = document.getElementById(`agent-${agentId}`)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
 
 async function fetchAgentPerformance(ids) {
   if (!ids.length) return
@@ -216,6 +261,51 @@ const PHASE_MAP = {
   phase_1: '题材挖掘',
   phase_2: '信号生成',
   phase_3: '风控聚合',
+}
+
+const AGENT_ICON_BG = {
+  jun: '#d2e0f9',
+  qiao: '#6b6f77',
+  jia: '#d2e0f9',
+  speed: '#6b6f77',
+  trend: '#d2e0f9',
+  quant: '#6b6f77',
+  deepseek: '#d2e0f9',
+  beijing: '#6b6f77',
+  chenxiaoqun: '#d2e0f9',
+  zhaolaoge: '#6b6f77',
+  zhangmengzhu: '#d2e0f9',
+  xiaoyueyu: '#6b6f77',
+}
+
+const AGENT_ICON_COLOR = {
+  jun: '#566378',
+  qiao: '#ffffff',
+  jia: '#566378',
+  speed: '#ffffff',
+  trend: '#566378',
+  quant: '#ffffff',
+  deepseek: '#566378',
+  beijing: '#ffffff',
+  chenxiaoqun: '#566378',
+  zhaolaoge: '#ffffff',
+  zhangmengzhu: '#566378',
+  xiaoyueyu: '#ffffff',
+}
+
+const AGENT_ICONS = {
+  jun: 'search',
+  qiao: 'rocket_launch',
+  jia: 'psychology',
+  speed: 'bolt',
+  trend: 'show_chart',
+  quant: 'calculate',
+  deepseek: 'bubble_chart',
+  beijing: 'location_city',
+  chenxiaoqun: 'local_fire_department',
+  zhaolaoge: 'groups',
+  zhangmengzhu: 'workspace_premium',
+  xiaoyueyu: 'cruelty_free',
 }
 
 const agentCards = computed(() => {
@@ -328,21 +418,142 @@ onMounted(() => { loadAgents() })
   flex: 1;
 }
 
-.yza-topbar__filter {
-  width: 40px;
-  height: 40px;
+/* ── Right Drawer ────────────────────────────────────── */
+.yza-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 150;
+}
+
+.yza-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: #f9f9fc;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.12);
+}
+
+.yza-drawer__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  height: 64px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid #e2e2e5;
+  flex-shrink: 0;
+}
+
+.yza-drawer__close,
+.yza-drawer__placeholder {
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: grid;
   place-items: center;
   background: transparent;
-  color: #0058bc;
   border: none;
   cursor: pointer;
-  transition: background 0.2s;
+  color: #737686;
+  transition: background 0.15s;
 }
 
-.yza-topbar__filter:hover { background: rgba(0, 88, 188, 0.08); }
-.yza-topbar__filter .material-symbols-outlined { font-size: 22px; }
+.yza-drawer__close:hover { background: rgba(0, 0, 0, 0.06); }
+.yza-drawer__close .material-symbols-outlined { font-size: 22px; }
+
+.yza-drawer__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1c1e;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.yza-drawer__body {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 32px;
+}
+
+.yza-drawer-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 16px 24px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #eeeef0;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.yza-drawer-item:hover { background: #f3f3f6; }
+.yza-drawer-item:active { background: #e2e2e5; }
+
+.yza-drawer-item__icon-wrap {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.yza-drawer-item__icon-wrap .material-symbols-outlined { font-size: 22px; }
+
+.yza-drawer-item__name {
+  flex: 1;
+  margin-left: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1c1e;
+  transition: color 0.15s;
+}
+
+.yza-drawer-item:hover .yza-drawer-item__name { color: #004cc7; }
+
+.yza-drawer-item__anchor {
+  font-size: 20px;
+  color: #c3c6d7;
+  margin-left: 12px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.yza-drawer-item:hover .yza-drawer-item__anchor { color: #004cc7; }
+
+/* Drawer animation */
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(100%);
+}
+
+/* Overlay animation */
+.overlay-enter-active,
+.overlay-leave-active {
+  transition: opacity 0.25s ease;
+}
+
+.overlay-enter-from,
+.overlay-leave-to {
+  opacity: 0;
+}
 
 /* ── Main ───────────────────────────────────────────── */
 .yza-main {
